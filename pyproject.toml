@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "windtunnel"
-version = "0.1.0"
+version = "0.2.0"
 description = "Wind Tunnel — unittest for agents. A controlled replica of production conditions for agent reliability testing."
 readme = "README.md"
 license = "Apache-2.0"
