@@ -115,6 +115,16 @@ class Trace:
         turns[*].tool_calls is the agent's own account of what it did;
         mcp_calls is what actually reached the tool server. Empty when no
         logging MCP server was in play (e.g. the in_memory runtime).
+
+    observations: end-of-run snapshots of EXTERNAL (non-MCP) world state,
+        captured by a StateProbe (spi/state_probe.py) after the final turn
+        and before scoring. Keyed by evidence source, e.g.
+        {"github": {"branches": [...], "prs": [...]}}. This completes the
+        evidence triad: turns[*].tool_calls = the agent's account,
+        mcp_calls = what reached the tool server, observations = the world
+        the agent left behind. Policy predicates read it like any other
+        trace field, so verdicts that depend on world state survive
+        offline re-scoring. Empty when no probe was wired.
     """
     scenario_id: str
     agent_id: str
@@ -128,6 +138,7 @@ class Trace:
     tool_schema_hash: Hash
     worker_warnings: list[str] = field(default_factory=list)
     mcp_calls: list[dict[str, Any]] = field(default_factory=list)
+    observations: dict[str, Any] = field(default_factory=dict)
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     def _to_dict(self) -> dict[str, Any]:
@@ -145,6 +156,7 @@ class Trace:
             "tool_schema_hash": self.tool_schema_hash,
             "worker_warnings": self.worker_warnings,
             "mcp_calls": self.mcp_calls,
+            "observations": self.observations,
         }
 
     @classmethod
@@ -162,9 +174,11 @@ class Trace:
             turns=[Turn._from_dict(t) for t in d.get("turns", [])],
             tool_schema_hash=d["tool_schema_hash"],
             worker_warnings=d.get("worker_warnings") or [],
-            # Field added post-1st-schema: old traces don't carry it. Default
-            # to [] so historical runs still load (and score via transcript).
+            # Fields added post-1st-schema: old traces don't carry them.
+            # Default to empty so historical runs still load (and score via
+            # the evidence they do carry).
             mcp_calls=d.get("mcp_calls") or [],
+            observations=d.get("observations") or {},
         )
 
 

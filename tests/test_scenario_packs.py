@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from windtunnel.api.pack import ScenarioPack
-from windtunnel.api.scenario import Scenario
+from windtunnel.api.scenario import Policy, Scenario
 
 # Canonical bench order — pins the pre-pack _load_scenarios flattening order
 # (an alphabetical pkgutil discovery would silently reorder the sweep).
@@ -103,6 +103,54 @@ def make_external_pack() -> ScenarioPack:
 
 
 NOT_A_PACK = object()  # neither a ScenarioPack nor callable → must exit 2
+
+# A pack whose scenario's verdict depends on EXTERNAL state: the policy reads
+# trace.observations, which only a StateProbe can populate. Ships with
+# state_probe_factory=None — the plugin's pre_run() wires it (the driver
+# pattern: the probe closes over a fixture born in pre_run).
+PROBE_PACK = ScenarioPack(
+    name="probe_dim",
+    scenarios=[
+        Scenario(
+            name="probe_scenario",
+            prompt="say ok",
+            target_facts=[["ok"]],
+            tags=["dim:probe_dim"],
+            policies=[
+                Policy(
+                    name="world_flag_set",
+                    predicate=lambda t: t.observations["world"]["flag"] is True,
+                )
+            ],
+        )
+    ],
+)
+
+
+class _CliFixtureProbe:
+    def capture(self) -> dict:
+        return {"world": {"flag": True}}
+
+    def reset(self) -> None:
+        pass
+
+
+class ProbeWiringPlugin:
+    """Dotted-path RuntimePlugin proving the pre_run-wires-the-probe pattern.
+
+    build() returns the scripted in-memory runtime (under a non-"in_memory"
+    --runtime value, so the CLI's plugin-runtime wiring path is exercised);
+    pre_run() sets the pack's state_probe_factory AFTER pack discovery —
+    exactly when a real driver would, once its bench fixture is up.
+    """
+
+    def build(self, runtime_name: str, label: str, soul_path: str | None):
+        from windtunnel.runtimes.in_memory import InMemoryRuntime
+
+        return InMemoryRuntime(scripted_responses=["ok"])
+
+    def pre_run(self, runtime, scenarios, runtime_name: str) -> None:
+        PROBE_PACK.state_probe_factory = lambda sc: _CliFixtureProbe()
 
 
 def _patch_scenario_pack_eps(monkeypatch: pytest.MonkeyPatch, attrs: list[str]) -> None:
@@ -283,3 +331,46 @@ class TestTransportOnlyFlowsToRunLoop:
         assert "FAIL" in out
         assert "transport-only" not in out
         assert rc == 1
+
+
+# ─── state_probe_factory: pack → run loop → trace ────────────────────────────
+
+
+class TestStateProbeFactoryFlowsToRunLoop:
+    """state_probe_factory wires a probe per scenario into run_scenario, and
+    the captured observations both satisfy the live Policy AND persist in the
+    saved trace — the offline re-scorability property end to end."""
+
+    def test_field_defaults_to_none(self) -> None:
+        assert ScenarioPack(name="bare").state_probe_factory is None
+
+    def test_pre_run_wired_probe_reaches_policy_and_saved_trace(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import json
+
+        # pre_run mutates the module-level PROBE_PACK; setattr-ing the start
+        # value through monkeypatch restores None after the test.
+        monkeypatch.setattr(PROBE_PACK, "state_probe_factory", None)
+        _patch_scenario_pack_eps(monkeypatch, ["PROBE_PACK"])
+        from windtunnel.cli import main
+
+        runs_dir = tmp_path / "runs"
+        rc = main([
+            "run",
+            "--runtime", f"{__name__}:ProbeWiringPlugin",
+            "--scenario", "probe_scenario",
+            "--runs-dir", str(runs_dir),
+            "--label", "probe_test",
+        ])
+        # The policy reads t.observations["world"]["flag"] — it can only
+        # pass if the probe's snapshot was frozen in BEFORE live scoring.
+        assert rc == 0
+
+        traces = [
+            p for p in runs_dir.rglob("*.json")
+            if not p.name.endswith(".score.json")
+        ]
+        assert len(traces) == 1
+        saved = json.loads(traces[0].read_text(encoding="utf-8"))
+        assert saved["observations"] == {"world": {"flag": True}}

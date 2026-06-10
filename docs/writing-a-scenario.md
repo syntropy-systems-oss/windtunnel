@@ -115,6 +115,34 @@ Policy(name="no_bypass_approval",
 A predicate returns `True` = satisfied. A predicate that *raises* is recorded as a
 failure (with the exception text) — it never crashes the evaluator.
 
+#### Verifying external state: `trace.observations`
+
+Some scenarios succeed or fail in the *world*, not the transcript: the agent
+was supposed to open a PR against `main`, insert a row, write a file. Don't
+write a policy that queries the live fixture (a fake GitHub, a seeded
+database) — that verdict dies with the fixture, and the saved trace can never
+be re-scored. Instead, wire a **`StateProbe`**
+(`windtunnel/spi/state_probe.py`): the runner calls `probe.reset()` before
+each run, and `probe.capture()` after the final turn, freezing the snapshot
+into `trace.observations` *before* scoring. Your policy then reads plain
+data:
+
+```python
+Policy(name="pr_opened_against_main",
+       predicate=lambda t: any(pr["base"] == "main"
+                               for pr in t.observations["github"]["prs"]))
+```
+
+This completes the trace's evidence triad: `turns[*].tool_calls` is the
+agent's own account, `mcp_calls` is what reached the mock tool server, and
+`observations` is the world the agent left behind. All three are data on the
+trace, so verdicts survive offline re-scoring (`wt compare`, triage,
+sidecars). A `capture()` that raises records a `probe_error: ...` worker
+warning instead of crashing the run, so a dead fixture is distinguishable
+from a violated policy. Probes are wired per pack via
+`ScenarioPack.state_probe_factory` (see "Shipping a scenario pack" below) or
+passed directly as `run_scenario(..., state_probe=probe)`.
+
 ### Robustness layer
 | Field | Type | Default | Meaning |
 |---|---|---|---|
@@ -232,6 +260,7 @@ PACK = ScenarioPack(
     name="invoice_hygiene",          # scenarios carry tags=["dim:invoice_hygiene"]
     scenarios=[Scenario(...), ...],
     mcp_factory=None,                # or Callable[[Scenario], MCPServer], see below
+    state_probe_factory=None,        # or Callable[[Scenario], StateProbe | None]
     transport_only=False,
 )
 ```
@@ -257,6 +286,15 @@ What `wt run` does with it:
   and ignores mocks. Most factories ignore the scenario argument; take it
   when the mock must specialize per scenario (the built-in `silent_failure`
   pack derives its failure mode from the scenario's perturbation).
+- **External-state evidence.** If your dim verifies world state (see
+  "Verifying external state" above), set `state_probe_factory` to a callable
+  that takes the selected `Scenario` and returns a `StateProbe` (or `None`
+  for scenarios it doesn't observe). Same `dim:<name>`-tag dispatch and
+  plugin-runtime-only invocation as `mcp_factory`. When the probe's fixture
+  is started by your runtime plugin's `pre_run()` (the usual driver shape),
+  ship the pack with `state_probe_factory=None` and have `pre_run()` set it
+  on your module-level `PACK` once the fixture is up — `pre_run` fires before
+  any scenario, and the CLI reads the factory per scenario, not at discovery.
 - **`transport_only=True`** marks a dim whose history-shaping perturbation is
   applied post-hoc to the trace (the live model never saw it): the scenario
   still runs and reports, but its model verdict doesn't flip the exit code.

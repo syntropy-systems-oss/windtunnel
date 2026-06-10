@@ -344,6 +344,39 @@ class TestJsonRoundTrip:
         assert loaded.mcp_calls == []
         assert loaded.run_id == trace.run_id
 
+    def test_observations_default_empty(self):
+        """observations defaults to {} when no StateProbe was wired."""
+        trace = _make_trace()
+        assert trace.observations == {}
+
+    def test_observations_round_trip(self, tmp_path):
+        """External-state snapshots survive save/load unchanged — the property
+        that lets world-state Policies re-score saved traces offline."""
+        observations = {
+            "github": {
+                "branches": ["main", "fix/timeout"],
+                "prs": [{"base": "main", "head": "fix/timeout",
+                         "files": {"src/app.py": "patched"}}],
+            },
+        }
+        trace = _make_trace(observations=observations)
+        path = tmp_path / "trace.json"
+        save_trace(trace, path)
+        loaded = load_trace(path)
+        assert loaded.observations == observations
+
+    def test_old_trace_json_without_observations_loads(self, tmp_path):
+        """Traces saved before the observations field existed must still load
+        (defaulting to {} → constraint scores on the evidence they do carry)."""
+        trace = _make_trace()
+        d = trace._to_dict()
+        del d["observations"]  # simulate a pre-observations trace file
+        path = tmp_path / "old_trace.json"
+        path.write_text(json.dumps(d), encoding="utf-8")
+        loaded = load_trace(path)
+        assert loaded.observations == {}
+        assert loaded.run_id == trace.run_id
+
 
 # ─── 5. Storage path ─────────────────────────────────────────────────────────
 

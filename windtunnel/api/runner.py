@@ -59,6 +59,7 @@ from windtunnel.api.score import LayerResult, Score
 from windtunnel.api.trace import Trace, Turn, compute_hash
 from windtunnel.spi.agent_runtime import AgentConfig, AgentHandle, AgentRuntime, SamplingConfig
 from windtunnel.spi.mcp_server import MCPHandle, MCPServer
+from windtunnel.spi.state_probe import StateProbe
 
 # ─── ScenarioResult ───────────────────────────────────────────────────────────
 
@@ -149,6 +150,46 @@ def _collect_mcp_calls(mcp_handles: list[MCPHandle]) -> list[dict[str, Any]]:
     return calls
 
 
+# ─── External-state observation capture ───────────────────────────────────────
+
+def _capture_observations(
+    state_probe: StateProbe | None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Snapshot external state via the probe. Return (observations, warnings).
+
+    Failure semantics differ from _collect_mcp_calls on purpose: a dead
+    call-log handle silently contributes [] (logs are supplementary
+    evidence), but a failed capture() gets a "probe_error: ..." warning —
+    a Policy reading trace.observations would otherwise fail with a bare
+    KeyError that triage can't distinguish from a genuine violation.
+
+    Non-JSON-serializable leaves are coerced via repr() (json default=)
+    so a sloppy probe can't brick save_trace(); a non-dict capture()
+    return is rejected with a warning rather than stored, because every
+    downstream consumer indexes observations by evidence-source key.
+    """
+    if state_probe is None:
+        return {}, []
+    try:
+        observations = state_probe.capture()
+    except Exception as exc:
+        return {}, [f"probe_error: capture failed: {exc}"]
+    if not isinstance(observations, dict):
+        return {}, [
+            f"probe_error: capture() returned {type(observations).__name__}, expected dict",
+        ]
+    try:
+        json.dumps(observations)
+    except (TypeError, ValueError):
+        # default=repr rescues non-serializable VALUES; non-str KEYS still
+        # raise — degrade to a warning, never crash the run over evidence.
+        try:
+            observations = json.loads(json.dumps(observations, default=repr))
+        except (TypeError, ValueError) as exc:
+            return {}, [f"probe_error: snapshot not JSON-serializable: {exc}"]
+    return observations, []
+
+
 # ─── Response-shape tolerance ─────────────────────────────────────────────────
 
 def _extract_reply(response: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
@@ -189,6 +230,7 @@ def _run_once(
     model: str,
     quant: str,
     sampler: dict[str, Any],
+    state_probe: StateProbe | None = None,
 ) -> tuple[Trace, Score]:
     """Drive one scenario through a live AgentHandle. Return (Trace, Score).
 
@@ -199,6 +241,10 @@ def _run_once(
     before each run and store the server-witnessed call log on the
     trace (trace.mcp_calls) — the evidence evaluate_trajectory prefers
     over the transcript's self-reported tool_calls.
+
+    state_probe (optional) snapshots EXTERNAL non-MCP state into
+    trace.observations, with the same per-run reset + freeze-before-score
+    lifecycle as the call logs (see spi/state_probe.py).
     """
     session_id = str(uuid.uuid4())
     started_at = datetime.now(UTC)
@@ -208,6 +254,10 @@ def _run_once(
     # ONLY this run's traffic (logs accumulate across runs otherwise).
     for mcp in mcp_handles:
         mcp.reset_call_log()
+    # Same contamination class for external state: wipe the fixture back to
+    # its baseline so this run's observations carry only this run's mutations.
+    if state_probe is not None:
+        state_probe.reset()
 
     # Multi-turn when user_turns is non-empty; else single-turn [prompt]
     user_turns: list[str] = scenario.user_turns or [scenario.prompt]
@@ -261,6 +311,10 @@ def _run_once(
     # at the moment the run ends — re-scoring a saved trace later sees the
     # same calls the live scoring did.
     mcp_calls = _collect_mcp_calls(mcp_handles)
+    # External-state snapshot under the same freeze-before-score rule: a
+    # Policy reading trace.observations during live scoring and during a
+    # later offline re-score must see identical evidence.
+    observations, probe_warnings = _capture_observations(state_probe)
 
     trace = Trace(
         scenario_id=scenario.name,
@@ -273,8 +327,9 @@ def _run_once(
         finished_at=finished_at,
         turns=turns,
         tool_schema_hash=compute_hash(scenario.name),
-        worker_warnings=[],
+        worker_warnings=probe_warnings,
         mcp_calls=mcp_calls,
+        observations=observations,
     )
 
     # Apply perturbations to the trace before scoring (robustness layer).
@@ -314,6 +369,7 @@ def run_scenario(
     config: AgentConfig | None = None,
     runs_per_scenario: int = 1,
     skip_reset: bool = False,
+    state_probe: StateProbe | None = None,
 ) -> ScenarioResult:
     """Run one Scenario N times against the given runtime + mcp set.
 
@@ -333,6 +389,11 @@ def run_scenario(
         config:             AgentConfig for the runtime. Defaults to AgentConfig().
         runs_per_scenario:  number of runs (default 1 for smoke; 3+ for CI).
         skip_reset:         skip handle.reset_state() between runs (debug mode).
+        state_probe:        optional StateProbe snapshotting external non-MCP
+                            state into trace.observations per run (reset
+                            before each run, captured before scoring). The
+                            caller owns the probe's fixture lifecycle; the
+                            runner never starts/stops it.
 
     Returns ScenarioResult with aggregate verdict + per-run details.
     """
@@ -381,6 +442,7 @@ def run_scenario(
                     model=model,
                     quant=quant,
                     sampler=sampler,
+                    state_probe=state_probe,
                 )
             except Exception as exc:
                 # Create a minimal failed trace so aggregate still works

@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 
 from windtunnel.api.scenario import Scenario
 from windtunnel.spi.mcp_server import MCPServer
+from windtunnel.spi.state_probe import StateProbe
 
 
 @dataclass
@@ -53,6 +54,20 @@ class ScenarioPack:
         is scripted and ignores mocks entirely, so the CLI never invokes the
         factory for it.
 
+    state_probe_factory: builds the pack's StateProbe for a given scenario,
+        or returns None when that scenario needs no external-state capture.
+        The probe seam mirrors mcp_factory: called once per scenario, the
+        result is passed to run_scenario(state_probe=...), which resets it
+        before each run and freezes capture() into trace.observations
+        before scoring (see windtunnel/spi/state_probe.py). A probe
+        usually closes over a live bench fixture; when that fixture is
+        started by a RuntimePlugin's pre_run() (the driver pattern), the
+        pack ships with state_probe_factory=None and pre_run sets it on
+        the pack's module-level PACK singleton after the fixture is up —
+        pre_run runs before any scenario, so the CLI's per-scenario
+        factory call sees the wired value. None (the default) = no
+        external state to observe.
+
     transport_only: True means this dim's history/context-shaping
         perturbation is applied POST-HOC to the recorded trace (see
         runner.py _run_once), so the live model never actually saw it — the
@@ -70,4 +85,5 @@ class ScenarioPack:
     name: str
     scenarios: list[Scenario] = field(default_factory=list)
     mcp_factory: Callable[[Scenario], MCPServer] | None = None
+    state_probe_factory: Callable[[Scenario], StateProbe | None] | None = None
     transport_only: bool = False

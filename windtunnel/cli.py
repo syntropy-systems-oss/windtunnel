@@ -217,6 +217,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
         if pack.mcp_factory is not None
     }
 
+    # NOTE: the probe registry is built LAZILY (inside the loop, below) rather
+    # than here like mcp_registry — pre_run() hasn't fired yet at this point,
+    # and the driver pattern is precisely that pre_run starts the bench fixture
+    # and THEN sets state_probe_factory on its pack (see windtunnel.api.pack).
+    # Snapshotting the factories pre-pre_run would always read None.
+
     # Platform-specific bench prep (runtime-pluggable seam): the resolved
     # plugin's OPTIONAL pre_run() hook runs once here — after _build_runtime
     # and scenario loading, before any scenario executes. Platform glue
@@ -248,6 +254,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # port conflict before the run even reaches its real target. So don't
         # build the mock for it.
         scenario_mcps = None
+        scenario_probe = None
         if runtime_name != "in_memory":
             for tag in getattr(scenario, "tags", []):
                 if tag in mcp_registry:
@@ -255,6 +262,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     # Pass the scenario so scenario-aware factories (silent_failure,
                     # which injects MOCK_MCP_FAILURE_MODE per scenario) can specialize.
                     scenario_mcps = [factory(scenario)]
+                    break
+            # External-state probe, same dim-tag dispatch as the mock. Factories
+            # are read per scenario (not snapshotted into a registry above)
+            # because pre_run() may have set them after pack discovery. The
+            # factory itself may return None for scenarios it doesn't observe.
+            for pack in packs:
+                if pack.state_probe_factory is None:
+                    continue
+                if f"dim:{pack.name}" in getattr(scenario, "tags", []):
+                    scenario_probe = pack.state_probe_factory(scenario)
                     break
 
         transport_only = any(
@@ -272,7 +289,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         try:
             result = run_scenario(
                 scenario, runtime, mcps=scenario_mcps, config=config,
-                runs_per_scenario=n_runs,
+                runs_per_scenario=n_runs, state_probe=scenario_probe,
             )
         except Exception as exc:  # noqa: BLE001 — sweep-level isolation, detail printed
             any_fail = True
