@@ -1,0 +1,209 @@
+# Wind Tunnel — Architecture
+
+How Wind Tunnel is put together: the two-surface design, the data path of a
+scored run, the four-layer scoring model, perturbations, and the dimension
+catalog.
+
+---
+
+## 1. Two surfaces: API and SPI
+
+- **API** (`windtunnel/api/`) — what scenario authors import: `Scenario`,
+  `Trace`, `Score`, `evaluators`, `perturbations`, `run_scenario()`.
+  Backend-agnostic.
+- **SPI** (`windtunnel/spi/`) — what runtime implementers fill in:
+  `AgentRuntime`, `AgentHandle`, `MCPServer`, `MCPHandle` Protocols. Each
+  agent platform implements the SPI.
+
+**Hard invariant:** a scenario must NEVER import a platform-specific type. If
+you can't write a scenario without importing `windtunnel.runtimes.*`, the SPI
+has leaked — fix the contract, not the scenario. Enforced by
+`tests/test_import_invariants.py`.
+
+The payoff: a scenario is written once and runs unchanged against an
+in-memory stub, a local docker stack, or your full production-shaped
+platform. When a scenario passes in-memory but fails on your platform, the
+difference *is* your platform — that's the signal the bench exists to
+produce.
+
+```
+   scenario authors                     runtime implementers
+        │                                       │
+        ▼                                       ▼
+  ┌───────────┐    run_scenario()      ┌─────────────────┐
+  │  api/     │ ─────────────────────► │  spi/ Protocols  │
+  │ Scenario  │                        │ AgentRuntime     │
+  │ Trace     │ ◄───────────────────── │ AgentHandle      │
+  │ Score     │      Trace, Turn       │ MCPServer/Handle │
+  └───────────┘                        └────────┬────────┘
+                                                │ implemented by
+                                       ┌────────▼────────┐
+                                       │ runtimes/<yours> │
+                                       └─────────────────┘
+```
+
+## 2. Anatomy of a scored run
+
+`run_scenario(scenario, runtime, mcps)` orchestrates one batch:
+
+1. **Start MCP servers** — the runner starts every server in the `mcps`
+   argument and collects handles. Two ways servers get there: pass them
+   yourself when calling `run_scenario()` directly, or let the CLI build one
+   from the scenario's pack (`ScenarioPack.mcp_factory`, matched by the
+   `dim:<name>` tag) and pass it into `mcps` for you. Either way the runner
+   owns start/stop — `mcps=[]` means the agent genuinely has no tools, and
+   any `requires_tool_use` scenario will (correctly) fail.
+2. **Provision** — `runtime.provision(config, mcps)` returns an
+   `AgentHandle`: a live agent wired to those tools. Expensive, once per
+   batch.
+3. **Per run** (N runs per scenario):
+   - `handle.reset_state()` — wipe cross-run state (sessions, memory,
+     tool-call logs). Cheap, every run. State contamination between runs is
+     the classic source of false passes, so a failed reset is fatal.
+   - **Pre-send perturbations** shape the outgoing messages (corrupted
+     history the live model must handle).
+   - `handle.send(messages, session_id)` — drive the turn(s). Multi-turn
+     scenarios thread the same `session_id` across turns.
+   - Record a `Trace`: every `Turn` with role, content, tool calls/results
+     (preserved in the wire shape they arrived in), latency, and — when the
+     runtime can supply it — the exact rendered prompt with its hash.
+   - **Score** the trace on four layers (below).
+4. **Aggregate** N scores into a verdict; `handle.teardown()` at batch end.
+
+The `Trace` is the unit of record: JSON-serializable, diff-able, replayable.
+Reports, comparisons, and triage all consume saved traces — you never need to
+re-run a model to re-analyze a run (re-scoring saved traces is supported and
+cheap).
+
+## 3. The four-layer scoring model
+
+A `Scenario` declares expectations across four independent layers; each run
+produces a `Score` of four `LayerResult`s.
+
+| Layer | Checks | Evaluator |
+|---|---|---|
+| **outcome** | the user-visible answer is right | `evaluate_outcome` |
+| **trajectory** | right tools called, right order, none forbidden | `evaluate_trajectory` |
+| **constraint** | named policy predicates over the trace hold | `evaluate_constraint` |
+| **robustness** | declared perturbations were actually applied | `evaluate_robustness` |
+
+**The critical invariant: the per-run gate is the `outcome` layer ONLY.**
+Trajectory, constraint, and robustness are evaluated and recorded on every
+run, but they don't decide pass/fail — they surface as per-layer pass-rates
+in reports. This keeps the gate honest (users experience outcomes) while
+preserving the diagnostic signal (a pass with a wrong trajectory is a pass
+on borrowed time).
+
+`evaluate_outcome` encodes several hard-won rules:
+
+1. **Last-turn semantics** — scores the *actual* last assistant turn, even if
+   its content is `""`. An agent that stops after a tool call without
+   answering has answered with nothing: fail. Never backfill from
+   intermediate turns.
+2. **`requires_tool_use` gate** — if set and the trace has zero tool calls,
+   fail even if the right facts appear. This closes the "guessed correctly
+   from training data" false positive.
+3. **AND-of-OR `target_facts`** — `[["A","a"],["B"]]` means *(A or a) AND
+   (B)*. Case-insensitive substring match.
+4. **Typed `target_numbers`** — word-boundary regex (`\b3\b` doesn't match
+   `B003`), optional unit-proximity check.
+5. **Negation-aware `forbidden_facts`** — "the SKU is B003" fails, "there is
+   no SKU B003" doesn't.
+
+**Aggregate verdict:** `PASS` iff **all N** runs' outcome bits pass;
+otherwise `FAIL` — unless the scenario sets `variance_allowed=True`
+(for sampler-sensitivity work), which yields `PASS_WITH_VARIANCE` with
+`pass_rate ± stddev`. Every scenario carries a `FailureCost`
+(severity / customer_visible / reversible / side_effect_performed) so
+weighted views can make one critical, irreversible regression outweigh ten
+cheap ones.
+
+## 4. Trajectory truth: the MCP call log
+
+Agents misreport their own tool use — they narrate calls they never made and
+omit ones they did. Wind Tunnel doesn't trust the transcript: the
+`MCPHandle.call_log()` primitive records every call that actually reached
+the tool server (name, args, result, timestamp), the runner drains it onto
+the trace as `Trace.mcp_calls`, and `evaluate_trajectory` scores against
+*that* whenever it is non-empty — the transcript's self-reported
+`tool_calls` are used only as a fallback when no logging mock was in play
+(e.g. the in-memory runtime). The `LayerResult` detail names which evidence
+was used (`server-witnessed` vs `transcript`). The log is reset between runs
+and readable even when the mock runs as a subprocess.
+
+A side benefit: perturbation-injected history (fake prior tool calls shaped
+into the messages) never reaches the tool server, so the server-witnessed
+path is naturally free of calls the live model never made — no filtering
+needed.
+
+## 5. Perturbations (two families)
+
+A perturbation adversarially stresses one run. Two families, by *where* the
+corruption lands:
+
+- **Pre-send / history-shaping** (subclasses of `PreSendPerturbation`,
+  abstract `shape_messages()`) —
+  inject corrupted prior turns into the messages the **live model actually
+  runs on**: a blank assistant turn, a literal tool-call rendered as text, a
+  wrong prior tool call, a truncated pagination, a stale memory line. The
+  model either resists the poison or succumbs — the eval is real either way.
+- **Environment-shaping** (mock failure modes via
+  `MCPHandle.configure_failure_mode()`) — the tool server misbehaves live:
+  malformed JSON, timeout, unexpectedly empty result.
+
+Every perturbation declares a `marker`; the runner ensures it lands in the
+trace, and `evaluate_robustness` verifies the contract was honoured. A
+perturbation that silently failed to apply cannot produce a false pass.
+Pre-send perturbations are injected before send and skip the post-hoc
+`apply()` — no double application.
+
+## 6. The dimension catalog
+
+Each dimension is a package under `windtunnel/scenarios/dim_*` with its own
+`scenarios.py`, a mock MCP server, and a synthetic database, exposed to the
+CLI as a `ScenarioPack` (the dim's `PACK`). Group by the `dim:<name>` tag.
+Third-party dimensions ship as packs under the `windtunnel.scenario_packs`
+entry-point group — the scenario-side twin of `windtunnel.runtimes`.
+
+| Dim | Reliability property tested |
+|---|---|
+| `tool_affordance` | Builds the right mental model of each tool's contract (strict-id vs lenient-name, in/out of scope, chained lookups). |
+| `clarify_vs_guess` | Under genuine ambiguity, clarify or list candidates rather than silently guess. |
+| `memory_conflict` | Trust the live tool over stale/seeded memory; surface conflicts. |
+| `multi_turn_drift` | Preserve context across a multi-turn session; scored on the final turn. |
+| `policy_pressure` | Hold a policy under explicit user pressure to skip it. |
+| `recovery` | Recover from a bad intermediate state injected into history. |
+| `sampler_sensitivity` | Stability of correct behavior across the temp/top_p matrix (`variance_allowed=True`). |
+| `side_effect_safety` | Respect per-effect-class autonomy ceilings (read < draft < internal update < external send < destructive). |
+| `silent_failure` | Detect the *environment* misbehaving and report instead of fabricating. |
+| `icl_poisoning` | Policy survives a corrupted prior turn; don't copy the broken shape. |
+
+Some dims add a per-dim verdict overlay (e.g. clarify_vs_guess buckets runs
+into acted / clarified / wrongly_guessed / refused_unnecessarily).
+
+## 7. Reporting, comparison, triage
+
+- `wt report` — static HTML/markdown, no server, no external deps. Groups by
+  scenario × variant; per-cell aggregate verdict, per-layer pass-rates,
+  linked traces.
+- `wt compare` — A/B two labeled run sets (model swap, prompt change,
+  temperature pin).
+- `wt triage` — classify failures against the
+  [failure taxonomy](failure-taxonomy.md). The rule-based classifier ships;
+  the `FailureClassifier` Protocol accepts LLM judges
+  ([writing-a-classifier.md](writing-a-classifier.md)), and the `Optimizer`
+  Protocol supports propose-fix/apply-fix loops over classified failures
+  ([writing-an-optimizer.md](writing-an-optimizer.md)).
+
+## 8. Fidelity: the design stance
+
+Wind Tunnel's founding bet is that **agent reliability bugs live in the
+seams** — chat templates, tool-schema sanitizers, message-history plumbing,
+session state — not in the model alone. So a runtime should reproduce your
+production path as faithfully as possible: same images, same proxies, same
+tool-prefixing and grants, with only the minimum hermetic divergences
+(fake identity provider, isolated state, canned upstream tools). The SPI is
+deliberately small so that wiring the *real* stack in is easier than building
+a lookalike.
+
+See [writing-a-runtime.md](writing-a-runtime.md) for the contract.

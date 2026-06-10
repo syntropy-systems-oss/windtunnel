@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: uv sync
+      - name: Lint
+        run: uv run ruff check windtunnel/ tests/
+      - name: Unit tests (no infrastructure required)
+        run: uv run pytest -m "not integration" -q --timeout=120
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+      - name: Build docs (strict — broken nav/links fail)
+        run: uv run --group docs mkdocs build --strict

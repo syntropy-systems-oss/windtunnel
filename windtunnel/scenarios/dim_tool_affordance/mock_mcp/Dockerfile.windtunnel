@@ -1,0 +1,18 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install the MCP SDK with its CLI extras (FastMCP lives here)
+RUN pip install --no-cache-dir "mcp[cli]>=1.0"
+
+# Build context is dim_tool_affordance/ (one level above mock_mcp/).
+# This lets Docker include both mock_mcp/server.py and synthetic_db.py in a
+# single build context without relying on a parent-directory COPY (which is
+# invalid in Dockerfile). The original Dockerfile stays unchanged so the
+# existing dim runner's scp+docker-build flow is unaffected.
+COPY mock_mcp/server.py /app/server.py
+COPY synthetic_db.py /app/synthetic_db.py
+
+EXPOSE 8080
+
+CMD ["python", "server.py"]

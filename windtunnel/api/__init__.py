@@ -1,0 +1,82 @@
+"""Wind Tunnel API — public surface for scenario authors.
+
+Import from here; never from windtunnel.runtimes.* or windtunnel.mcp.*.
+
+Example::
+
+    from windtunnel.api import Scenario, Trace, run_scenario
+    from windtunnel.api.evaluators import evaluate_outcome
+"""
+from windtunnel.api.aggregate import AggregateResult, ScenarioRunResult, aggregate_runs
+from windtunnel.api.evaluators import (
+    evaluate_constraint,
+    evaluate_outcome,
+    evaluate_robustness,
+    evaluate_trajectory,
+    tool_name_matches,
+)
+from windtunnel.api.pack import ScenarioPack
+from windtunnel.api.perturbations import (
+    BlankAssistantContent,
+    CorruptPriorAssistantTurn,
+    FallbackRenderLeak,
+    InjectPaginationTruncation,
+    InjectSchemaRejectedCall,
+    InjectStaleMemory,
+    InjectWrongPriorToolCall,
+    MalformedToolCall,
+    ToolReturnsEmptyUnexpected,
+    ToolReturnsMalformed,
+    ToolReturnsMalformedJson,
+    ToolTimeout,
+    ToolTimeoutPerScenario,
+)
+from windtunnel.api.replay import GenerateFn, replay
+from windtunnel.api.runner import ScenarioResult, run_scenario
+from windtunnel.api.scenario import (
+    NumberFact,
+    Perturbation,
+    Policy,
+    PreSendPerturbation,
+    Scenario,
+    TrajectoryCheck,
+)
+from windtunnel.api.score import FailureCost, LayerResult, Score, Verdict
+from windtunnel.api.state_reset import StateResetConfig, reset_state_db
+from windtunnel.api.trace import (
+    Hash,
+    Trace,
+    Turn,
+    compute_hash,
+    load_trace,
+    save_trace,
+    storage_path,
+)
+
+__all__ = [
+    # trace
+    "Hash", "Trace", "Turn", "compute_hash", "load_trace", "save_trace", "storage_path",
+    # score
+    "FailureCost", "LayerResult", "Score", "Verdict",
+    # scenario
+    "NumberFact", "Perturbation", "Policy", "PreSendPerturbation", "Scenario",
+    "TrajectoryCheck",
+    # pack
+    "ScenarioPack",
+    # evaluators
+    "evaluate_outcome", "evaluate_trajectory", "evaluate_constraint", "evaluate_robustness",
+    "tool_name_matches",
+    # perturbations
+    "CorruptPriorAssistantTurn", "InjectStaleMemory", "ToolTimeout", "ToolReturnsMalformed",
+    "BlankAssistantContent", "FallbackRenderLeak", "MalformedToolCall",
+    "InjectWrongPriorToolCall", "InjectSchemaRejectedCall", "InjectPaginationTruncation",
+    "ToolReturnsMalformedJson", "ToolTimeoutPerScenario", "ToolReturnsEmptyUnexpected",
+    # aggregate
+    "AggregateResult", "ScenarioRunResult", "aggregate_runs",
+    # runner
+    "ScenarioResult", "run_scenario",
+    # replay
+    "GenerateFn", "replay",
+    # state_reset
+    "StateResetConfig", "reset_state_db",
+]

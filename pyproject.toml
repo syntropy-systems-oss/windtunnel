@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "windtunnel"
+version = "0.1.0"
+description = "Wind Tunnel — unittest for agents. A controlled replica of production conditions for agent reliability testing."
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "Bryson Tang" }]
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.27.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/syntropy-systems-oss/windtunnel"
+Issues = "https://github.com/syntropy-systems-oss/windtunnel/issues"
+
+[project.scripts]
+wt = "windtunnel.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+markers = [
+    "integration: marks tests that require a live platform container (deselect with -m 'not integration')",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+
+[dependency-groups]
+docs = [
+    # mkdocs pinned <2: the 2.0 rewrite breaks the plugin/theming ecosystem
+    # (see mkdocs-material's analysis); material 9.x targets mkdocs 1.x.
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.5",
+]
+dev = [
+    "mypy>=1.10",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.4.0",
+    "pytest-mock>=3.15.1",
+    "pytest-timeout>=2.4.0",
+    "pyyaml>=6.0",
+    "ruff>=0.15.14",
+]
