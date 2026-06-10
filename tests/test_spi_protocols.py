@@ -275,3 +275,41 @@ class TestMCPServerProtocol:
         server = _ConcreteMCPServer()
         server.stop()
         server.stop()  # second call must not raise
+
+
+# ─── StateProbe Protocol ──────────────────────────────────────────────────────
+
+class _ConcreteStateProbe:
+    """Minimal concrete StateProbe — a dict standing in for a bench fixture."""
+
+    def __init__(self) -> None:
+        self._state: dict = {"prs": []}
+
+    def capture(self) -> dict:
+        return {"github": dict(self._state)}
+
+    def reset(self) -> None:
+        self._state = {"prs": []}
+
+
+class TestStateProbeProtocol:
+    def test_concrete_probe_satisfies_protocol(self) -> None:
+        from windtunnel.spi.state_probe import StateProbe
+        probe = _ConcreteStateProbe()
+        assert isinstance(probe, StateProbe)
+
+    def test_capture_returns_dict(self) -> None:
+        probe = _ConcreteStateProbe()
+        assert probe.capture() == {"github": {"prs": []}}
+
+    def test_reset_is_idempotent(self) -> None:
+        probe = _ConcreteStateProbe()
+        probe._state["prs"].append({"base": "main"})
+        probe.reset()
+        probe.reset()  # second call must not raise
+        assert probe.capture() == {"github": {"prs": []}}
+
+    def test_exported_from_spi_package(self) -> None:
+        """StateProbe is part of the public SPI surface."""
+        from windtunnel.spi import StateProbe
+        assert isinstance(_ConcreteStateProbe(), StateProbe)

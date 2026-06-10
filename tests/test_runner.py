@@ -7,6 +7,8 @@ Covers:
   - session_id threading — same id across all turns in a scenario
   - server-witnessed call-log collection — trace.mcp_calls drained from
     every MCPHandle, normalized to dicts, merged chronologically
+  - external-state observation capture — trace.observations snapshotted
+    from a StateProbe per run (reset-before-run, capture-before-score)
 """
 from __future__ import annotations
 
@@ -367,6 +369,103 @@ class TestMcpCallCollection:
         runtime = InMemoryRuntime(scripted_responses=["ok"])
         result = run_scenario(_scenario(), runtime, mcps=[server])
         stored = result.runs[0].trace.mcp_calls[0]["result"]
+        assert isinstance(stored, str)  # repr() fallback
+
+
+# ─── StateProbe — external-state observations ─────────────────────────────────
+
+class _StubStateProbe:
+    """StateProbe whose capture() replays a scripted snapshot.
+
+    Counts reset()/capture() calls so tests can pin the per-run lifecycle
+    (reset before EACH run, capture once per run before scoring).
+    """
+
+    def __init__(self, snapshot: Any) -> None:
+        self._snapshot = snapshot
+        self.reset_count = 0
+        self.capture_count = 0
+
+    def capture(self) -> Any:
+        self.capture_count += 1
+        return self._snapshot
+
+    def reset(self) -> None:
+        self.reset_count += 1
+
+
+class _RaisingProbe:
+    def capture(self) -> dict[str, Any]:
+        raise ConnectionError("fixture is gone")
+
+    def reset(self) -> None:
+        pass
+
+
+class TestStateProbeObservations:
+    def test_trace_carries_observations(self) -> None:
+        """After a run, trace.observations holds the probe's snapshot."""
+        probe = _StubStateProbe({"github": {"prs": [{"base": "main"}]}})
+        runtime = InMemoryRuntime(scripted_responses=["ok"])
+        result = run_scenario(_scenario(), runtime, state_probe=probe)
+        assert result.runs[0].trace.observations == {
+            "github": {"prs": [{"base": "main"}]},
+        }
+
+    def test_no_probe_means_empty_observations(self) -> None:
+        runtime = InMemoryRuntime(scripted_responses=["ok"])
+        result = run_scenario(_scenario(), runtime)
+        assert result.runs[0].trace.observations == {}
+
+    def test_probe_reset_before_each_run(self) -> None:
+        """Like reset_call_log: run N's observations must not contain run
+        N-1's mutations, so the probe resets per run, not per batch."""
+        probe = _StubStateProbe({})
+        runtime = InMemoryRuntime(scripted_responses=["ok"])
+        run_scenario(_scenario(), runtime, state_probe=probe, runs_per_scenario=3)
+        assert probe.reset_count == 3
+        assert probe.capture_count == 3
+
+    def test_observations_visible_to_policy_at_live_scoring(self) -> None:
+        """Capture happens BEFORE scoring: a Policy reading
+        trace.observations passes during the live run, not only on an
+        offline re-score of the saved trace."""
+        from windtunnel.api.scenario import Policy
+        scenario = _scenario()
+        scenario.policies = [Policy(
+            name="pr_opened_against_main",
+            predicate=lambda t: any(
+                pr["base"] == "main" for pr in t.observations["github"]["prs"]
+            ),
+        )]
+        probe = _StubStateProbe({"github": {"prs": [{"base": "main"}]}})
+        runtime = InMemoryRuntime(scripted_responses=["ok"])
+        result = run_scenario(scenario, runtime, state_probe=probe)
+        assert result.runs[0].score.constraint.passed is True
+
+    def test_capture_failure_records_probe_error_warning(self) -> None:
+        """A dead fixture degrades to a diagnosable warning, not a crash —
+        and not a silent {} that masquerades as a policy violation."""
+        runtime = InMemoryRuntime(scripted_responses=["ok"])
+        result = run_scenario(_scenario(), runtime, state_probe=_RaisingProbe())
+        trace = result.runs[0].trace
+        assert trace.observations == {}
+        assert any(w.startswith("probe_error:") for w in trace.worker_warnings)
+
+    def test_non_dict_capture_rejected_with_warning(self) -> None:
+        probe = _StubStateProbe(["not", "a", "dict"])
+        runtime = InMemoryRuntime(scripted_responses=["ok"])
+        result = run_scenario(_scenario(), runtime, state_probe=probe)
+        trace = result.runs[0].trace
+        assert trace.observations == {}
+        assert any(w.startswith("probe_error:") for w in trace.worker_warnings)
+
+    def test_non_json_values_coerced(self) -> None:
+        """Non-serializable leaves coerce via repr() so save_trace works."""
+        probe = _StubStateProbe({"db": {"handle": object()}})
+        runtime = InMemoryRuntime(scripted_responses=["ok"])
+        result = run_scenario(_scenario(), runtime, state_probe=probe)
+        stored = result.runs[0].trace.observations["db"]["handle"]
         assert isinstance(stored, str)  # repr() fallback
 
 
