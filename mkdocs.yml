@@ -1,0 +1,48 @@
+site_name: Wind Tunnel
+site_description: "unittest for agents — a reliability bench for tool-using LLM agents"
+site_url: https://syntropy-systems-oss.github.io/windtunnel/
+repo_url: https://github.com/syntropy-systems-oss/windtunnel
+repo_name: syntropy-systems-oss/windtunnel
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.footer
+    - content.code.copy
+    - search.suggest
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.details
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Guides:
+      - Writing a scenario: writing-a-scenario.md
+      - Writing a runtime: writing-a-runtime.md
+      - Writing a classifier: writing-a-classifier.md
+      - Writing an optimizer: writing-an-optimizer.md
+  - Reference:
+      - Architecture: architecture.md
+      - Failure taxonomy: failure-taxonomy.md
+  - Agent quickstart: agent-quickstart.md

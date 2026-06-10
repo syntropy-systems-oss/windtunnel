@@ -1,0 +1,23 @@
+# Virtual environments
+.venv/
+
+# Run artifacts (traces + score sidecars + reports — generated, not source)
+runs/*
+!runs/.gitkeep
+report.html
+
+# Caches
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# OS noise
+.DS_Store
+
+# MkDocs build output
+site/
+
+# Build artifacts
+dist/

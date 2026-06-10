@@ -1,0 +1,77 @@
+{
+  "expected_category": "tool_affordance",
+  "trace": {
+    "run_id": "40dc3e3c-bbea-4e6d-96b5-a35c0d498e4b",
+    "scenario_id": "lookup_before_action",
+    "agent_id": "agent-eval",
+    "variant_id": "baseline",
+    "model": "test-model",
+    "quant": "q4",
+    "sampler": {
+      "temperature": 0.0
+    },
+    "started_at": "2026-05-27T12:00:00+00:00",
+    "finished_at": "2026-05-27T12:00:02+00:00",
+    "turns": [
+      {
+        "role": "user",
+        "content": "How much inventory does Bluewing Logistics have?",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "assistant",
+        "content": "I don't have access to inventory data for that client.",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      }
+    ],
+    "tool_schema_hash": "sha256:abc123",
+    "worker_warnings": []
+  },
+  "scenario": {
+    "name": "lookup_before_action",
+    "prompt": "How much inventory does Bluewing Logistics have?",
+    "target_facts": [
+      [
+        "ACC-BLWG-001"
+      ],
+      [
+        "20"
+      ]
+    ],
+    "requires_tool_use": true,
+    "tags": [
+      "dim:tool_affordance"
+    ],
+    "must_call": [
+      "mcp_acme_ops_client_lookup",
+      "mcp_acme_ops_order_query"
+    ],
+    "forbidden_calls": []
+  },
+  "score": {
+    "outcome": {
+      "passed": false,
+      "detail": "no_tools_used: scenario requires tool use but trace has no tool calls"
+    },
+    "trajectory": {
+      "passed": false,
+      "detail": "required tools not called: ['mcp_acme_ops_client_lookup']"
+    },
+    "constraint": {
+      "passed": true,
+      "detail": "ok"
+    },
+    "robustness": {
+      "passed": true,
+      "detail": "ok"
+    }
+  }
+}

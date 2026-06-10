@@ -1,0 +1,166 @@
+# Getting started
+
+Ten minutes from clone to your first scored agent run.
+
+## Install
+
+```bash
+git clone https://github.com/syntropy-systems-oss/windtunnel
+cd windtunnel
+uv sync                                    # creates .venv + installs the dev group
+.venv/bin/pytest -m "not integration" -q   # sanity: the unit suite needs no infra
+```
+
+## 1. Score your first scenario (no agent platform required)
+
+The `in_memory` runtime returns scripted responses — it exists so you can
+learn the scoring model and write scenarios before wiring up a real platform.
+
+```python
+from windtunnel.api import Scenario, run_scenario
+from windtunnel.runtimes.in_memory import InMemoryRuntime
+
+scenario = Scenario(
+    name="capital_of_france",
+    prompt="What is the capital of France?",
+    target_facts=[["Paris"]],
+)
+
+runtime = InMemoryRuntime(scripted_responses=["The capital of France is Paris."])
+result = run_scenario(scenario, runtime, mcps=[])
+
+print(result.verdict)                      # "PASS"
+print(result.runs[0].score.outcome.detail) # why the outcome layer passed
+```
+
+Change the scripted response to `"It's Lyon."` and run again — `FAIL`, and
+the outcome detail tells you which fact group failed to match.
+
+## 2. Add trajectory expectations — and watch the gate catch a guess
+
+Facts can be guessed. To assert the agent *worked* for the answer, gate on
+tool use and name the tools it must call:
+
+```python
+scenario = Scenario(
+    name="lookup_before_answer",
+    prompt="What is the email on file for the client Bluewing Logistics?",
+    target_facts=[["ops@bluewing.example"]],
+    requires_tool_use=True,            # zero tool calls → outcome FAILS, even if the fact appears
+    must_call=["client_lookup"],       # trajectory layer: this tool must be called
+    forbidden_calls=["delete_client"], # ...and this one must not
+)
+
+runtime = InMemoryRuntime(
+    scripted_responses=["The email on file is ops@bluewing.example."]
+)
+result = run_scenario(scenario, runtime, mcps=[])
+print(result.verdict)                      # "FAIL"
+print(result.runs[0].score.outcome.detail) # requires_tool_use: trace has zero tool calls
+```
+
+Read that carefully: the scripted answer contains the **right fact**, and
+the run still fails. The in-memory runtime never calls tools — it just
+talks — and `requires_tool_use` exists precisely to fail an agent that
+produces the right answer without doing the work. A correct answer with no
+tool call is indistinguishable from a lucky guess, and luck doesn't deploy.
+
+`must_call` entries can be alternatives: `must_call=[["client_lookup",
+"client_search"]]` means *either* satisfies the requirement. Set
+`order_matters=True` to require the calls as a subsequence.
+
+## 3. Give the agent real tools (mock MCP server)
+
+Scenarios carry their own tool environment as an MCP server. The framework
+ships a FastMCP wrapper that records every call, so trajectory scoring
+asserts what the agent actually did — not what it claimed:
+
+```python
+from windtunnel.mcp.fastmcp.server import LoggingFastMCP, FastMCPServer
+
+mcp = LoggingFastMCP("crm")
+
+@mcp.tool()
+def client_lookup(query: str) -> dict:
+    if "bluewing" in query.lower():
+        return {"name": "Bluewing Logistics", "email": "ops@bluewing.example"}
+    return {"error": "no such client"}
+
+server = FastMCPServer(mcp_instance=mcp)
+result = run_scenario(scenario, runtime, mcps=[server])
+```
+
+The runner starts the server, hands its URL to the runtime at provision
+time, resets the call log between runs, and stops it afterwards.
+
+> **Note:** the in-memory runtime ignores MCP servers — it never calls
+> tools, so this scenario still fails under it (as step 2 showed). From
+> here on you're authoring scenarios for a *real* runtime: one that
+> registers the server's tools with your platform so the agent can
+> actually call them. That's the four-method contract in
+> [writing-a-runtime.md](writing-a-runtime.md).
+
+## 4. Stress it with perturbations
+
+A scenario that only passes in fair weather isn't reliable. Perturbations
+inject adversity — corrupted history the model must resist, or a misbehaving
+tool environment:
+
+```python
+from windtunnel.api.perturbations import BlankAssistantContent, ToolReturnsMalformedJson
+
+scenario = Scenario(
+    name="survives_blank_turn",
+    prompt="What is the email on file for the client Bluewing Logistics?",
+    target_facts=[["ops@bluewing.example"]],
+    requires_tool_use=True,
+    must_call=["client_lookup"],
+    perturbations=[
+        BlankAssistantContent(),        # pre-send: a degenerate empty turn appears in history
+        ToolReturnsMalformedJson(),     # env: the mock returns broken JSON once
+    ],
+)
+```
+
+The robustness layer verifies each perturbation actually applied (every one
+leaves a marker in the trace), so a broken injection can't masquerade as a
+pass.
+
+## 5. Run a batch and read the report
+
+```bash
+wt run --scenario lookup_before_answer --runtime in_memory --runs 5 --label baseline
+wt report --runs runs/ --format html --out report.html
+```
+
+The report groups by scenario × variant, shows the aggregate verdict,
+per-layer pass rates, and links each cell to its full trace — every turn,
+every tool call, every latency, exactly as the model saw it.
+
+To compare two configurations (a model swap, a prompt change, a temperature
+pin):
+
+```bash
+wt run ... --label candidate
+wt compare --labels baseline candidate
+```
+
+## 6. Triage failures
+
+```bash
+wt triage --runs runs/ --classifier rule_based
+```
+
+Each failed run is classified against the
+[failure taxonomy](failure-taxonomy.md) (wrong tool, guessed instead of
+clarified, fabricated after silent tool failure, ...) with a confidence and a
+fix vector. See [writing-a-classifier.md](writing-a-classifier.md) to add
+your own rules or an LLM judge.
+
+## Next steps
+
+- Point it at your real platform: [writing-a-runtime.md](writing-a-runtime.md)
+  — implement four small Protocols and every scenario above runs against your
+  production-shaped stack unchanged.
+- Author a full dimension: [writing-a-scenario.md](writing-a-scenario.md).
+- Understand the design: [architecture.md](architecture.md).

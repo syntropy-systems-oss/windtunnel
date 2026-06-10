@@ -1,0 +1,101 @@
+{
+  "expected_category": "memory",
+  "trace": {
+    "run_id": "73678fca-80d6-4a12-b008-7df0d372b528",
+    "scenario_id": "stale_vs_current",
+    "agent_id": "agent-eval",
+    "variant_id": "baseline",
+    "model": "test-model",
+    "quant": "q4",
+    "sampler": {
+      "temperature": 0.0
+    },
+    "started_at": "2026-05-27T12:00:00+00:00",
+    "finished_at": "2026-05-27T12:00:02+00:00",
+    "turns": [
+      {
+        "role": "user",
+        "content": "What email does Bluewing Logistics use?",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_0",
+            "type": "function",
+            "function": {
+              "name": "mcp_acme_ops_client_lookup",
+              "arguments": "{}"
+            }
+          }
+        ],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "tool",
+        "content": "{\"result\": \"{\\\"clientEmail\\\": \\\"joe@outlook.com\\\"}\"}",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "assistant",
+        "content": "Bluewing Logistics uses gmail.com based on my memory.",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      }
+    ],
+    "tool_schema_hash": "sha256:abc123",
+    "worker_warnings": []
+  },
+  "scenario": {
+    "name": "stale_vs_current",
+    "prompt": "What email does Bluewing Logistics use?",
+    "target_facts": [
+      [
+        "outlook",
+        "outlook.com"
+      ]
+    ],
+    "requires_tool_use": true,
+    "tags": [
+      "dim:memory_conflict"
+    ],
+    "must_call": [
+      "mcp_acme_ops_client_lookup"
+    ],
+    "forbidden_calls": []
+  },
+  "score": {
+    "outcome": {
+      "passed": false,
+      "detail": "missing fact groups: [['outlook', 'outlook.com']]; answer[:200]='Bluewing Logistics uses gmail.com based on my memory.'"
+    },
+    "trajectory": {
+      "passed": true,
+      "detail": "ok"
+    },
+    "constraint": {
+      "passed": true,
+      "detail": "ok"
+    },
+    "robustness": {
+      "passed": true,
+      "detail": "ok"
+    }
+  }
+}

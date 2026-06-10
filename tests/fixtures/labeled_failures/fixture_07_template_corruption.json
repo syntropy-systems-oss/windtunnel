@@ -1,0 +1,97 @@
+{
+  "expected_category": "template_corruption",
+  "trace": {
+    "run_id": "c04ce9e6-5e6a-4e55-8682-fef33b9f36b7",
+    "scenario_id": "empty_prior_assistant_turn",
+    "agent_id": "agent-eval",
+    "variant_id": "baseline",
+    "model": "test-model",
+    "quant": "q4",
+    "sampler": {
+      "temperature": 0.0
+    },
+    "started_at": "2026-05-27T12:00:00+00:00",
+    "finished_at": "2026-05-27T12:00:02+00:00",
+    "turns": [
+      {
+        "role": "user",
+        "content": "How much inventory does Bluewing Logistics have?",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "tool",
+        "content": "{\"result\": \"{\\\"quantity\\\": 20}\"}",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "assistant",
+        "content": "Here is the inventory for Bluewing Logistics:",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      }
+    ],
+    "tool_schema_hash": "sha256:abc123",
+    "worker_warnings": [
+      "apply_chat_template raised: ValueError: unexpected empty content token"
+    ]
+  },
+  "scenario": {
+    "name": "empty_prior_assistant_turn",
+    "prompt": "How much inventory does Bluewing Logistics have?",
+    "target_facts": [
+      [
+        "Bluewing Logistics"
+      ],
+      [
+        "20",
+        "twenty"
+      ]
+    ],
+    "requires_tool_use": false,
+    "tags": [
+      "dim:icl_poisoning"
+    ],
+    "must_call": [
+      "mcp_acme_ops_order_query"
+    ],
+    "forbidden_calls": []
+  },
+  "score": {
+    "outcome": {
+      "passed": false,
+      "detail": "missing fact groups: [['20', 'twenty']]; answer[:200]='Here is the inventory for Bluewing Logistics:'"
+    },
+    "trajectory": {
+      "passed": true,
+      "detail": "ok"
+    },
+    "constraint": {
+      "passed": true,
+      "detail": "ok"
+    },
+    "robustness": {
+      "passed": true,
+      "detail": "ok"
+    }
+  }
+}

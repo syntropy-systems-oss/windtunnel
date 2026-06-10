@@ -1,0 +1,106 @@
+{
+  "expected_category": "tool_affordance",
+  "trace": {
+    "run_id": "9012ab22-a778-4aeb-a80d-b22c5360c1e7",
+    "scenario_id": "wrong_tool_correction",
+    "agent_id": "agent-eval",
+    "variant_id": "baseline",
+    "model": "test-model",
+    "quant": "q4",
+    "sampler": {
+      "temperature": 0.0
+    },
+    "started_at": "2026-05-27T12:00:00+00:00",
+    "finished_at": "2026-05-27T12:00:02+00:00",
+    "turns": [
+      {
+        "role": "user",
+        "content": "Show me the catalog info for SKU B001AAA.",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_0",
+            "type": "function",
+            "function": {
+              "name": "mcp_acme_ops_order_report",
+              "arguments": "{}"
+            }
+          }
+        ],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "tool",
+        "content": "{\"result\": \"{\\\"byStage\\\": {\\\"Intake\\\": {\\\"quantity\\\": 12}}}\"}",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "assistant",
+        "content": "There are 12 orders in Intake stage for B001AAA.",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      }
+    ],
+    "tool_schema_hash": "sha256:abc123",
+    "worker_warnings": []
+  },
+  "scenario": {
+    "name": "wrong_tool_correction",
+    "prompt": "Show me the catalog info for SKU B001AAA.",
+    "target_facts": [
+      [
+        "Bluewing Jersey - Home"
+      ],
+      [
+        "machine washable"
+      ]
+    ],
+    "requires_tool_use": true,
+    "tags": [
+      "dim:tool_affordance"
+    ],
+    "must_call": [
+      "mcp_acme_ops_product_lookup"
+    ],
+    "forbidden_calls": [
+      "mcp_acme_ops_order_report",
+      "mcp_acme_ops_order_query"
+    ]
+  },
+  "score": {
+    "outcome": {
+      "passed": false,
+      "detail": "missing fact groups: [['machine washable']]"
+    },
+    "trajectory": {
+      "passed": false,
+      "detail": "forbidden tools called: ['mcp_acme_ops_order_report']"
+    },
+    "constraint": {
+      "passed": true,
+      "detail": "ok"
+    },
+    "robustness": {
+      "passed": true,
+      "detail": "ok"
+    }
+  }
+}

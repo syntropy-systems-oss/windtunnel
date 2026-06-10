@@ -1,0 +1,79 @@
+{
+  "expected_category": "clarification",
+  "trace": {
+    "run_id": "33d8337f-5655-4209-8d2c-d8134a45fe31",
+    "scenario_id": "missing_required_param",
+    "agent_id": "agent-eval",
+    "variant_id": "baseline",
+    "model": "test-model",
+    "quant": "q4",
+    "sampler": {
+      "temperature": 0.0
+    },
+    "started_at": "2026-05-27T12:00:00+00:00",
+    "finished_at": "2026-05-27T12:00:02+00:00",
+    "turns": [
+      {
+        "role": "user",
+        "content": "Send the invoice.",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "assistant",
+        "content": "I'm sorry, I cannot help with that request as I don't have enough information.",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      }
+    ],
+    "tool_schema_hash": "sha256:abc123",
+    "worker_warnings": [
+      "verdict_bucket:refused_unnecessarily"
+    ]
+  },
+  "scenario": {
+    "name": "missing_required_param",
+    "prompt": "Send the invoice.",
+    "target_facts": [
+      [
+        "which invoice",
+        "which one",
+        "invoice ID"
+      ]
+    ],
+    "requires_tool_use": true,
+    "tags": [
+      "dim:clarify_vs_guess"
+    ],
+    "must_call": [
+      "clarify"
+    ],
+    "forbidden_calls": [
+      "mcp_acme_ops_invoice_send"
+    ]
+  },
+  "score": {
+    "outcome": {
+      "passed": false,
+      "detail": "no_tools_used: scenario requires tool use but trace has no tool calls"
+    },
+    "trajectory": {
+      "passed": true,
+      "detail": "ok"
+    },
+    "constraint": {
+      "passed": true,
+      "detail": "ok"
+    },
+    "robustness": {
+      "passed": true,
+      "detail": "ok"
+    }
+  }
+}

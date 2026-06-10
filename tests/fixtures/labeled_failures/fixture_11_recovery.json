@@ -1,0 +1,100 @@
+{
+  "expected_category": "recovery",
+  "trace": {
+    "run_id": "098c4e20-b7e3-4cc3-a350-b8e5e795d90e",
+    "scenario_id": "empty_result_then_alternate_lookup",
+    "agent_id": "agent-eval",
+    "variant_id": "baseline",
+    "model": "test-model",
+    "quant": "q4",
+    "sampler": {
+      "temperature": 0.0
+    },
+    "started_at": "2026-05-27T12:00:00+00:00",
+    "finished_at": "2026-05-27T12:00:02+00:00",
+    "turns": [
+      {
+        "role": "user",
+        "content": "Show me orders for Portland Pickles.",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_0",
+            "type": "function",
+            "function": {
+              "name": "mcp_acme_ops_order_query",
+              "arguments": "{}"
+            }
+          }
+        ],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "tool",
+        "content": "{\"result\": \"{\\\"orders\\\": [], \\\"total\\\": 0}\"}",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "assistant",
+        "content": "Portland Pickles has no orders in the system.",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      }
+    ],
+    "tool_schema_hash": "sha256:abc123",
+    "worker_warnings": []
+  },
+  "scenario": {
+    "name": "empty_result_then_alternate_lookup",
+    "prompt": "Show me orders for Portland Pickles.",
+    "target_facts": [
+      [
+        "ACC-PORT-001"
+      ]
+    ],
+    "requires_tool_use": true,
+    "tags": [
+      "dim:recovery"
+    ],
+    "must_call": [
+      "mcp_acme_ops_client_lookup"
+    ],
+    "forbidden_calls": []
+  },
+  "score": {
+    "outcome": {
+      "passed": false,
+      "detail": "missing fact groups: [['ACC-PORT-001']]"
+    },
+    "trajectory": {
+      "passed": false,
+      "detail": "required tools not called: ['mcp_acme_ops_client_lookup']"
+    },
+    "constraint": {
+      "passed": true,
+      "detail": "ok"
+    },
+    "robustness": {
+      "passed": true,
+      "detail": "ok"
+    }
+  }
+}

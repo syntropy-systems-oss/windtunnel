@@ -1,0 +1,110 @@
+{
+  "expected_category": "clarification",
+  "trace": {
+    "run_id": "efe01e2f-fc24-4086-85f3-642778a3001a",
+    "scenario_id": "ambiguous_entity",
+    "agent_id": "agent-eval",
+    "variant_id": "baseline",
+    "model": "test-model",
+    "quant": "q4",
+    "sampler": {
+      "temperature": 0.0
+    },
+    "started_at": "2026-05-27T12:00:00+00:00",
+    "finished_at": "2026-05-27T12:00:02+00:00",
+    "turns": [
+      {
+        "role": "user",
+        "content": "Check inventory for Bluewing.",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_0",
+            "type": "function",
+            "function": {
+              "name": "mcp_acme_ops_order_report",
+              "arguments": "{}"
+            }
+          }
+        ],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "tool",
+        "content": "{\"result\": \"{\\\"quantity\\\": 15}\"}",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      },
+      {
+        "role": "assistant",
+        "content": "Bluewing Logistics has 15 orders in inventory.",
+        "tool_calls": [],
+        "tool_results": [],
+        "latency_ms": 50.0,
+        "rendered_prompt": null,
+        "rendered_prompt_hash": null
+      }
+    ],
+    "tool_schema_hash": "sha256:abc123",
+    "worker_warnings": [
+      "verdict_bucket:wrongly_guessed"
+    ]
+  },
+  "scenario": {
+    "name": "ambiguous_entity",
+    "prompt": "Check inventory for Bluewing.",
+    "target_facts": [
+      [
+        "ACC-BLWG-001",
+        "Bluewing Logistics"
+      ],
+      [
+        "ACC-BLWG-002",
+        "Bluewing Concessions"
+      ]
+    ],
+    "requires_tool_use": true,
+    "tags": [
+      "dim:clarify_vs_guess"
+    ],
+    "must_call": [
+      "mcp_acme_ops_client_lookup",
+      "clarify"
+    ],
+    "forbidden_calls": [
+      "mcp_acme_ops_order_report"
+    ]
+  },
+  "score": {
+    "outcome": {
+      "passed": false,
+      "detail": "missing fact groups: [['ACC-BLWG-002', 'Bluewing Concessions']]"
+    },
+    "trajectory": {
+      "passed": false,
+      "detail": "forbidden tools called: ['mcp_acme_ops_order_report']"
+    },
+    "constraint": {
+      "passed": true,
+      "detail": "ok"
+    },
+    "robustness": {
+      "passed": true,
+      "detail": "ok"
+    }
+  }
+}
