@@ -45,6 +45,33 @@ Fields are grouped by the scoring layer each feeds.
 | `target_facts` | `list[list[str]]` | required | **AND-of-OR** fact groups (below). |
 | `target_numbers` | `list[NumberFact]` | `[]` | Typed numeric facts; **AND** — all must match. |
 | `requires_tool_use` | `bool` | `False` | If `True`, outcome **fails** when the trace has zero tool calls, even if the facts appear. Closes the "guessed from training" false positive. |
+| `forbidden_facts` | `list[str]` | `[]` | Strings that must **not** appear (negation-aware) in the last turn. |
+| `outcome_fn` | `Callable[[Trace], LayerResult] \| None` | `None` | **Custom outcome evaluator** (below). When set, it fully owns this layer. |
+
+**`outcome_fn` — grade an artifact, not the prose.** The fields above all match
+the model's last assistant turn. When success means *the thing the agent built is
+correct* — a produced file, a database row, external API state — set `outcome_fn`
+to score from any `Trace` evidence instead. It receives the `Trace` and returns a
+`LayerResult(passed, detail)`; when set, `target_facts`/`target_numbers`/
+`forbidden_facts` are **not** consulted. The structural gates still run first (a
+missing assistant turn and `requires_tool_use` fail before it), and a raised
+exception is scored as a failure. The canonical pairing is a **`StateProbe`** that
+froze the artifact into `trace.observations` (see *Verifying external state*
+below), with `outcome_fn` reading that snapshot:
+
+```python
+def _graded(trace: Trace) -> LayerResult:
+    art = (trace.observations or {}).get("report") or {}
+    if not art.get("found"):
+        return LayerResult(False, "no report artifact produced")
+    return LayerResult(art["rows"] == EXPECTED_ROWS, "report rows match expected")
+
+Scenario(name="...", prompt="...", target_facts=[], outcome_fn=_graded, requires_tool_use=True)
+```
+
+Like `policies`/`trajectory_checks`, `outcome_fn` is a callable, so it isn't
+serialized — it's reconstructed when the scenario's pack is re-imported (offline
+re-scoring needs the pack importable).
 
 **AND-of-OR `target_facts`:** a list of groups; each inner group is satisfied if
 **any** member appears (OR), and **every** outer group must be satisfied (AND).
@@ -132,6 +159,12 @@ Policy(name="pr_opened_against_main",
        predicate=lambda t: any(pr["base"] == "main"
                                for pr in t.observations["github"]["prs"]))
 ```
+
+A `Policy` is the **constraint** layer — recorded, but it does **not** drive the
+headline pass/fail (only the outcome layer does). If the external state *is* the
+success criterion (the gate), read `trace.observations` from an **`outcome_fn`**
+instead (see the Outcome layer above); use a policy when it's an *additional*
+guardrail alongside a separate outcome.
 
 This completes the trace's evidence triad: `turns[*].tool_calls` is the
 agent's own account, `mcp_calls` is what reached the mock tool server, and
