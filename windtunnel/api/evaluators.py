@@ -229,6 +229,16 @@ def evaluate_outcome(trace: Trace, scenario: Scenario) -> LayerResult:
             detail="no_tools_used: scenario requires tool use but trace has no tool calls",
         )
 
+    # Custom outcome evaluator (e.g. artifact/observation-based scoring) fully owns
+    # the outcome when provided — target_facts/target_numbers/forbidden_facts are
+    # not consulted. A raised exception is scored as a failure (Policy-style), so a
+    # buggy predicate can't silently pass a run.
+    if scenario.outcome_fn is not None:
+        try:
+            return scenario.outcome_fn(trace)
+        except Exception as exc:  # noqa: BLE001 — a throwing scorer must fail, not crash the sweep
+            return LayerResult(passed=False, detail=f"outcome_fn error: {exc}")
+
     answer = last.content  # The ACTUAL last turn — may be empty
     answer_lc = answer.lower()  # case-insensitive substring match (facts are phrases/IDs)
 

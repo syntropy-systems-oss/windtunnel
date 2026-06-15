@@ -52,7 +52,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-from windtunnel.api.score import FailureCost
+from windtunnel.api.score import FailureCost, LayerResult
 from windtunnel.api.trace import Trace
 
 # ─── Numeric fact ─────────────────────────────────────────────────────────────
@@ -223,6 +223,20 @@ class Scenario:
     # not a pass. Matching is negation-aware (NEGATION_CUES) and case-insensitive.
     # Bare-number entries use word-boundary matching. Default empty = no gate.
     forbidden_facts: list[str] = field(default_factory=list)
+
+    # outcome_fn: optional custom outcome evaluator. When set it FULLY determines
+    # the outcome layer — target_facts / target_numbers / forbidden_facts are not
+    # consulted — letting a scenario score from ANY trace evidence instead of the
+    # model's last-turn text. The canonical use is grading an artifact a StateProbe
+    # froze into trace.observations (a produced file, a database row, external API
+    # state) so the gate reflects what the agent actually built, not what it claims.
+    # Receives the Trace, returns a LayerResult (passed + diagnostic detail); a
+    # raised exception is caught and scored as a failure. The structural gates
+    # still apply first: a missing assistant turn, and requires_tool_use, fail
+    # before outcome_fn runs. Not serialized (it's a callable) — like policies and
+    # trajectory_checks it is reconstructed when the scenario's pack is re-imported,
+    # so offline re-scoring needs the pack importable.
+    outcome_fn: Callable[[Trace], LayerResult] | None = None
 
     # ── Trajectory layer ───────────────────────────────────────────────────────
     # must_call: each entry is EITHER a str (exact tool name required) OR a

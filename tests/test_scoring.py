@@ -121,6 +121,66 @@ def _simple_trace(final_answer: str, tool_names: list[str] | None = None) -> Tra
     return _make_trace(turns)
 
 
+class TestOutcomeFn:
+    """outcome_fn: a custom outcome evaluator fully owns the outcome layer and can
+    score from any trace evidence (e.g. an artifact a StateProbe froze into
+    trace.observations) instead of the model's last-turn text."""
+
+    def test_outcome_fn_passes_ignoring_target_facts(self):
+        # target_facts would FAIL (the number is absent from the prose), but
+        # outcome_fn grades the observation and PASSES.
+        trace = _simple_trace("done — see the attached file", tool_names=["run"])
+        trace.observations = {"artifact": {"value": 42}}
+        scn = Scenario(
+            name="s", prompt="p",
+            target_facts=[["42"]],  # not in the prose → would fail the default path
+            requires_tool_use=True,
+            outcome_fn=lambda t: LayerResult(
+                passed=(t.observations.get("artifact", {}).get("value") == 42),
+                detail="artifact value matched",
+            ),
+        )
+        res = evaluate_outcome(trace, scn)
+        assert res.passed and "artifact value matched" in res.detail
+
+    def test_outcome_fn_fails_on_bad_artifact(self):
+        trace = _simple_trace("all good!", tool_names=["run"])
+        trace.observations = {"artifact": {"value": 7}}
+        scn = Scenario(
+            name="s", prompt="p", target_facts=[], requires_tool_use=True,
+            outcome_fn=lambda t: LayerResult(
+                passed=(t.observations.get("artifact", {}).get("value") == 42),
+                detail="artifact mismatch",
+            ),
+        )
+        assert not evaluate_outcome(trace, scn).passed
+
+    def test_outcome_fn_exception_is_a_failure(self):
+        trace = _simple_trace("x", tool_names=["run"])
+        scn = Scenario(
+            name="s", prompt="p", target_facts=[], requires_tool_use=True,
+            outcome_fn=lambda t: 1 / 0,
+        )
+        res = evaluate_outcome(trace, scn)
+        assert not res.passed and "outcome_fn error" in res.detail
+
+    def test_structural_gates_apply_before_outcome_fn(self):
+        # requires_tool_use must fail FIRST — outcome_fn never runs without tools.
+        trace = _simple_trace("answer", tool_names=[])  # no tool calls
+        called = {"n": 0}
+
+        def _fn(_t):
+            called["n"] += 1
+            return LayerResult(passed=True, detail="should not run")
+
+        scn = Scenario(
+            name="s", prompt="p", target_facts=[], requires_tool_use=True, outcome_fn=_fn,
+        )
+        res = evaluate_outcome(trace, scn)
+        assert not res.passed and "no_tools_used" in res.detail
+        assert called["n"] == 0
+
+
 # ─── 1. Score / LayerResult / FailureCost types ───────────────────────────────
 
 class TestScoreTypes:
