@@ -29,7 +29,7 @@ scenario = Scenario(
 runtime = InMemoryRuntime(scripted_responses=["The capital of France is Paris."])
 result = run_scenario(scenario, runtime, mcps=[])
 
-print(result.verdict)                      # "PASS"
+print(result.aggregate.verdict)            # "PASS"
 print(result.runs[0].score.outcome.detail) # why the outcome layer passed
 ```
 
@@ -55,7 +55,7 @@ runtime = InMemoryRuntime(
     scripted_responses=["The email on file is ops@bluewing.example."]
 )
 result = run_scenario(scenario, runtime, mcps=[])
-print(result.verdict)                      # "FAIL"
+print(result.aggregate.verdict)            # "FAIL"
 print(result.runs[0].score.outcome.detail) # requires_tool_use: trace has zero tool calls
 ```
 
