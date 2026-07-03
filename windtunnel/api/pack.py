@@ -80,6 +80,15 @@ class ScenarioPack:
         built-in pack that sets it (see its __init__ for the dim-specific
         rationale — an injected system-role memory line is UNVERIFIED to
         reach the live model).
+
+    owner: free-form ownership label for downstream suite stewardship: a team
+        name, a GitHub handle, a CODEOWNERS path, or None when the pack does
+        not declare one. Wind Tunnel attaches no policy to this value; the CLI
+        only carries it into the append-only run ledger.
+
+    metadata: free-form string map for pack-local annotations. Core does not
+        interpret it. The default is a fresh empty dict so pack authors can add
+        notes without sharing mutable state across ScenarioPack instances.
     """
 
     name: str
@@ -87,3 +96,5 @@ class ScenarioPack:
     mcp_factory: Callable[[Scenario], MCPServer] | None = None
     state_probe_factory: Callable[[Scenario], StateProbe | None] | None = None
     transport_only: bool = False
+    owner: str | None = None
+    metadata: dict[str, str] = field(default_factory=dict)

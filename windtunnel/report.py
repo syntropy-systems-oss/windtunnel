@@ -3,6 +3,7 @@
 Produces:
   - report.html: self-contained HTML with JSON island (no server, no external deps)
   - Markdown summary: terminal-readable, no HTML tags
+  - JSON report data: the same structure embedded in the HTML JSON island
 
 Design decisions:
   - No Jinja2 — pure stdlib string building keeps the package dep-free.
@@ -426,6 +427,26 @@ def generate_markdown(
 
     lines.append("")
     print("\n".join(lines), file=out, end="")
+
+
+# ─── JSON generator ───────────────────────────────────────────────────────────
+
+def generate_json(
+    runs_dir: Path,
+    out: TextIO | None = None,
+) -> None:
+    """Generate the JSON-island report data as a standalone JSON document.
+
+    The HTML report already embeds this exact structure in
+    ``<script id="bench-data">``. The JSON format deliberately reuses that
+    data model rather than creating a second report schema.
+    """
+    if out is None:
+        out = sys.stdout
+
+    cells = load_runs(runs_dir=runs_dir)
+    data = _build_report_data(cells)
+    print(json.dumps(data, indent=2, ensure_ascii=False), file=out)
 
 
 # ─── HTML generator ───────────────────────────────────────────────────────────
