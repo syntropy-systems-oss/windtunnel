@@ -65,7 +65,7 @@ if __name__ == "__main__":
         mcps=[FastMCPServer(mcp_instance=mcp)],  # runner starts/stops it
         runs_per_scenario=3,
     )
-    print(result.verdict)   # PASS only if ALL runs pass the outcome layer
+    print(result.aggregate.verdict)   # PASS only if ALL runs pass the outcome layer
 ```
 
 Rules you must not violate when authoring:
@@ -85,6 +85,11 @@ uv run wt run --runtime in_memory --runs 1        # smoke the scenario wiring (n
 uv run wt run --runtime <your-driver> --runs 5 --label baseline
 uv run wt report --runs runs/ --format html --out report.html
 ```
+
+For CI, add `--format junit --out results.xml` to `wt run` (exit codes are
+already `go test`-shaped), and select subsets with `--tag`, `--pack`,
+`--owner`, or globs in `--scenario`. Every sweep appends per-scenario records
+to `runs/ledger.ndjsonl` — the queryable pass-rate history.
 
 `wt run` writes a trace + `.score.json` sidecar per run; `wt compare
 --labels baseline candidate` diffs two configurations; `wt triage` classifies
@@ -125,7 +130,18 @@ Scenario dimensions plug in the same way: package them as a `ScenarioPack`
 registered under the `windtunnel.scenario_packs` entry-point group — see
 [writing-a-scenario.md](writing-a-scenario.md#shipping-a-scenario-pack).
 
-## 6. Done-ness checklist
+## 6. When the sugar fields aren't enough
+
+- Success lives in an artifact or external state, not the prose? Set
+  `outcome_fn` and compose it from `windtunnel.api.scorers` (`all_of`,
+  `observation`, `llm_judge`, `substantiated_by_tools`) — see
+  [writing-a-scenario.md](writing-a-scenario.md).
+- Instead of hand-writing the mock's canned data, a recorded
+  `*.universe.json` fixture can serve frozen call/result pairs:
+  `RecordedMCPServer("fixture.universe.json")` drops in where
+  `FastMCPServer` goes — see [recording-a-universe.md](recording-a-universe.md).
+
+## 7. Done-ness checklist
 
 - [ ] `windtunnel/scenarios_*.py` created; no `windtunnel.runtimes.*` imports
 - [ ] `runs/` added to .gitignore

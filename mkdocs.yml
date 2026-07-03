@@ -42,6 +42,7 @@ nav:
       - Writing a runtime: writing-a-runtime.md
       - Writing a classifier: writing-a-classifier.md
       - Writing an optimizer: writing-an-optimizer.md
+      - Recording a universe: recording-a-universe.md
   - Reference:
       - Architecture: architecture.md
       - Failure taxonomy: failure-taxonomy.md
