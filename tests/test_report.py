@@ -720,6 +720,58 @@ class TestMarkdownFormat:
         assert "sc_alpha" in result.stdout
 
 
+# ─── 7b. JSON format ─────────────────────────────────────────────────────────
+
+
+class TestJsonFormat:
+    def _html_data(self, runs_dir: Path, tmp_path: Path) -> dict[str, Any]:
+        out_file = tmp_path / "report.html"
+        report = _import_report()
+        report.generate_html(runs_dir=runs_dir, out_path=out_file)
+        content = out_file.read_text(encoding="utf-8")
+        m = re.search(
+            r'<script[^>]+id="bench-data"[^>]*>(.*?)</script>',
+            content,
+            re.DOTALL,
+        )
+        assert m is not None
+        return json.loads(m.group(1))
+
+    def test_report_json_stdout_matches_html_json_island(self, tmp_path: Path) -> None:
+        runs_dir = _build_synthetic_runs(tmp_path)
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "windtunnel.cli",
+                "report",
+                "--runs", str(runs_dir),
+                "--format", "json",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == self._html_data(runs_dir, tmp_path)
+
+    def test_report_json_out_writes_parseable_artifact(self, tmp_path: Path) -> None:
+        runs_dir = _build_synthetic_runs(tmp_path)
+        out_file = tmp_path / "report.json"
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "windtunnel.cli",
+                "report",
+                "--runs", str(runs_dir),
+                "--format", "json",
+                "--out", str(out_file),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(out_file.read_text(encoding="utf-8")) == self._html_data(runs_dir, tmp_path)
+
+
 # ─── 8. Per-scenario drill-down data ──────────────────────────────────────────
 
 

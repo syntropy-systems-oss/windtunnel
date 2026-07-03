@@ -3,7 +3,7 @@
 Subcommands:
     wt run      [--scenario S]... [--soul PATH] [--runtime RUNTIME]
                 [--label LABEL] [--runs N]
-    wt report   [--runs DIR] [--out FILE] [--format html|markdown]
+    wt report   [--runs DIR] [--out FILE] [--format html|markdown|json]
     wt compare  --labels L1 L2 ...
     wt replay   --trace PATH --runtime RUNTIME
 
@@ -14,21 +14,34 @@ non-zero = any regression or error.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import traceback
+from datetime import UTC, datetime
 from pathlib import Path
 
 # ─── report ──────────────────────────────────────────────────────────────────
 
 def _cmd_report(args: argparse.Namespace) -> int:
     """Handle the `wt report` subcommand."""
-    from windtunnel.report import generate_html, generate_markdown  # noqa: PLC0415
+    from windtunnel.report import generate_html, generate_json, generate_markdown  # noqa: PLC0415
 
     runs_dir = Path(args.runs)
     fmt = args.format.lower()
 
     if fmt == "markdown":
         generate_markdown(runs_dir=runs_dir, out=sys.stdout)
+        return 0
+
+    if fmt == "json":
+        if args.out:
+            out_path = Path(args.out)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with out_path.open("w", encoding="utf-8") as out:
+                generate_json(runs_dir=runs_dir, out=out)
+            print(f"wrote: {out_path}", file=sys.stderr)
+        else:
+            generate_json(runs_dir=runs_dir, out=sys.stdout)
         return 0
 
     # HTML (default)
@@ -135,6 +148,122 @@ def _write_score_sidecar(trace_path: Path, score, scenario) -> Path:
     return score_path
 
 
+def _ledger_timestamp() -> str:
+    """Return the UTC timestamp format used in append-only ledger rows."""
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _origin_from_tags(tags: list[str] | None) -> str | None:
+    """Extract the first best-effort origin:<ref> tag from a scenario."""
+    for tag in tags or []:
+        if tag.startswith("origin:") and tag != "origin:":
+            return tag.removeprefix("origin:")
+    return None
+
+
+def _git_sha() -> str | None:
+    """Best-effort current git SHA for the CLI ledger, or None on any failure."""
+    import subprocess  # noqa: PLC0415
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=1.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
+def _wt_version() -> str:
+    """Best-effort installed package version, with a source-tree fallback.
+
+    Editable and source-tree runs can lack distribution metadata depending on
+    how the checkout was invoked. Falling back to pyproject.toml keeps ledger
+    rows useful without making package metadata resolution part of the run gate.
+    """
+    from importlib.metadata import PackageNotFoundError, version  # noqa: PLC0415
+
+    try:
+        return version("windtunnel-bench")
+    except PackageNotFoundError:
+        pass
+
+    try:
+        import tomllib  # noqa: PLC0415
+
+        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        return str(data["project"]["version"])
+    except (OSError, KeyError, TypeError, ValueError):
+        return "0+unknown"
+
+
+def _ledger_record(
+    *,
+    scenario,
+    pack,
+    result,
+    label: str,
+    git_sha: str | None,
+    wt_version: str,
+) -> dict:
+    """Build one ledger row for a scenario aggregate.
+
+    The ledger is intentionally mechanism-only: the CLI records aggregate facts
+    that downstream tools can query, but it does not attach retention, trend, or
+    gating semantics to the row.
+    """
+    agg = result.aggregate
+    first_trace = result.runs[0].trace if result.runs else None
+
+    return {
+        "ts": _ledger_timestamp(),
+        "scenario_id": scenario.name,
+        "pack": getattr(pack, "name", None),
+        "owner": getattr(pack, "owner", None),
+        "label": label,
+        "model": getattr(first_trace, "model", None),
+        "quant": getattr(first_trace, "quant", None),
+        "verdict": agg.verdict,
+        "runs": agg.total,
+        "layer_pass_rates": {
+            "outcome": agg.outcome_pass_rate,
+            "trajectory": agg.trajectory_pass_rate,
+            "constraint": agg.constraint_pass_rate,
+            "robustness": agg.robustness_pass_rate,
+        },
+        "run_ids": [run.trace.run_id for run in result.runs],
+        "origin": _origin_from_tags(getattr(scenario, "tags", []) or []),
+        "git_sha": git_sha,
+        "wt_version": wt_version,
+    }
+
+
+def _append_ledger_records(runs_dir: Path, records: list[dict]) -> None:
+    """Append scenario-aggregate rows to <runs-dir>/ledger.ndjsonl.
+
+    Ledger writes are a CLI side effect, never a run gate. Any filesystem
+    problem degrades to a warning and leaves the sweep's exit-code semantics
+    unchanged.
+    """
+    if not records:
+        return
+
+    ledger_path = Path(runs_dir) / "ledger.ndjsonl"
+    try:
+        with ledger_path.open("a", encoding="utf-8") as f:
+            for record in records:
+                f.write(json.dumps(record, ensure_ascii=False, sort_keys=True))
+                f.write("\n")
+    except OSError as exc:
+        print(f"wt run: warning: could not write ledger {ledger_path}: {exc}", file=sys.stderr)
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     """Handle the `wt run` subcommand.
 
@@ -174,6 +303,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if not scenarios:
         print("wt run: no scenarios found. Use --scenario <name> to specify.", file=sys.stderr)
         return 2
+    pack_by_scenario_id = {
+        id(scenario): pack
+        for pack in packs
+        for scenario in pack.scenarios
+    }
+    ledger_records: list[dict] = []
+    ledger_git_sha = _git_sha()
+    ledger_wt_version = _wt_version()
 
     from windtunnel.spi.agent_runtime import AgentConfig  # noqa: PLC0415
     # Thread --soul (a PATH) into AgentConfig.system_prompt so the platform
@@ -306,6 +443,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     f"rather than churning the remaining scenarios.",
                     file=sys.stderr,
                 )
+                _append_ledger_records(runs_dir, ledger_records)
                 return 1
             continue
 
@@ -318,6 +456,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
             path = storage_path(run_result.trace, base_dir=runs_dir)
             save_trace(run_result.trace, path)
             _write_score_sidecar(path, run_result.score, scenario)
+        ledger_records.append(
+            _ledger_record(
+                scenario=scenario,
+                pack=pack_by_scenario_id.get(id(scenario)),
+                result=result,
+                label=label,
+                git_sha=ledger_git_sha,
+                wt_version=ledger_wt_version,
+            )
+        )
 
         # Note: run_scenario catches a send-time/runtime error INTERNALLY and
         # returns a failed aggregate carrying a `runner_error: …` worker_warning
@@ -347,6 +495,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         if agg.verdict != "PASS" and (not transport_only or had_runner_error):
             any_fail = True
 
+    _append_ledger_records(runs_dir, ledger_records)
     return 1 if any_fail else 0
 
 
@@ -731,9 +880,9 @@ def main(argv: list[str] | None = None) -> int:
     report_p.add_argument("--runs", default="runs", metavar="DIR",
                           help="Path to the runs/ directory (default: ./runs)")
     report_p.add_argument("--out", default=None, metavar="FILE",
-                          help="Output path for HTML report (default: report.html).")
-    report_p.add_argument("--format", default="html", choices=["html", "markdown"],
-                          help="Output format: html (default) or markdown.")
+                          help="Output path for file formats (HTML default: report.html).")
+    report_p.add_argument("--format", default="html", choices=["html", "markdown", "json"],
+                          help="Output format: html (default), markdown, or json.")
 
     # ── compare ──────────────────────────────────────────────────────────────
     compare_p = sub.add_parser("compare", help="Compare results across variant labels.")

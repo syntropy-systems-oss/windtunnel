@@ -18,6 +18,7 @@ installing.
 from __future__ import annotations
 
 import importlib.metadata
+import json
 from importlib.metadata import EntryPoint
 from pathlib import Path
 
@@ -84,6 +85,26 @@ GATING_PACK = ScenarioPack(
             tags=["dim:gating_probe_dim"],
         )
     ],
+)
+
+LEDGER_PACK = ScenarioPack(
+    name="ledger_dim",
+    scenarios=[
+        Scenario(
+            name="ledger_origin",
+            prompt="say ok",
+            target_facts=[["ok"]],
+            tags=["dim:ledger_dim", "origin:incident-2026-06-30-412"],
+        ),
+        Scenario(
+            name="ledger_no_origin",
+            prompt="say ok",
+            target_facts=[["ok"]],
+            tags=["dim:ledger_dim"],
+        ),
+    ],
+    owner="@team-ledger",
+    metadata={"codeowners": "/docs/CODEOWNERS"},
 )
 
 
@@ -173,6 +194,15 @@ def _patch_scenario_pack_eps(monkeypatch: pytest.MonkeyPatch, attrs: list[str]) 
 
 
 class TestBuiltinPackDiscovery:
+    def test_owner_and_metadata_default_to_unowned_empty_dicts(self) -> None:
+        first = ScenarioPack(name="bare")
+        second = ScenarioPack(name="also_bare")
+
+        assert first.owner is None
+        assert first.metadata == {}
+        first.metadata["note"] = "local"
+        assert second.metadata == {}
+
     def test_all_ten_builtin_packs_discovered_in_canonical_order(self) -> None:
         from windtunnel.scenarios import builtin_packs
 
@@ -331,6 +361,119 @@ class TestTransportOnlyFlowsToRunLoop:
         assert "FAIL" in out
         assert "transport-only" not in out
         assert rc == 1
+
+
+# ─── ledger: pack ownership → append-only run history ───────────────────────
+
+
+class TestRunLedger:
+    """The run ledger is a passive CLI artifact: one row per scenario aggregate."""
+
+    def _run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        runs_dir: Path,
+        scenarios: list[str],
+        *,
+        label: str,
+    ) -> int:
+        _patch_scenario_pack_eps(monkeypatch, ["LEDGER_PACK"])
+        import windtunnel.cli as cli
+
+        monkeypatch.setattr(cli, "_git_sha", lambda: "abc1234")
+        monkeypatch.setattr(cli, "_wt_version", lambda: "9.9.9")
+
+        argv = ["run", "--runtime", "in_memory", "--runs-dir", str(runs_dir), "--label", label]
+        for scenario in scenarios:
+            argv.extend(["--scenario", scenario])
+        return cli.main(argv)
+
+    def _records(self, runs_dir: Path) -> list[dict]:
+        ledger_path = runs_dir / "ledger.ndjsonl"
+        return [
+            json.loads(line)
+            for line in ledger_path.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+
+    def test_ledger_appends_one_record_per_scenario_aggregate_with_owner_and_origin(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        runs_dir = tmp_path / "runs"
+        rc = self._run(
+            monkeypatch,
+            runs_dir,
+            ["ledger_origin", "ledger_no_origin"],
+            label="candidate",
+        )
+
+        assert rc == 0
+        records = self._records(runs_dir)
+        assert len(records) == 2
+        by_scenario = {record["scenario_id"]: record for record in records}
+
+        origin_record = by_scenario["ledger_origin"]
+        assert set(origin_record) == {
+            "ts",
+            "scenario_id",
+            "pack",
+            "owner",
+            "label",
+            "model",
+            "quant",
+            "verdict",
+            "runs",
+            "layer_pass_rates",
+            "run_ids",
+            "origin",
+            "git_sha",
+            "wt_version",
+        }
+        assert origin_record["pack"] == "ledger_dim"
+        assert origin_record["owner"] == "@team-ledger"
+        assert origin_record["label"] == "candidate"
+        assert origin_record["model"] == "unknown"
+        assert origin_record["quant"] == "unknown"
+        assert origin_record["verdict"] == "PASS"
+        assert origin_record["runs"] == 1
+        assert origin_record["layer_pass_rates"] == {
+            "outcome": 1.0,
+            "trajectory": 1.0,
+            "constraint": 1.0,
+            "robustness": 1.0,
+        }
+        assert len(origin_record["run_ids"]) == 1
+        assert origin_record["origin"] == "incident-2026-06-30-412"
+        assert origin_record["git_sha"] == "abc1234"
+        assert origin_record["wt_version"] == "9.9.9"
+        assert by_scenario["ledger_no_origin"]["origin"] is None
+
+    def test_ledger_is_append_only_across_sweeps(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        runs_dir = tmp_path / "runs"
+
+        assert self._run(monkeypatch, runs_dir, ["ledger_origin"], label="first") == 0
+        assert self._run(monkeypatch, runs_dir, ["ledger_origin"], label="second") == 0
+
+        records = self._records(runs_dir)
+        assert [record["label"] for record in records] == ["first", "second"]
+
+    def test_ledger_io_failure_warns_without_failing_sweep(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        runs_dir = tmp_path / "runs"
+        runs_dir.mkdir()
+        (runs_dir / "ledger.ndjsonl").mkdir()
+
+        rc = self._run(monkeypatch, runs_dir, ["ledger_origin"], label="warns")
+
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "warning: could not write ledger" in err
 
 
 # ─── state_probe_factory: pack → run loop → trace ────────────────────────────
