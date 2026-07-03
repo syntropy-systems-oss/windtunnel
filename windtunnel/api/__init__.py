@@ -42,6 +42,14 @@ from windtunnel.api.scenario import (
     TrajectoryCheck,
 )
 from windtunnel.api.score import FailureCost, LayerResult, Score, Verdict
+from windtunnel.api.scorers import (
+    all_of,
+    any_of,
+    llm_judge,
+    no_divergence,
+    observation,
+    substantiated_by_tools,
+)
 from windtunnel.api.state_reset import StateResetConfig, reset_state_db
 from windtunnel.api.trace import (
     Hash,
@@ -72,6 +80,9 @@ __all__ = [
     # scenario
     "NumberFact", "Perturbation", "Policy", "PreSendPerturbation", "Scenario",
     "TrajectoryCheck",
+    # scorers
+    "all_of", "any_of", "observation", "llm_judge", "substantiated_by_tools",
+    "no_divergence",
     # pack
     "ScenarioPack",
     # evaluators

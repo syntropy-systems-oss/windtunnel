@@ -202,6 +202,17 @@ def _match_number_fact(answer: str, nf: NumberFact) -> bool:
     return bool(re.search(unit_pattern, window, re.IGNORECASE))
 
 
+def _match_fact_group(text: str, group: list[str]) -> bool:
+    """Return True when any fact in an AND-of-OR group appears in text.
+
+    This is the outcome layer's target_facts matcher factored out so custom
+    scorers can reuse the exact same case-insensitive substring semantics
+    against other evidence, such as server-witnessed tool results.
+    """
+    text_lc = text.lower()
+    return any(fact.lower() in text_lc for fact in group)
+
+
 # ─── Outcome evaluator ────────────────────────────────────────────────────────
 
 def evaluate_outcome(trace: Trace, scenario: Scenario) -> LayerResult:
@@ -240,12 +251,11 @@ def evaluate_outcome(trace: Trace, scenario: Scenario) -> LayerResult:
             return LayerResult(passed=False, detail=f"outcome_fn error: {exc}")
 
     answer = last.content  # The ACTUAL last turn — may be empty
-    answer_lc = answer.lower()  # case-insensitive substring match (facts are phrases/IDs)
 
     # AND-of-OR target_facts
     missing_groups: list[int] = []
     for i, group in enumerate(scenario.target_facts):
-        if not any(fact.lower() in answer_lc for fact in group):
+        if not _match_fact_group(answer, group):
             missing_groups.append(i)
 
     if missing_groups:
