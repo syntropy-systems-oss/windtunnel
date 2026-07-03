@@ -110,8 +110,8 @@ class Trace:
 
     mcp_calls: the SERVER-witnessed tool calls for this run — what the mock
         MCP server itself recorded (MCPHandle.call_log()), normalized to
-        plain dicts ({"tool_name", "args", "result", "timestamp_ms"}) so the
-        trace stays pure-stdlib-serializable. This is independent evidence:
+        plain dicts ({"tool_name", "args", "result", "timestamp_ms", optional
+        "extra"}) so the trace stays pure-stdlib-serializable. This is independent evidence:
         turns[*].tool_calls is the agent's own account of what it did;
         mcp_calls is what actually reached the tool server. Empty when no
         logging MCP server was in play (e.g. the in_memory runtime).
