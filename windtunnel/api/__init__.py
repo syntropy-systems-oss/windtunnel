@@ -15,6 +15,20 @@ from windtunnel.api.evaluators import (
     evaluate_trajectory,
     tool_name_matches,
 )
+from windtunnel.api.importer import ImportResult, write_imported_scenario
+from windtunnel.api.interchange import (
+    InterchangeFormatError,
+    InterchangeMessage,
+    InterchangePart,
+    InterchangeToolDefinition,
+    InterchangeTrace,
+    InterchangeWitnessedCall,
+    TextPart,
+    ToolCallPart,
+    ToolCallResponsePart,
+    load_interchange,
+    parse_interchange,
+)
 from windtunnel.api.pack import ScenarioPack
 from windtunnel.api.perturbations import (
     BlankAssistantContent,
@@ -105,4 +119,9 @@ __all__ = [
     "SynthesizeHook", "Universe", "UniverseFormatError", "UniverseMatching",
     "UniverseRecording", "UniverseTool", "freeze_universe", "load_universe",
     "save_universe",
+    # interchange/import
+    "InterchangeFormatError", "InterchangeMessage", "InterchangePart",
+    "InterchangeToolDefinition", "InterchangeTrace", "InterchangeWitnessedCall",
+    "TextPart", "ToolCallPart", "ToolCallResponsePart", "load_interchange",
+    "parse_interchange", "ImportResult", "write_imported_scenario",
 ]
