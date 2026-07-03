@@ -145,7 +145,34 @@ wt run ... --label candidate
 wt compare --labels baseline candidate
 ```
 
-## 6. Triage failures
+Selection scales past exact names: `--tag dim:recovery` runs a dimension,
+`--pack <name>` a pack, `--owner team-ops` everything that team owns, and
+`--scenario "lookup_*"` takes shell globs. Repeating a flag ORs within it;
+different flags AND together.
+
+Every sweep also appends one record per scenario to `runs/ledger.ndjsonl` —
+timestamp, verdict, per-layer pass rates, run ids, git SHA — the append-only
+history that the report's latest-run view doesn't keep. Pass-rate trends and
+flake detection are a few lines of `jq` away, and `wt report --format json`
+emits the report's own data as a standalone artifact.
+
+## 6. Gate CI on it
+
+`wt run` already exits like `go test` (0 pass, 1 regression or error). For
+CI systems that want structure, not just an exit code:
+
+```bash
+wt run --tag dim:recovery --runs 3 --format junit --out results.xml
+wt run --tag dim:recovery --runs 3 --format json  --out results.json
+```
+
+JUnit output is one `<testsuite>` per pack and one `<testcase>` per
+scenario, with failures carrying the per-layer details and triage category —
+GitHub Actions, GitLab, and Jenkins render it natively. The JSON document
+holds the same records the ledger gets, for anything that doesn't speak
+JUnit.
+
+## 7. Triage failures
 
 ```bash
 wt triage --runs runs/ --classifier rule_based

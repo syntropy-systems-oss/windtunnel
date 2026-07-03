@@ -73,6 +73,45 @@ Like `policies`/`trajectory_checks`, `outcome_fn` is a callable, so it isn't
 serialized — it's reconstructed when the scenario's pack is re-imported (offline
 re-scoring needs the pack importable).
 
+**The scorer library (`windtunnel.api.scorers`).** The common `outcome_fn`
+shapes are packaged, all pure stdlib, all returning `LayerResult`:
+
+```python
+from windtunnel.api import all_of, llm_judge, observation, substantiated_by_tools
+
+Scenario(
+    ...,
+    outcome_fn=all_of(
+        # artifact grading: walk trace.observations with a dotted/indexed path
+        observation("github", "prs[0].base", lambda v: v == "main", "pr targets main"),
+        # provenance: answer claims must appear in server-witnessed tool results
+        substantiated_by_tools(),
+        # rubric judge — BYO model via the same GenerateFn contract replay uses
+        llm_judge("Did the answer resolve the billing question?", my_generate_fn),
+    ),
+)
+```
+
+- `all_of(*fns)` / `any_of(*fns)` — combinators; failing branches join their
+  diagnostics into one `detail`, and a scorer that *raises* is converted to a
+  failure naming the scorer (composition stays fail-closed).
+- `observation(source, path, predicate, label)` — reads
+  `trace.observations[source]` and walks `"prs[0].base"`-style paths; missing
+  source/path is a diagnostic failure, never a crash.
+- `llm_judge(rubric, generate_fn)` — core assembles the prompt (rubric +
+  final answer + trace evidence) and strictly parses `PASS`/`FAIL`; anything
+  else fails the layer with the raw response in `detail`. No vendor client
+  ships — `generate_fn` is yours.
+- `substantiated_by_tools(facts=None)` — the anti-fabrication check: claims
+  in the final answer must appear in some server-witnessed tool result
+  (`trace.mcp_calls`, falling back to transcript tool results, with the
+  evidence source named in `detail`). Pass `target_facts`-style groups and
+  `NumberFact`s, or pass nothing to require every integer in the answer to
+  come from a tool — numbers from nowhere fail.
+- `no_divergence()` — not an outcome scorer but a constraint-layer `Policy`:
+  it fails when the run left the recording of a
+  [universe fixture](recording-a-universe.md).
+
 **AND-of-OR `target_facts`:** a list of groups; each inner group is satisfied if
 **any** member appears (OR), and **every** outer group must be satisfied (AND).
 So `[["A","a"],["B"]]` = *(A or a) AND (B)*. Matching is **case-insensitive
@@ -295,6 +334,8 @@ PACK = ScenarioPack(
     mcp_factory=None,                # or Callable[[Scenario], MCPServer], see below
     state_probe_factory=None,        # or Callable[[Scenario], StateProbe | None]
     transport_only=False,
+    owner="team-billing",            # free-form: a team, a handle, a CODEOWNERS path
+    metadata={},                     # free-form annotations; core never interprets it
 )
 ```
 
@@ -309,8 +350,12 @@ invoice_hygiene = "my_pack.pack:PACK"   # a ScenarioPack instance, or a
 What `wt run` does with it:
 
 - **Selection pool.** Your `scenarios` join the built-in ones (built-ins
-  first, entry-point packs after); `--scenario <name>` filters across all
-  packs, and omitting it runs everything.
+  first, entry-point packs after); `--scenario` (exact or glob), `--tag`,
+  `--pack`, and `--owner` filter across all packs, and omitting them runs
+  everything.
+- **Ownership.** `owner` is carried into every ledger record and drives
+  `wt run --owner <owner>` selection. Wind Tunnel attaches no other
+  semantics — what ownership *means* (routing, gating, paging) is yours.
 - **Mock tools.** If your dim needs canned upstream tools, set
   `mcp_factory` to a callable that takes the selected `Scenario` and returns
   a fresh, **not-yet-started** `MCPServer` (the runner owns start/stop per
