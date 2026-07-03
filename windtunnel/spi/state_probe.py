@@ -13,7 +13,7 @@ exited, but the verdict depends on it).
 StateProbe closes that gap: it snapshots external state into plain data
 at the end of each run, and the runner freezes the snapshot into
 trace.observations BEFORE scoring — the same evidence-first ordering
-_collect_mcp_calls() follows for call logs. Policy predicates then read
+_collect_mcp_evidence() follows for call logs. Policy predicates then read
 trace.observations like any other trace field: pure data in, bool out,
 no live fixture at scoring time, and saved traces re-score forever.
 

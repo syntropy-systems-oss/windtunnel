@@ -152,7 +152,7 @@ def _extract_server_tool_names(trace: Trace) -> list[str]:
     """Return tool names from the SERVER-witnessed call log, oldest first.
 
     trace.mcp_calls dicts carry {"tool_name", "args", "result",
-    "timestamp_ms"} (see runner._collect_mcp_calls). The runner already
+    "timestamp_ms"} (see runner._collect_mcp_evidence). The runner already
     sorts them, but re-sorting here keeps the ordering guarantee local —
     hand-built or merged traces score correctly too.
     """

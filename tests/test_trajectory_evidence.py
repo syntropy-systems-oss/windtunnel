@@ -33,7 +33,7 @@ def _tool_call(name: str) -> dict[str, Any]:
 
 
 def _mcp_call(name: str, ts: float) -> dict[str, Any]:
-    """Server-witnessed call dict, the shape runner._collect_mcp_calls emits."""
+    """Server-witnessed call dict, the shape runner._collect_mcp_evidence emits."""
     return {"tool_name": name, "args": {}, "result": "ok", "timestamp_ms": ts}
 
 

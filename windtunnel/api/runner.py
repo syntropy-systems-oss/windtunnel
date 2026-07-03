@@ -112,23 +112,31 @@ def _build_messages(
 
 # ─── MCP call-log collection ──────────────────────────────────────────────────
 
-def _collect_mcp_calls(mcp_handles: list[MCPHandle]) -> list[dict[str, Any]]:
+def _collect_mcp_evidence(mcp_handles: list[MCPHandle]) -> tuple[list[dict[str, Any]], list[str]]:
     """Drain every handle's call_log() into trace-serializable dicts.
 
     Normalization decisions:
     - Dicts, not MCPCall objects — the Trace is pure-stdlib JSON; storing
       dataclass instances would break save_trace() round-trips.
     - Dict keys mirror MCPCall fields ({"tool_name", "args", "result",
-      "timestamp_ms"}) — the same shape the /calls HTTP endpoint already
-      serves, so in-process and subprocess logs look identical in a trace.
+      "timestamp_ms", optional "extra"}) — the same shape the /calls HTTP
+      endpoint already serves, so in-process and subprocess logs look
+      identical in a trace.
     - result is coerced to repr() when not JSON-serializable (in-process
       handlers may return arbitrary objects; the trace must still save).
+      extra gets the same guard — it is runtime-controlled metadata.
     - Sorted by timestamp_ms across ALL handles, so a multi-server run
       yields one chronological stream — the order trajectory scoring needs.
     - Best-effort per handle: a dead/unreachable handle contributes []
       rather than failing the run (matches _SubprocessMCPHandle semantics).
+    The returned warning list is derived from call-log metadata, not a new
+    component channel.  Universe replay misses are witnessed calls with
+    ``extra.divergence``; the runner turns that evidence into the
+    ``worker_warnings`` marker that perturbations already use for
+    scorer-visible run metadata.
     """
     calls: list[dict[str, Any]] = []
+    warnings: list[str] = []
     for mcp in mcp_handles:
         try:
             log = mcp.call_log()
@@ -140,14 +148,29 @@ def _collect_mcp_calls(mcp_handles: list[MCPHandle]) -> list[dict[str, Any]]:
                 json.dumps(result)
             except (TypeError, ValueError):
                 result = repr(result)
-            calls.append({
+            call_dict = {
                 "tool_name": c.tool_name,
                 "args": c.args,
                 "result": result,
                 "timestamp_ms": c.timestamp_ms,
-            })
+            }
+            if c.extra:
+                extra = c.extra
+                try:
+                    json.dumps(extra)
+                except (TypeError, ValueError):
+                    extra = json.loads(json.dumps(extra, default=repr))
+                call_dict["extra"] = extra
+                divergence = c.extra.get("divergence")
+                if isinstance(divergence, dict):
+                    policy = divergence.get("policy")
+                    if isinstance(policy, str):
+                        warnings.append(
+                            f"universe_divergence: tool={c.tool_name} policy={policy}"
+                        )
+            calls.append(call_dict)
     calls.sort(key=lambda c: c.get("timestamp_ms") or 0.0)
-    return calls
+    return calls, warnings
 
 
 # ─── External-state observation capture ───────────────────────────────────────
@@ -157,7 +180,7 @@ def _capture_observations(
 ) -> tuple[dict[str, Any], list[str]]:
     """Snapshot external state via the probe. Return (observations, warnings).
 
-    Failure semantics differ from _collect_mcp_calls on purpose: a dead
+    Failure semantics differ from _collect_mcp_evidence on purpose: a dead
     call-log handle silently contributes [] (logs are supplementary
     evidence), but a failed capture() gets a "probe_error: ..." warning —
     a Policy reading trace.observations would otherwise fail with a bare
@@ -310,7 +333,7 @@ def _run_once(
     # (not lazily in the evaluator) so the evidence is frozen into the trace
     # at the moment the run ends — re-scoring a saved trace later sees the
     # same calls the live scoring did.
-    mcp_calls = _collect_mcp_calls(mcp_handles)
+    mcp_calls, mcp_warnings = _collect_mcp_evidence(mcp_handles)
     # External-state snapshot under the same freeze-before-score rule: a
     # Policy reading trace.observations during live scoring and during a
     # later offline re-score must see identical evidence.
@@ -327,7 +350,7 @@ def _run_once(
         finished_at=finished_at,
         turns=turns,
         tool_schema_hash=compute_hash(scenario.name),
-        worker_warnings=probe_warnings,
+        worker_warnings=probe_warnings + mcp_warnings,
         mcp_calls=mcp_calls,
         observations=observations,
     )

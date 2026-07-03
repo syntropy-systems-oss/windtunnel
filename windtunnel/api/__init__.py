@@ -52,6 +52,17 @@ from windtunnel.api.trace import (
     save_trace,
     storage_path,
 )
+from windtunnel.api.universe import (
+    SynthesizeHook,
+    Universe,
+    UniverseFormatError,
+    UniverseMatching,
+    UniverseRecording,
+    UniverseTool,
+    freeze_universe,
+    load_universe,
+    save_universe,
+)
 
 __all__ = [
     # trace
@@ -79,4 +90,8 @@ __all__ = [
     "GenerateFn", "replay",
     # state_reset
     "StateResetConfig", "reset_state_db",
+    # universe
+    "SynthesizeHook", "Universe", "UniverseFormatError", "UniverseMatching",
+    "UniverseRecording", "UniverseTool", "freeze_universe", "load_universe",
+    "save_universe",
 ]
