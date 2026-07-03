@@ -45,4 +45,6 @@ nav:
   - Reference:
       - Architecture: architecture.md
       - Failure taxonomy: failure-taxonomy.md
+  - Design:
+      - "0001: Trace re-seeding": design/0001-trace-reseeding.md
   - Agent quickstart: agent-quickstart.md
