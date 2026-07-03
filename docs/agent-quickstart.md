@@ -140,6 +140,10 @@ registered under the `windtunnel.scenario_packs` entry-point group — see
   `*.universe.json` fixture can serve frozen call/result pairs:
   `RecordedMCPServer("fixture.universe.json")` drops in where
   `FastMCPServer` goes — see [recording-a-universe.md](recording-a-universe.md).
+- Have a production trace as a `*.wtin.json` envelope? `wt import --trace
+  <file> --out windtunnel/imported/<name>/` generates the scenario skeleton,
+  fixture, and scorer stub for you (the scenario fails until you author the
+  gate — review its `IMPORTED.md`).
 
 ## 7. Done-ness checklist
 

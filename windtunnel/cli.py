@@ -1243,6 +1243,47 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     return 0
 
 
+# ─── import ──────────────────────────────────────────────────────────────────
+
+def _cmd_import(args: argparse.Namespace) -> int:
+    """Handle the `wt import` subcommand.
+
+    Reads a Contract A ``*.wtin.json`` envelope and emits a self-contained
+    scenario skeleton.  The command is intentionally usage-strict: missing
+    inputs, invalid envelopes, and unsafe output-directory reuse all exit 2.
+    """
+    from windtunnel.api.importer import write_imported_scenario  # noqa: PLC0415
+    from windtunnel.api.interchange import InterchangeFormatError, load_interchange  # noqa: PLC0415
+    from windtunnel.api.universe import UniverseFormatError  # noqa: PLC0415
+
+    trace_path = Path(args.trace)
+    if not trace_path.is_file():
+        print(f"wt import: trace file not found: {trace_path}", file=sys.stderr)
+        return 2
+
+    out_dir = Path(args.out)
+    if out_dir.exists() and not out_dir.is_dir():
+        print(f"wt import: --out must be a directory: {out_dir}", file=sys.stderr)
+        return 2
+    if out_dir.exists() and any(out_dir.iterdir()) and not args.force:
+        print(
+            f"wt import: --out directory is not empty: {out_dir} "
+            "(pass --force to overwrite generated files)",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        envelope = load_interchange(trace_path)
+        result = write_imported_scenario(envelope, out_dir)
+    except (OSError, InterchangeFormatError, UniverseFormatError) as exc:
+        print(f"wt import: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"wrote: {result.out_dir}", file=sys.stderr)
+    return 0
+
+
 # ─── main ────────────────────────────────────────────────────────────────────
 
 def main(argv: list[str] | None = None) -> int:
@@ -1325,6 +1366,19 @@ def main(argv: list[str] | None = None) -> int:
     replay_p.add_argument("--runs-dir", default="runs", metavar="DIR",
                           help="Directory to write replayed traces (default: ./runs).")
 
+    # ── import ───────────────────────────────────────────────────────────────
+    import_p = sub.add_parser(
+        "import",
+        help="Generate a scenario skeleton from a Contract A *.wtin.json trace.",
+    )
+    import_p.add_argument("--trace", required=True, metavar="PATH",
+                          help="Path to the Contract A *.wtin.json trace envelope.")
+    import_p.add_argument("--out", required=True, metavar="DIR",
+                          help="Directory to write scenario.py, scorer.py, "
+                               "fixture.universe.json, and IMPORTED.md.")
+    import_p.add_argument("--force", action="store_true",
+                          help="Allow writing into an existing non-empty directory.")
+
     # ── triage ───────────────────────────────────────────────────────────────
     triage_p = sub.add_parser(
         "triage",
@@ -1352,6 +1406,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_run(args)
     if args.command == "replay":
         return _cmd_replay(args)
+    if args.command == "import":
+        return _cmd_import(args)
     if args.command == "triage":
         return _cmd_triage(args)
 

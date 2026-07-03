@@ -139,3 +139,34 @@ freeze_universe(
 Recording against live production tools is deliberately out of scope — that
 is an exporter's job, upstream of the
 [interchange format](design/0001-trace-reseeding.md#contract-a-the-trace-interchange-format).
+
+## Importing a production trace: `wt import`
+
+When the recording comes from the outside world, you don't hand-author any
+of this. Export the incident as a `*.wtin.json` interchange envelope (OTel
+GenAI-shaped messages; see the
+[design spine](design/0001-trace-reseeding.md#contract-a-the-trace-interchange-format))
+and let the importer build the skeleton:
+
+```bash
+wt import --trace prod_incident_412.wtin.json --out scenarios/imported/lookup_bluewing/
+```
+
+That emits a self-contained directory:
+
+- **`fixture.universe.json`** — recordings drained from the envelope's
+  server-witnessed calls (preferred) or reconstructed from the transcript's
+  tool-call/response pairs, `on_miss: fail_call`.
+- **`scenario.py`** — prompt/`user_turns` from the user messages, an
+  `origin:<ref>` tag from the envelope's provenance (it flows into the run
+  ledger, so a red CI row traces back to the incident), `must_call`
+  pre-filled but commented out.
+- **`scorer.py`** — an `outcome_fn` stub with candidate facts from the final
+  assistant text and a TODO pointing at the scorer library.
+- **`IMPORTED.md`** — what was inferred, from which evidence, and what still
+  needs human judgment.
+
+The importer is a *skeleton generator*, deliberately: a trace shows what the
+agent did, not what it should have done. The generated scenario **fails
+until you author its gate** — its placeholder `target_facts` can never
+match, because a green unauthored import would be a lie.
