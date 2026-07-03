@@ -1,8 +1,9 @@
 """CLI entry point for Wind Tunnel — the `wt` command.
 
 Subcommands:
-    wt run      [--scenario S]... [--soul PATH] [--runtime RUNTIME]
-                [--label LABEL] [--runs N]
+    wt run      [--scenario S]... [--tag TAG]... [--pack PACK]...
+                [--owner OWNER]... [--soul PATH] [--runtime RUNTIME]
+                [--label LABEL] [--runs N] [--format junit|json --out FILE]
     wt report   [--runs DIR] [--out FILE] [--format html|markdown|json]
     wt compare  --labels L1 L2 ...
     wt replay   --trace PATH --runtime RUNTIME
@@ -14,11 +15,60 @@ non-zero = any regression or error.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import sys
 import traceback
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+
+@dataclass(frozen=True)
+class _SelectedScenario:
+    """A Scenario paired with the ScenarioPack that contributed it.
+
+    The run loop mostly cares about the Scenario itself, but CI output and
+    pack/owner selection need the pack boundary that was lost when the old
+    helper flattened everything into a bare Scenario list.
+    """
+
+    pack: object
+    scenario: object
+
+
+@dataclass(frozen=True)
+class _SelectionResult:
+    """The selected scenarios plus selector values that matched nothing.
+
+    Missing values are reported as usage-adjacent diagnostics without making a
+    partially matching selection fail. That preserves the historical
+    --scenario behavior: unknown names are printed, but known names still run;
+    only an empty final selection exits 2.
+    """
+
+    entries: list[_SelectedScenario]
+    unmatched_scenarios: list[str]
+    unmatched_tags: list[str]
+    unmatched_packs: list[str]
+    unmatched_owners: list[str]
+
+
+@dataclass(frozen=True)
+class _CompletedAggregate:
+    """A completed scenario aggregate with the metadata sweep writers need.
+
+    One collection feeds every end-of-sweep side effect: _ledger_record()
+    rows go to the ledger AND to `wt run --format json --out ...` (same
+    records by construction), while the JUnit writer reads the aggregate
+    plus the transport-only/runner-error context directly.
+    """
+
+    pack: object
+    scenario: object
+    result: object
+    transport_only: bool
+    had_runner_error: bool
 
 # ─── report ──────────────────────────────────────────────────────────────────
 
@@ -282,13 +332,24 @@ def _cmd_run(args: argparse.Namespace) -> int:
     from windtunnel.api.runner import run_scenario  # noqa: PLC0415
     from windtunnel.api.trace import save_trace, storage_path  # noqa: PLC0415
 
+    output_format = getattr(args, "format", None)
+    output_path = getattr(args, "out", None)
+    if bool(output_format) != bool(output_path):
+        print("wt run: --format and --out must be provided together.", file=sys.stderr)
+        return 2
+    if output_format is not None:
+        output_format = output_format.lower()
+
     runs_dir = Path(args.runs_dir)
     runs_dir.mkdir(parents=True, exist_ok=True)
 
     n_runs: int = args.n_runs
     runtime_name: str = args.runtime
     label: str = args.label or "cli_run"
-    scenario_names: list[str] = args.scenario or []
+    scenario_patterns: list[str] = args.scenario or []
+    tag_filters: list[str] = args.tag or []
+    pack_filters: list[str] = args.pack or []
+    owner_filters: list[str] = args.owner or []
 
     # Build runtime
     runtime = _build_runtime(runtime_name, label, soul_path=args.soul)
@@ -299,18 +360,19 @@ def _cmd_run(args: argparse.Namespace) -> int:
     packs = _discover_scenario_packs()
 
     # Load scenarios
-    scenarios = _load_scenarios(scenario_names, packs)
-    if not scenarios:
+    selection = _select_scenarios(
+        scenario_patterns=scenario_patterns,
+        tag_filters=tag_filters,
+        pack_filters=pack_filters,
+        owner_filters=owner_filters,
+        packs=packs,
+    )
+    _print_selection_warnings(selection)
+    selected = selection.entries
+    scenarios = [entry.scenario for entry in selected]
+    if not selected:
         print("wt run: no scenarios found. Use --scenario <name> to specify.", file=sys.stderr)
         return 2
-    pack_by_scenario_id = {
-        id(scenario): pack
-        for pack in packs
-        for scenario in pack.scenarios
-    }
-    ledger_records: list[dict] = []
-    ledger_git_sha = _git_sha()
-    ledger_wt_version = _wt_version()
 
     from windtunnel.spi.agent_runtime import AgentConfig  # noqa: PLC0415
     # Thread --soul (a PATH) into AgentConfig.system_prompt so the platform
@@ -382,7 +444,39 @@ def _cmd_run(args: argparse.Namespace) -> int:
     any_fail = False
     consecutive_errors = 0
     first_error_logged = False
-    for scenario in scenarios:
+    completed: list[_CompletedAggregate] = []
+
+    def _finish(rc: int) -> int:
+        """Flush end-of-sweep side effects, on normal exit AND circuit-breaker abort.
+
+        The ledger append happens unconditionally; the same records then feed
+        `--format json` so the sweep document and the ledger cannot drift.
+        """
+        git_sha = _git_sha()
+        wt_version = _wt_version()
+        records = [
+            _ledger_record(
+                scenario=c.scenario,
+                pack=c.pack,
+                result=c.result,
+                label=label,
+                git_sha=git_sha,
+                wt_version=wt_version,
+            )
+            for c in completed
+        ]
+        _append_ledger_records(runs_dir, records)
+        if output_format is None or output_path is None:
+            return rc
+        try:
+            _write_run_output(output_format, Path(output_path), completed, records)
+        except OSError as exc:
+            print(f"wt run: could not write {output_format} output to {output_path}: {exc}", file=sys.stderr)
+            return 1
+        return rc
+
+    for selected_entry in selected:
+        scenario = selected_entry.scenario
         # Wire the MCPServer for this scenario based on its dim tag — but ONLY
         # for plugin runtimes, which provision the mock into the real platform
         # MCP (e.g. acme via its runs API, acme_gateway via the gateway
@@ -443,8 +537,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     f"rather than churning the remaining scenarios.",
                     file=sys.stderr,
                 )
-                _append_ledger_records(runs_dir, ledger_records)
-                return 1
+                return _finish(1)
             continue
 
         consecutive_errors = 0  # a successful scenario resets the breaker
@@ -456,16 +549,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
             path = storage_path(run_result.trace, base_dir=runs_dir)
             save_trace(run_result.trace, path)
             _write_score_sidecar(path, run_result.score, scenario)
-        ledger_records.append(
-            _ledger_record(
-                scenario=scenario,
-                pack=pack_by_scenario_id.get(id(scenario)),
-                result=result,
-                label=label,
-                git_sha=ledger_git_sha,
-                wt_version=ledger_wt_version,
-            )
-        )
 
         # Note: run_scenario catches a send-time/runtime error INTERNALLY and
         # returns a failed aggregate carrying a `runner_error: …` worker_warning
@@ -477,6 +560,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
             for run_result in result.runs
             for w in (getattr(run_result.trace, "worker_warnings", None) or [])
         )
+        completed.append(_CompletedAggregate(
+            pack=selected_entry.pack,
+            scenario=scenario,
+            result=result,
+            transport_only=transport_only,
+            had_runner_error=had_runner_error,
+        ))
 
         status = "PASS" if agg.verdict == "PASS" else "FAIL"
         if had_runner_error:
@@ -492,11 +582,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # transport-only dims run faithfully but their MODEL verdict is not a
         # model-quality signal, so it doesn't flip the exit code — UNLESS the run
         # hit a real execution error (no valid model turn happened).
-        if agg.verdict != "PASS" and (not transport_only or had_runner_error):
+        if _counts_as_gate_failure(completed[-1]):
             any_fail = True
 
-    _append_ledger_records(runs_dir, ledger_records)
-    return 1 if any_fail else 0
+    return _finish(1 if any_fail else 0)
 
 
 def _discover_scenario_packs() -> list:
@@ -624,6 +713,121 @@ def _build_runtime(runtime_name: str, label: str, soul_path: str | None) -> obje
     return plugin.build(runtime_name, label, soul_path)
 
 
+def _select_scenarios(
+    *,
+    scenario_patterns: list[str],
+    tag_filters: list[str],
+    pack_filters: list[str],
+    owner_filters: list[str],
+    packs: list,
+) -> _SelectionResult:
+    """Select scenarios from packs with OR-within-flag, AND-across-flags.
+
+    Selection predicates:
+      - scenario: Scenario.name matched with fnmatch semantics, so exact
+        names remain exact and shell-style globs such as ``lookup_*`` work.
+      - tag: exact membership in Scenario.tags (e.g. ``dim:recovery``).
+      - pack: exact ScenarioPack.name.
+      - owner: exact defensive ``getattr(pack, "owner", None)``.
+
+    Repeated values within one flag are alternatives. Distinct flag families
+    compose as intersections, so ``--pack recovery --tag dim:recovery`` means
+    scenarios in that pack that also carry that tag.
+    """
+    all_entries: list[_SelectedScenario] = []
+    for pack in packs:
+        for scenario in getattr(pack, "scenarios", []) or []:
+            all_entries.append(_SelectedScenario(pack=pack, scenario=scenario))
+
+    def scenario_name(entry: _SelectedScenario) -> str:
+        return str(getattr(entry.scenario, "name", ""))
+
+    def scenario_tags(entry: _SelectedScenario) -> list[str]:
+        return list(getattr(entry.scenario, "tags", []) or [])
+
+    def pack_name(entry: _SelectedScenario) -> str:
+        return str(getattr(entry.pack, "name", ""))
+
+    def pack_owner(entry: _SelectedScenario) -> str | None:
+        owner = getattr(entry.pack, "owner", None)
+        return str(owner) if owner is not None else None
+
+    def scenario_selected(entry: _SelectedScenario) -> bool:
+        return not scenario_patterns or any(
+            fnmatch.fnmatchcase(scenario_name(entry), pattern)
+            for pattern in scenario_patterns
+        )
+
+    def tag_selected(entry: _SelectedScenario) -> bool:
+        tags = scenario_tags(entry)
+        return not tag_filters or any(tag in tags for tag in tag_filters)
+
+    def pack_selected(entry: _SelectedScenario) -> bool:
+        return not pack_filters or any(pack_name(entry) == name for name in pack_filters)
+
+    def owner_selected(entry: _SelectedScenario) -> bool:
+        return not owner_filters or any(pack_owner(entry) == owner for owner in owner_filters)
+
+    entries = [
+        entry for entry in all_entries
+        if (
+            scenario_selected(entry)
+            and tag_selected(entry)
+            and pack_selected(entry)
+            and owner_selected(entry)
+        )
+    ]
+
+    unmatched_scenarios = [
+        pattern for pattern in scenario_patterns
+        if not any(fnmatch.fnmatchcase(scenario_name(entry), pattern) for entry in all_entries)
+    ]
+    unmatched_tags = [
+        tag for tag in tag_filters
+        if not any(tag in scenario_tags(entry) for entry in all_entries)
+    ]
+    unmatched_packs = [
+        name for name in pack_filters
+        if not any(str(getattr(pack, "name", "")) == name for pack in packs)
+    ]
+    unmatched_owners = [
+        owner for owner in owner_filters
+        if not any(str(getattr(pack, "owner", "")) == owner for pack in packs)
+    ]
+
+    return _SelectionResult(
+        entries=entries,
+        unmatched_scenarios=unmatched_scenarios,
+        unmatched_tags=unmatched_tags,
+        unmatched_packs=unmatched_packs,
+        unmatched_owners=unmatched_owners,
+    )
+
+
+def _print_selection_warnings(selection: _SelectionResult) -> None:
+    """Emit non-fatal diagnostics for selector values that matched nothing."""
+    if selection.unmatched_scenarios:
+        print(
+            f"wt run: unknown scenario(s): {', '.join(sorted(selection.unmatched_scenarios))}",
+            file=sys.stderr,
+        )
+    if selection.unmatched_tags:
+        print(
+            f"wt run: unknown tag(s): {', '.join(sorted(selection.unmatched_tags))}",
+            file=sys.stderr,
+        )
+    if selection.unmatched_packs:
+        print(
+            f"wt run: unknown pack(s): {', '.join(sorted(selection.unmatched_packs))}",
+            file=sys.stderr,
+        )
+    if selection.unmatched_owners:
+        print(
+            f"wt run: unknown owner(s): {', '.join(sorted(selection.unmatched_owners))}",
+            file=sys.stderr,
+        )
+
+
 def _load_scenarios(names: list[str], packs: list) -> list:
     """Flatten the packs' scenarios (pack order preserved) and filter by name.
 
@@ -634,19 +838,193 @@ def _load_scenarios(names: list[str], packs: list) -> list:
     inner Scenarios, whose user_turns field drives the multi-turn runner
     path) happens where the pack is built, not here.
     """
-    all_scenarios: list = []
-    for pack in packs:
-        all_scenarios.extend(pack.scenarios)
+    selection = _select_scenarios(
+        scenario_patterns=names,
+        tag_filters=[],
+        pack_filters=[],
+        owner_filters=[],
+        packs=packs,
+    )
+    if selection.unmatched_scenarios:
+        print(
+            f"wt run: unknown scenario(s): {', '.join(sorted(selection.unmatched_scenarios))}",
+            file=sys.stderr,
+        )
+    return [entry.scenario for entry in selection.entries]
 
-    if not names:
-        return all_scenarios
 
-    name_set = set(names)
-    matched = [s for s in all_scenarios if s.name in name_set]
-    missing = name_set - {s.name for s in matched}
-    if missing:
-        print(f"wt run: unknown scenario(s): {', '.join(sorted(missing))}", file=sys.stderr)
-    return matched
+def _counts_as_gate_failure(completed: _CompletedAggregate) -> bool:
+    """Return the same per-scenario gate decision the run loop uses.
+
+    The outcome aggregate is the gate, except transport-only packs do not flip
+    CI on model-quality verdicts. A runner_error is an execution failure and
+    still gates even for transport-only dims.
+    """
+    agg = completed.result.aggregate
+    return agg.verdict != "PASS" and (not completed.transport_only or completed.had_runner_error)
+
+
+def _write_run_output(
+    output_format: str,
+    out_path: Path,
+    completed: list[_CompletedAggregate],
+    records: list[dict],
+) -> None:
+    """Write the requested machine-readable `wt run` output file."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_format == "json":
+        _write_run_json(out_path, records)
+        return
+    if output_format == "junit":
+        _write_run_junit(out_path, completed)
+        return
+    raise ValueError(f"unknown run output format: {output_format!r}")
+
+
+def _write_run_json(out_path: Path, records: list[dict]) -> None:
+    """Write the sweep document: the very records the ledger just received.
+
+    Sharing _ledger_record() output (rather than assembling a parallel
+    record) is what keeps `--format json` and ledger.ndjsonl
+    shape-identical by construction.
+    """
+    out_path.write_text(json.dumps(records, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _write_run_junit(out_path: Path, completed: list[_CompletedAggregate]) -> None:
+    """Write JUnit XML: one testsuite per pack, one testcase per aggregate."""
+    import xml.etree.ElementTree as ET  # noqa: PLC0415
+
+    root = ET.Element("testsuites")
+    total_tests = len(completed)
+    total_failures = sum(1 for result in completed if _counts_as_gate_failure(result))
+    total_time = sum(_aggregate_time_seconds(result) for result in completed)
+    root.set("tests", str(total_tests))
+    root.set("failures", str(total_failures))
+    root.set("errors", "0")
+    root.set("time", _format_seconds(total_time))
+
+    by_pack: dict[str, list[_CompletedAggregate]] = {}
+    for result in completed:
+        by_pack.setdefault(str(getattr(result.pack, "name", "")), []).append(result)
+
+    for pack_name, pack_results in by_pack.items():
+        suite_failures = sum(1 for result in pack_results if _counts_as_gate_failure(result))
+        suite_time = sum(_aggregate_time_seconds(result) for result in pack_results)
+        suite = ET.SubElement(root, "testsuite", {
+            "name": pack_name,
+            "tests": str(len(pack_results)),
+            "failures": str(suite_failures),
+            "errors": "0",
+            "time": _format_seconds(suite_time),
+        })
+        for result in pack_results:
+            testcase = ET.SubElement(suite, "testcase", {
+                "classname": pack_name,
+                "name": str(getattr(result.scenario, "name", "")),
+                "time": _format_seconds(_aggregate_time_seconds(result)),
+            })
+            if _counts_as_gate_failure(result):
+                categories = _triage_categories(result)
+                failure_attrs = {
+                    "message": _junit_failure_message(result, categories),
+                    "type": f"windtunnel.{result.result.aggregate.verdict}",
+                }
+                if categories:
+                    failure_attrs["triage_category"] = ", ".join(categories)
+                failure = ET.SubElement(testcase, "failure", failure_attrs)
+                failure.text = _junit_failure_text(result, categories)
+
+    tree = ET.ElementTree(root)
+    ET.indent(tree, space="  ")
+    tree.write(out_path, encoding="utf-8", xml_declaration=True)
+
+
+def _junit_failure_message(completed: _CompletedAggregate, categories: list[str]) -> str:
+    """Return a compact failure summary for the JUnit failure attribute."""
+    agg = completed.result.aggregate
+    category = f" triage={', '.join(categories)}" if categories else ""
+    return (
+        f"{agg.verdict}: {agg.passed}/{agg.total} outcome pass"
+        f"{category}"
+    )
+
+
+def _junit_failure_text(completed: _CompletedAggregate, categories: list[str]) -> str:
+    """Return the escaped-by-ElementTree multi-line JUnit failure payload."""
+    agg = completed.result.aggregate
+    lines = [
+        f"scenario_id: {getattr(completed.scenario, 'name', '')}",
+        f"pack: {getattr(completed.pack, 'name', '')}",
+        f"verdict: {agg.verdict}",
+        f"outcome_pass_rate: {agg.outcome_pass_rate}",
+        f"trajectory_pass_rate: {agg.trajectory_pass_rate}",
+        f"constraint_pass_rate: {agg.constraint_pass_rate}",
+        f"robustness_pass_rate: {agg.robustness_pass_rate}",
+    ]
+    if categories:
+        lines.append(f"triage_category: {', '.join(categories)}")
+
+    for idx, run_result in enumerate(completed.result.runs, start=1):
+        run_id = getattr(run_result.trace, "run_id", "")
+        lines.append(f"run {idx}: {run_id}")
+        for layer_name in ("outcome", "trajectory", "constraint", "robustness"):
+            layer = getattr(run_result.score, layer_name)
+            status = "PASS" if layer.passed else "FAIL"
+            lines.append(f"  {layer_name}: {status} - {layer.detail}")
+    return "\n".join(lines)
+
+
+def _triage_categories(completed: _CompletedAggregate) -> list[str]:
+    """Return rule-based triage categories for failed runs when available."""
+    attached = getattr(completed.result, "triage_category", None)
+    if attached is None:
+        attached = getattr(completed.result.aggregate, "triage_category", None)
+    if attached:
+        if isinstance(attached, str):
+            return [attached]
+        return [str(category) for category in attached]
+
+    try:
+        from windtunnel.triage.rule_based import RuleBasedClassifier  # noqa: PLC0415
+    except Exception:
+        return []
+
+    classifier = RuleBasedClassifier()
+    categories: list[str] = []
+    for run_result in completed.result.runs:
+        if run_result.score.outcome.passed:
+            continue
+        try:
+            classification = classifier.classify(
+                completed.scenario,
+                run_result.trace,
+                run_result.score,
+            )
+        except Exception:
+            continue
+        category = getattr(classification, "category", None)
+        if category and category not in categories:
+            categories.append(str(category))
+    return categories
+
+
+def _aggregate_time_seconds(completed: _CompletedAggregate) -> float:
+    """Return total elapsed run time for one scenario aggregate, in seconds."""
+    total = 0.0
+    for run_result in completed.result.runs:
+        trace = run_result.trace
+        started_at = getattr(trace, "started_at", None)
+        finished_at = getattr(trace, "finished_at", None)
+        if started_at is None or finished_at is None:
+            continue
+        total += max(0.0, (finished_at - started_at).total_seconds())
+    return total
+
+
+def _format_seconds(value: float) -> str:
+    """Format JUnit time attributes as seconds."""
+    return f"{value:.6f}"
 
 
 # ─── triage ──────────────────────────────────────────────────────────────────
@@ -897,7 +1275,18 @@ def main(argv: list[str] | None = None) -> int:
                        help="Scenario name(s) to run. Repeat for multiple. "
                             "Omit to run all registered scenarios (the built-in "
                             "dims plus any pack installed under the "
-                            "'windtunnel.scenario_packs' entry-point group).")
+                            "'windtunnel.scenario_packs' entry-point group). "
+                            "Shell-style globs such as 'lookup_*' are supported.")
+    run_p.add_argument("--tag", action="append", metavar="TAG", default=None,
+                       help="Run scenarios carrying TAG. Repeat for OR matching "
+                            "within tags; composes with other selectors by AND.")
+    run_p.add_argument("--pack", action="append", metavar="PACK", default=None,
+                       help="Run scenarios from pack PACK. Repeat for OR matching "
+                            "within packs; composes with other selectors by AND.")
+    run_p.add_argument("--owner", action="append", metavar="OWNER", default=None,
+                       help="Run scenarios from packs whose owner matches OWNER. "
+                            "Repeat for OR matching within owners; composes with "
+                            "other selectors by AND.")
     run_p.add_argument("--soul", default=None, metavar="PATH",
                        help="Path to SOUL.md / persona doc to inject.")
     run_p.add_argument("--agents", default=None, metavar="PATH",
@@ -919,6 +1308,10 @@ def main(argv: list[str] | None = None) -> int:
                        help="Number of runs per scenario (default: 1).")
     run_p.add_argument("--runs-dir", default="runs", metavar="DIR",
                        help="Directory to write trace files (default: ./runs).")
+    run_p.add_argument("--format", choices=["junit", "json"], default=None,
+                       help="Machine-readable run output format. Must be paired with --out.")
+    run_p.add_argument("--out", default=None, metavar="FILE",
+                       help="Path for --format junit/json output. Must be paired with --format.")
 
     # ── replay ───────────────────────────────────────────────────────────────
     replay_p = sub.add_parser("replay", help="Replay a captured trace against a runtime.")
