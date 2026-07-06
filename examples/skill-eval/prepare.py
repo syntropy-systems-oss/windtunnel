@@ -24,6 +24,7 @@ REPO_ROOT = HERE.parents[1]
 BASE_DIR = HERE / "base"
 TEMPLATES_DIR = HERE / "templates"
 SKILL_REL = Path(".agents") / "skills" / "windtunnel"
+DOCKER_BOOTSTRAP_REL = Path(".windtunnel") / "terminus-bootstrap.sh"
 
 
 def build_templates(
@@ -46,6 +47,7 @@ def build_templates(
         target = templates_dir / arm
         shutil.copytree(base_dir, target)
         _write_workspace_pyproject(target)
+        _write_docker_bootstrap(target, repo_root)
         if arm in {"skill", "agents-md"}:
             _write_agents_index(target / "AGENTS.md", repo_root)
         if arm == "skill":
@@ -90,6 +92,54 @@ def _write_workspace_pyproject(workspace: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _write_docker_bootstrap(workspace: Path, repo_root: Path) -> None:
+    script = workspace / DOCKER_BOOTSTRAP_REL
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "\n".join(
+            [
+                "#!/bin/sh",
+                "set -eu",
+                "cd /workspace",
+                "rm -rf .venv",
+                "python_bin=python3.12",
+                'if ! command -v "$python_bin" >/dev/null 2>&1; then',
+                "  python_bin=python3",
+                "fi",
+                '"$python_bin" -m venv .venv',
+                'repo="${WT_REPO_ROOT:-/opt/windtunnel-src}"',
+                'site_packages="$(.venv/bin/python -c '
+                "'import sysconfig; print(sysconfig.get_path(\"purelib\"))'" + ')"',
+                'mkdir -p "$site_packages" .venv/bin',
+                'printf "%s\\n" "$repo" > "$site_packages/windtunnel_repo.pth"',
+                "cat > .venv/bin/wt <<'EOF'",
+                "#!/bin/sh",
+                'exec "$(dirname "$0")/python" -m windtunnel.cli "$@"',
+                "EOF",
+                "chmod +x .venv/bin/wt",
+                "cat > .venv/bin/uv <<'EOF'",
+                "#!/bin/sh",
+                'if [ "${1:-}" = "run" ]; then',
+                "  shift",
+                '  if [ "$#" -eq 0 ]; then',
+                '    echo "uv run requires a command" >&2',
+                "    exit 2",
+                "  fi",
+                '  exec "$@"',
+                "fi",
+                'echo "skill-eval container uv shim supports: uv run <command>" >&2',
+                "exit 2",
+                "EOF",
+                "chmod +x .venv/bin/uv",
+                f"# host checkout used when this template was generated: {repo_root}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
 
 
 def _bootstrap_venv(workspace: Path, repo_root: Path) -> None:

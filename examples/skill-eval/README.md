@@ -21,18 +21,23 @@ python3 examples/skill-eval/prepare.py
 
 `prepare.py` rebuilds `examples/skill-eval/templates/` from the committed
 `base/` fixture, copies the current generated `skills/windtunnel/` into the
-`skill` arm, and bootstraps each template with a local `.venv`. The `.venv`
-contains a `wt` console script plus a `.pth` pointer to this checkout, so agent
-commands such as `uv run wt validate ...` use the Wind Tunnel code under test
-without downloading the package.
+`skill` arm, and bootstraps each template with a local `.venv` for explicit
+host mode. Each template also includes `.windtunnel/terminus-bootstrap.sh`,
+which docker mode runs inside the container to rebuild a Linux `.venv` and
+point it at the read-only repo mount. Agent commands such as
+`uv run wt validate ...` use the Wind Tunnel code under test without
+downloading the package.
 
 ## Run Each Arm
 
 Use generic endpoint/model placeholders appropriate for your Terminus setup.
-The local pack is loaded with `--pack-source examples/skill-eval/pack.py:PACK`
-and selected with `--pack skill_eval`.
+Docker isolation is the Terminus default; the commands below set it explicitly
+for readability. The local pack is loaded with
+`--pack-source examples/skill-eval/pack.py:PACK` and selected with
+`--pack skill_eval`.
 
 ```bash
+WT_TERMINUS_ISOLATION=docker \
 WT_TERMINUS_MODEL=<provider>/<model> \
 WT_TERMINUS_API_BASE=https://llm-gateway.example.invalid/v1 \
 WT_TERMINUS_WORKSPACE_TEMPLATE=examples/skill-eval/templates/skill \
@@ -46,6 +51,7 @@ uv run --python 3.12 --extra terminus wt run \
 ```
 
 ```bash
+WT_TERMINUS_ISOLATION=docker \
 WT_TERMINUS_MODEL=<provider>/<model> \
 WT_TERMINUS_API_BASE=https://llm-gateway.example.invalid/v1 \
 WT_TERMINUS_WORKSPACE_TEMPLATE=examples/skill-eval/templates/agents-md \
@@ -59,6 +65,7 @@ uv run --python 3.12 --extra terminus wt run \
 ```
 
 ```bash
+WT_TERMINUS_ISOLATION=docker \
 WT_TERMINUS_MODEL=<provider>/<model> \
 WT_TERMINUS_API_BASE=https://llm-gateway.example.invalid/v1 \
 WT_TERMINUS_WORKSPACE_TEMPLATE=examples/skill-eval/templates/bare \
@@ -67,6 +74,22 @@ uv run --python 3.12 --extra terminus wt run \
   --pack-source examples/skill-eval/pack.py:PACK \
   --pack skill_eval \
   --label bare \
+  --runs 1 \
+  --runs-dir examples/skill-eval/runs
+```
+
+For local debugging without Docker, opt into host execution explicitly:
+
+```bash
+WT_TERMINUS_ISOLATION=host \
+WT_TERMINUS_MODEL=<provider>/<model> \
+WT_TERMINUS_API_BASE=https://llm-gateway.example.invalid/v1 \
+WT_TERMINUS_WORKSPACE_TEMPLATE=examples/skill-eval/templates/skill \
+uv run --python 3.12 --extra terminus wt run \
+  --runtime terminus \
+  --pack-source examples/skill-eval/pack.py:PACK \
+  --pack skill_eval \
+  --label skill-host \
   --runs 1 \
   --runs-dir examples/skill-eval/runs
 ```

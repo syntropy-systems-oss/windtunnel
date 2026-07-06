@@ -8,7 +8,9 @@ and scoring are identical for every arm.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +24,7 @@ from windtunnel.api.trace import Trace
 DIM_TAG = "dim:skill_eval"
 OBS_KEY = "workspace_check"
 TODO_PLACEHOLDER = "TODO_REPLACE_WITH_REVIEWED_OUTCOME_FACT"
+DOCKER_RUNTIME_METADATA = Path(".windtunnel") / "terminus-runtime.json"
 
 CLI_LOOKUP_VERIFY = "test -f answer.txt && grep -q 'wt rescore' answer.txt"
 BUILD_ENVELOPE_VERIFY = "uv run wt validate --strict out.wtin.json"
@@ -66,7 +69,17 @@ class WorkspaceCheckProbe:
                 }
             }
 
-        records = [_run_verification_command(self.workspace_dir, spec) for spec in self.commands]
+        metadata = _docker_runtime_metadata(self.workspace_dir)
+        if metadata is None:
+            records = [
+                _run_verification_command(self.workspace_dir, spec)
+                for spec in self.commands
+            ]
+        else:
+            records = [
+                _run_container_verification_command(metadata, spec)
+                for spec in self.commands
+            ]
         return {
             OBS_KEY: {
                 "scenario": self.scenario_name,
@@ -138,6 +151,78 @@ def _run_verification_command(workspace_dir: Path, spec: VerificationCommand) ->
             "stdout_tail": _tail(stdout or ""),
             "stderr_tail": _tail(stderr or f"timed out after {spec.timeout_sec}s"),
         }
+
+
+def _run_container_verification_command(
+    metadata: dict[str, Any],
+    spec: VerificationCommand,
+) -> dict[str, Any]:
+    container_name = metadata.get("container_name")
+    workspace = metadata.get("workspace") or "/workspace"
+    if not isinstance(container_name, str) or not container_name:
+        return {
+            "command": spec.command,
+            "exit_code": 2,
+            "stdout_tail": "",
+            "stderr_tail": "terminus docker metadata missing container_name",
+        }
+
+    command = [
+        "docker",
+        "exec",
+        "--workdir",
+        str(workspace),
+        container_name,
+        "bash",
+        "-c",
+        spec.command,
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            timeout=spec.timeout_sec,
+            check=False,
+        )
+        return {
+            "command": spec.command,
+            "exit_code": completed.returncode,
+            "stdout_tail": _tail(completed.stdout),
+            "stderr_tail": _tail(completed.stderr),
+        }
+    except FileNotFoundError as exc:
+        return {
+            "command": spec.command,
+            "exit_code": 127,
+            "stdout_tail": "",
+            "stderr_tail": str(exc),
+        }
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout
+        stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr
+        rendered = " ".join(shlex.quote(part) for part in command)
+        return {
+            "command": spec.command,
+            "exit_code": 124,
+            "stdout_tail": _tail(stdout or ""),
+            "stderr_tail": _tail(stderr or f"timed out after {spec.timeout_sec}s: {rendered}"),
+        }
+
+
+def _docker_runtime_metadata(workspace_dir: Path) -> dict[str, Any] | None:
+    if os.environ.get("WT_TERMINUS_ISOLATION") == "host":
+        return None
+    path = workspace_dir / DOCKER_RUNTIME_METADATA
+    if not path.is_file():
+        return None
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(parsed, dict) or parsed.get("isolation") != "docker":
+        return None
+    return parsed
 
 
 def _tail(text: str, limit: int = 2000) -> str:

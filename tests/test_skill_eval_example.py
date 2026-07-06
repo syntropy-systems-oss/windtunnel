@@ -119,6 +119,7 @@ class TestSkillEvalPack:
             assert (templates / arm / "incident.wtin.json").is_file()
             assert (templates / arm / "runs" / "saved_trace.json").is_file()
             assert (templates / arm / "pyproject.toml").is_file()
+            assert (templates / arm / ".windtunnel" / "terminus-bootstrap.sh").is_file()
 
     def test_workspace_probe_records_command_exit_codes(self, tmp_path: Path) -> None:
         module = _pack_module()
