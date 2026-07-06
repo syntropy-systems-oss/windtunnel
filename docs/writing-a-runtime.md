@@ -178,7 +178,13 @@ class HttpRuntime:
 - [ ] Conformance tests pass (`test_runtime_conformance.py` pointed at your runtime).
 - [ ] A `must_call` scenario passes — proves intermediate tool calls surface.
 - [ ] Two scenarios run back-to-back with a deliberately stateful first
-      scenario — proves `reset_state()` actually isolates runs.
+      scenario — proves `reset_state()` actually isolates runs. Automate
+      this with `windtunnel.api.run_reset_canary()`, the packaged version
+      of the check: it seeds a random nonce into one session, resets, and
+      probes a fresh session for it. A recalled nonce proves a leak; a
+      clean run is evidence, not proof, of isolation — pair it with a
+      `StateProbe` for stateful backends (see the reset canary section of
+      the inject-protocol design doc for the full asymmetry rationale).
 - [ ] `sampling.temperature=0` twice produces (near-)identical traces —
       proves the sampling config actually reaches the model.
 - [ ] Kill the bench mid-run; rerun — proves `teardown()`/`provision()`

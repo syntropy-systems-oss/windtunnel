@@ -8,6 +8,7 @@ Example::
     from windtunnel.api.evaluators import evaluate_outcome
 """
 from windtunnel.api.aggregate import AggregateResult, ScenarioRunResult, aggregate_runs
+from windtunnel.api.canary import CanaryResult, run_reset_canary
 from windtunnel.api.evaluators import (
     evaluate_constraint,
     evaluate_outcome,
@@ -109,6 +110,8 @@ __all__ = [
     "ToolReturnsMalformedJson", "ToolTimeoutPerScenario", "ToolReturnsEmptyUnexpected",
     # aggregate
     "AggregateResult", "ScenarioRunResult", "aggregate_runs",
+    # canary
+    "CanaryResult", "run_reset_canary",
     # runner
     "ScenarioResult", "run_scenario",
     # replay
