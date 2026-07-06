@@ -5,6 +5,7 @@ import importlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -53,6 +54,36 @@ def _install_fake_harbor(
 
 def _message(response: dict[str, Any]) -> dict[str, Any]:
     return response["choices"][0]["message"]
+
+
+class _FakeCommandRunner:
+    def __init__(self, results: list[Any] | None = None) -> None:
+        self.results = list(results or [])
+        self.calls: list[dict[str, Any]] = []
+
+    async def run(
+        self,
+        args: list[str],
+        *,
+        timeout_sec: int | None = None,
+        input_data: bytes | None = None,
+    ) -> Any:
+        self.calls.append(
+            {
+                "args": list(args),
+                "timeout_sec": timeout_sec,
+                "input_data": input_data,
+            }
+        )
+        if self.results:
+            return self.results.pop(0)
+        import windtunnel.runtimes.terminus.runtime as runtime
+
+        return runtime._ExecResult(stdout="", stderr="", return_code=0)
+
+
+class _FakeUUID:
+    hex = "abcdef1234567890"
 
 
 def test_importing_terminus_runtime_does_not_import_harbor(
@@ -112,6 +143,107 @@ def test_bad_max_turns_env_raises_clear_error(monkeypatch: pytest.MonkeyPatch) -
 
     with pytest.raises(RuntimeError, match="WT_TERMINUS_MAX_TURNS must be a positive integer"):
         TerminusRuntimeConfig.from_env()
+
+
+def test_isolation_env_defaults_to_docker(monkeypatch: pytest.MonkeyPatch) -> None:
+    from windtunnel.runtimes.terminus import TerminusRuntimeConfig
+
+    monkeypatch.setenv("WT_TERMINUS_MODEL", "openai/example-model")
+    monkeypatch.delenv("WT_TERMINUS_ISOLATION", raising=False)
+
+    cfg = TerminusRuntimeConfig.from_env()
+
+    assert cfg.isolation == "docker"
+    assert cfg.docker_image == "python:3.12-slim"
+
+
+def test_invalid_isolation_env_raises_clear_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from windtunnel.runtimes.terminus import TerminusRuntimeConfig
+
+    monkeypatch.setenv("WT_TERMINUS_MODEL", "openai/example-model")
+    monkeypatch.setenv("WT_TERMINUS_ISOLATION", "process")
+
+    with pytest.raises(RuntimeError, match="WT_TERMINUS_ISOLATION must be 'docker' or 'host'"):
+        TerminusRuntimeConfig.from_env()
+
+
+def test_host_isolation_warns_at_provision(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import windtunnel.runtimes.terminus.runtime as runtime
+
+    class FakeTerminus2:
+        pass
+
+    _install_fake_harbor(monkeypatch, FakeTerminus2)
+    cfg = runtime.TerminusRuntimeConfig(
+        model="fake/model",
+        logs_dir=tmp_path / "logs",
+        isolation="host",
+    )
+
+    with pytest.warns(RuntimeWarning, match="executes model-generated commands directly"):
+        runtime.TerminusRuntime(cfg).provision(AgentConfig())
+
+
+def test_docker_isolation_without_docker_raises_precise_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import windtunnel.runtimes.terminus.runtime as runtime
+
+    class FakeTerminus2:
+        pass
+
+    _install_fake_harbor(monkeypatch, FakeTerminus2)
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: None if name == "docker" else name)
+    cfg = runtime.TerminusRuntimeConfig(
+        model="fake/model",
+        logs_dir=tmp_path / "logs",
+        isolation="docker",
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        runtime.TerminusRuntime(cfg).provision(AgentConfig())
+
+    message = str(excinfo.value)
+    assert "WT_TERMINUS_ISOLATION=docker requires Docker" in message
+    assert "docker CLI was not found" in message
+    assert "install Docker and start its daemon" in message
+    assert "WT_TERMINUS_ISOLATION=host" in message
+
+
+def test_docker_isolation_daemon_down_raises_precise_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import windtunnel.runtimes.terminus.runtime as runtime
+
+    class FakeTerminus2:
+        pass
+
+    fake_runner = _FakeCommandRunner(
+        [runtime._ExecResult(stderr="Cannot connect to Docker", return_code=1)]
+    )
+    _install_fake_harbor(monkeypatch, FakeTerminus2)
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(runtime, "_new_command_runner", lambda: fake_runner)
+    cfg = runtime.TerminusRuntimeConfig(
+        model="fake/model",
+        logs_dir=tmp_path / "logs",
+        isolation="docker",
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        runtime.TerminusRuntime(cfg).provision(AgentConfig())
+
+    assert fake_runner.calls[0]["args"] == ["docker", "info"]
+    message = str(excinfo.value)
+    assert "WT_TERMINUS_ISOLATION=docker requires a running Docker daemon" in message
+    assert "Cannot connect to Docker" in message
+    assert "start Docker" in message
+    assert "WT_TERMINUS_ISOLATION=host" in message
 
 
 def test_workspace_reset_copies_template_and_wipes_changes(tmp_path: Path) -> None:
@@ -214,8 +346,10 @@ def test_send_maps_fake_harbor_trajectory_to_openai_response(
         model="fake/model",
         max_turns=3,
         logs_dir=tmp_path / "logs",
+        isolation="host",
     )
-    handle = runtime.TerminusRuntime(cfg).provision(AgentConfig())
+    with pytest.warns(RuntimeWarning, match="executes model-generated commands directly"):
+        handle = runtime.TerminusRuntime(cfg).provision(AgentConfig())
     handle.reset_state()
 
     response = handle.send([{"role": "user", "content": "write done"}], "sid-1")
@@ -256,8 +390,13 @@ def test_send_surfaces_fake_agent_error_as_worker_warning(
     _install_fake_harbor(monkeypatch, FailingTerminus2)
     monkeypatch.setattr(runtime, "_ensure_tmux_available", lambda: None)
 
-    cfg = runtime.TerminusRuntimeConfig(model="fake/model", logs_dir=tmp_path / "logs")
-    handle = runtime.TerminusRuntime(cfg).provision(AgentConfig())
+    cfg = runtime.TerminusRuntimeConfig(
+        model="fake/model",
+        logs_dir=tmp_path / "logs",
+        isolation="host",
+    )
+    with pytest.warns(RuntimeWarning, match="executes model-generated commands directly"):
+        handle = runtime.TerminusRuntime(cfg).provision(AgentConfig())
     handle.reset_state()
 
     response = handle.send([{"role": "user", "content": "do work"}], "sid-err")
@@ -270,14 +409,151 @@ def test_send_surfaces_fake_agent_error_as_worker_warning(
     handle.teardown()
 
 
+def test_docker_lifecycle_and_exec_plumbing_uses_expected_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import windtunnel.runtimes.terminus.runtime as runtime
+
+    class FakeTerminus2:
+        @staticmethod
+        def name() -> str:
+            return "terminus-2-fake"
+
+    fake_runner = _FakeCommandRunner()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    template = tmp_path / "template"
+    template.mkdir()
+    _install_fake_harbor(monkeypatch, FakeTerminus2)
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(runtime, "_new_command_runner", lambda: fake_runner)
+    monkeypatch.setattr(runtime.uuid, "uuid4", lambda: _FakeUUID())
+
+    cfg = runtime.TerminusRuntimeConfig(
+        model="fake/model",
+        logs_dir=tmp_path / "logs",
+        workspace_template=template,
+        isolation="docker",
+        docker_image="python:3.12-slim",
+        repo_mount=repo,
+    )
+    handle = runtime.TerminusRuntime(cfg).provision(AgentConfig())
+
+    container = "wt-terminus-abcdef123456"
+    home_setup = runtime._container_home_setup_command()
+    assert fake_runner.calls[0]["args"] == ["docker", "info"]
+    assert fake_runner.calls[1]["args"] == ["docker", "rm", "-f", container]
+    run_args = fake_runner.calls[2]["args"]
+    assert run_args == [
+        "docker",
+        "run",
+        "--detach",
+        "--name",
+        container,
+        "--workdir",
+        "/workspace",
+        "--env",
+        "HOME=/tmp/windtunnel-home",
+        "--env",
+        (
+            "PATH=/workspace/.venv/bin:/usr/local/bin:/usr/local/sbin:"
+            "/usr/bin:/usr/sbin:/bin:/sbin"
+        ),
+        "--env",
+        "PYTHONPATH=/opt/windtunnel-src",
+        "--env",
+        "WT_REPO_ROOT=/opt/windtunnel-src",
+        "--mount",
+        f"type=bind,source={handle.workspace_dir.resolve()},target=/workspace",
+        "--mount",
+        f"type=bind,source={(handle.run_dir / 'container-logs').resolve()},target=/logs",
+        "--mount",
+        f"type=bind,source={repo.resolve()},target=/opt/windtunnel-src,readonly",
+        "--pull=missing",
+        "python:3.12-slim",
+        "sleep",
+        "infinity",
+    ]
+    assert fake_runner.calls[3]["args"] == [
+        "docker",
+        "exec",
+        "--user",
+        "root",
+        container,
+        "bash",
+        "-c",
+        home_setup,
+    ]
+
+    env = handle._new_environment(handle.run_dir / "agent-logs" / "manual", "sid")  # noqa: SLF001
+    runtime._run_async(env.exec("printf ok > /workspace/out.txt"))
+    exec_args = fake_runner.calls[-1]["args"]
+    assert exec_args == [
+        "docker",
+        "exec",
+        "--workdir",
+        "/workspace",
+        "--env",
+        "HOME=/tmp/windtunnel-home",
+        "--env",
+        (
+            "PATH=/workspace/.venv/bin:/usr/local/bin:/usr/local/sbin:"
+            "/usr/bin:/usr/sbin:/bin:/sbin"
+        ),
+        "--env",
+        "PYTHONPATH=/opt/windtunnel-src",
+        "--env",
+        "WT_REPO_ROOT=/opt/windtunnel-src",
+        "--user",
+        f"{os.getuid()}:{os.getgid()}",
+        container,
+        "bash",
+        "-c",
+        "printf ok > /workspace/out.txt",
+    ]
+
+    handle._current_environment = env  # noqa: SLF001
+    handle.reset_state()
+    reset_tail = [call["args"] for call in fake_runner.calls[-4:]]
+    assert reset_tail[0][-3:] == [
+        "bash",
+        "-c",
+        "tmux kill-session -t terminus-2-fake",
+    ]
+    assert reset_tail[1] == ["docker", "rm", "-f", container]
+    assert reset_tail[2][0:5] == ["docker", "run", "--detach", "--name", container]
+    assert reset_tail[3] == [
+        "docker",
+        "exec",
+        "--user",
+        "root",
+        container,
+        "bash",
+        "-c",
+        home_setup,
+    ]
+
+    handle.teardown()
+    assert fake_runner.calls[-1]["args"] == ["docker", "rm", "-f", container]
+    assert not handle.run_dir.exists()
+
+
 @pytest.mark.integration
-def test_real_harbor_hello_world_run(tmp_path: Path) -> None:
+def test_real_harbor_docker_hello_world_run(tmp_path: Path) -> None:
     if importlib.util.find_spec("harbor") is None:
         pytest.skip("Harbor is not installed")
     if shutil.which("docker") is None:
         pytest.skip("Docker is not installed")
-    if shutil.which("tmux") is None:
-        pytest.skip("tmux is not installed")
+    docker_info = subprocess.run(
+        ["docker", "info"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if docker_info.returncode != 0:
+        pytest.skip("Docker daemon is not running")
     if not os.environ.get("WT_TERMINUS_MODEL"):
         pytest.skip("WT_TERMINUS_MODEL is not set")
 
@@ -292,9 +568,11 @@ def test_real_harbor_hello_world_run(tmp_path: Path) -> None:
         max_turns=min(cfg.max_turns, 10),
         workspace_template=template,
         logs_dir=tmp_path / "logs",
+        isolation="docker",
+        docker_image=cfg.docker_image,
+        repo_mount=cfg.repo_mount,
     )
     handle = TerminusRuntime(cfg).provision(AgentConfig())
-    handle.reset_state()
     response = handle.send(
         [
             {

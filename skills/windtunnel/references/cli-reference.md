@@ -1,9 +1,9 @@
-<!-- GENERATED from docs/cli-reference.md at 9d29ae5d9ea0 — do not edit; edit docs/cli-reference.md. -->
+<!-- GENERATED from docs/cli-reference.md at b0101da40d83 — do not edit; edit docs/cli-reference.md. -->
 ---
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at 52ebb5c9f494 — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at 6f7ac3dcd63e — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
 The `wt` command ships 10 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
@@ -65,7 +65,7 @@ Run scenarios against a runtime.
 Usage:
 
 ```bash
-wt run [-h] [--scenario S] [--tag TAG] [--pack PACK] [--owner OWNER] [--soul PATH] [--agents PATH] [--runtime RUNTIME] [--label LABEL] [--runs N] [--runs-dir DIR] [--format {junit,json}] [--out FILE]
+wt run [-h] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--owner OWNER] [--soul PATH] [--agents PATH] [--runtime RUNTIME] [--label LABEL] [--runs N] [--runs-dir DIR] [--format {junit,json}] [--out FILE]
 ```
 
 Arguments and options:
@@ -75,6 +75,7 @@ Arguments and options:
 | `--scenario` | no |  | Scenario name(s) to run. Repeat for multiple. Omit to run all registered scenarios (the built-in dims plus any pack installed under the 'windtunnel.scenario_packs' entry-point group). Shell-style globs such as 'lookup_*' are supported. |
 | `--tag` | no |  | Run scenarios carrying TAG. Repeat for OR matching within tags; composes with other selectors by AND. |
 | `--pack` | no |  | Run scenarios from pack PACK. Repeat for OR matching within packs; composes with other selectors by AND. |
+| `--pack-source` | no |  | Load an additional local scenario pack from module:attr or path/to/file.py:attr. Repeat for multiple sources; use --pack to select it by name. |
 | `--owner` | no |  | Run scenarios from packs whose owner matches OWNER. Repeat for OR matching within owners; composes with other selectors by AND. |
 | `--soul` | no |  | Path to SOUL.md / persona doc to inject. |
 | `--agents` | no |  | Path to an AGENTS.md operating-notes doc to inject (routed to set-docs --agents; does not touch agent code). |
@@ -92,7 +93,7 @@ Re-score saved traces against current scenario definitions.
 Usage:
 
 ```bash
-wt rescore [-h] (--runs DIR | --trace PATH [PATH ...]) [--write] [--scenario S] [--tag TAG] [--pack PACK] [--owner OWNER]
+wt rescore [-h] (--runs DIR | --trace PATH [PATH ...]) [--write] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--owner OWNER]
 ```
 
 Arguments and options:
@@ -105,6 +106,7 @@ Arguments and options:
 | `--scenario` | no |  | Only re-score traces whose scenario_id matches S. Repeat for multiple; shell-style globs such as 'lookup_*' are supported. |
 | `--tag` | no |  | Restrict scenario definitions to packs/scenarios carrying TAG. |
 | `--pack` | no |  | Restrict scenario definitions to pack PACK. |
+| `--pack-source` | no |  | Load an additional local scenario pack from module:attr or path/to/file.py:attr before resolving traces. |
 | `--owner` | no |  | Restrict scenario definitions to packs whose owner matches OWNER. |
 
 ## `wt replay`

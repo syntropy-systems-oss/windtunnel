@@ -30,6 +30,9 @@ class PreconditionContext:
     mcp_handles: list[MCPHandle]
     state_probe: StateProbe | None
     agent_config: AgentConfig
+    runtime_handle: Any | None = None
+    workspace_dir: Path | None = None
+    workspace_template: Path | None = None
 
 
 class Precondition(ABC):
@@ -106,20 +109,23 @@ class ToolAvailable(Precondition):
 
 @dataclass(frozen=True)
 class FileExists(Precondition):
-    """Require a bench-host filesystem path to exist.
+    """Require a filesystem path to exist.
 
-    This checks the machine running Wind Tunnel.  It is meaningful when the
-    bench and agent world share that filesystem, which is common for local
-    drivers; it is not proof that a remote agent container can see the path.
+    Absolute paths check the machine running Wind Tunnel. Relative paths are
+    resolved against the runtime's workspace template when available, then the
+    runtime workspace, then the current working directory. This keeps local
+    workspace-template scenarios honest while still supporting the original
+    bench-host fixture check.
     """
 
     path: str | Path
 
     def check(self, ctx: PreconditionContext) -> str | None:
-        path = Path(self.path)
-        if path.exists():
+        candidates = _file_candidates(Path(self.path), ctx)
+        if any(path.exists() for path in candidates):
             return None
-        return f"required bench-host path does not exist: {path}"
+        tried = ", ".join(str(path) for path in candidates)
+        return f"required filesystem path does not exist: {self.path} (tried: {tried})"
 
 
 CheckFn = Callable[[PreconditionContext], str | None | bool]
@@ -156,6 +162,26 @@ def _handle_where(handle: MCPHandle) -> str:
     except Exception:  # noqa: BLE001 - best-effort diagnostic only
         url = None
     return str(url or type(handle).__name__)
+
+
+def _file_candidates(path: Path, ctx: PreconditionContext) -> list[Path]:
+    if path.is_absolute():
+        return [path]
+
+    candidates: list[Path] = []
+    for root in (ctx.workspace_template, ctx.workspace_dir):
+        if root is not None:
+            candidates.append(root / path)
+    candidates.append(path)
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(candidate)
+    return deduped
 
 
 def _coerce_tool_names(raw: Any) -> list[str]:

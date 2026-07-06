@@ -1,0 +1,88 @@
+{
+  "windtunnel_interchange": 1,
+  "otel_genai_mapping": "semantic-conventions-genai@development-2026-06",
+  "session": {
+    "model": "gpt-example-1",
+    "provider": "example"
+  },
+  "source": {
+    "ref": "skill-eval-incident-001",
+    "system": "fixture",
+    "captured_at": "2026-06-30T12:01:00Z"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "content": "What is the contact email for Bluewing Logistics?"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "tool_call",
+          "id": "call_1",
+          "name": "client_lookup",
+          "arguments": {
+            "query": "Bluewing Logistics"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool_call_response",
+          "id": "call_1",
+          "response": {
+            "account_id": "ACC-BLWG-001",
+            "name": "Bluewing Logistics",
+            "email": "ops@bluewing.example"
+          }
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "text",
+          "content": "Bluewing Logistics can be reached at ops@bluewing.example."
+        }
+      ]
+    }
+  ],
+  "tool_definitions": [
+    {
+      "name": "client_lookup",
+      "description": "Look up a client by name or account id.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": ["query"]
+      }
+    }
+  ],
+  "witnessed_calls": [
+    {
+      "tool_name": "client_lookup",
+      "args": {
+        "query": "Bluewing Logistics"
+      },
+      "result": {
+        "account_id": "ACC-BLWG-001",
+        "name": "Bluewing Logistics",
+        "email": "ops@bluewing.example"
+      }
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "run_id": "skill-eval-saved-trace-001",
+  "scenario_id": "lookup_before_action",
+  "agent_id": "fixture-agent",
+  "variant_id": "baseline",
+  "model": "gpt-example-1",
+  "quant": "unknown",
+  "sampler": {},
+  "started_at": "2026-06-30T12:00:00+00:00",
+  "finished_at": "2026-06-30T12:00:01+00:00",
+  "turns": [
+    {
+      "role": "user",
+      "content": "How many total items does Bluewing Logistics have on order across all stages?",
+      "tool_calls": [],
+      "tool_results": [],
+      "latency_ms": 0.0,
+      "rendered_prompt": null,
+      "rendered_prompt_hash": null
+    },
+    {
+      "role": "assistant",
+      "content": "Bluewing Logistics has 20 total items on order.",
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\":\"uv run wt run --runtime in_memory --scenario lookup_before_action --runs 1\\n\"}"
+          }
+        }
+      ],
+      "tool_results": [],
+      "latency_ms": 250.0,
+      "rendered_prompt": null,
+      "rendered_prompt_hash": null
+    }
+  ],
+  "tool_schema_hash": "sha256:fd83f0e690d7f61042e4ff6cae2d6e30dfb9a2a63f1b02b9d2fb723186f7f7db",
+  "worker_warnings": [],
+  "mcp_calls": [],
+  "observations": {}
+}

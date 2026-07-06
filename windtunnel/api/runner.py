@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from windtunnel.api.aggregate import AggregateResult, ScenarioRunResult, aggregate_runs
@@ -55,6 +56,7 @@ from windtunnel.api.evaluators import (
     evaluate_trajectory,
 )
 from windtunnel.api.preconditions import (
+    FileExists,
     Precondition,
     PreconditionContext,
     ToolAvailable,
@@ -270,11 +272,44 @@ def _extract_response_worker_warnings(response: dict[str, Any]) -> list[str]:
 # ─── World preconditions ─────────────────────────────────────────────────────
 
 def _compiled_preconditions(scenario: Scenario) -> list[Precondition]:
-    """Return explicit preconditions plus requires_tools sugar."""
+    """Return explicit preconditions plus requires_tools/requires_files sugar."""
     return [
         *(ToolAvailable(name) for name in scenario.requires_tools),
+        *(FileExists(path) for path in scenario.requires_files),
         *scenario.preconditions,
     ]
+
+
+def _handle_path(handle: AgentHandle | None, attr: str) -> Path | None:
+    if handle is None:
+        return None
+    try:
+        raw = getattr(handle, attr)
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        return Path(raw)
+    except TypeError:
+        return None
+
+
+def _bind_state_probe_workspace(
+    state_probe: StateProbe | None,
+    handle: AgentHandle | None,
+) -> None:
+    """Best-effort optional hook for probes that need a runtime workspace path."""
+    if state_probe is None:
+        return
+    workspace_dir = _handle_path(handle, "workspace_dir")
+    if workspace_dir is None:
+        return
+    bind = getattr(state_probe, "bind_workspace", None)
+    if not callable(bind):
+        bind = getattr(state_probe, "set_workspace_dir", None)
+    if callable(bind):
+        bind(workspace_dir)
 
 
 def _check_world_preconditions(
@@ -282,6 +317,7 @@ def _check_world_preconditions(
     mcp_handles: list[MCPHandle],
     config: AgentConfig,
     state_probe: StateProbe | None,
+    handle: AgentHandle | None = None,
 ) -> None:
     """Evaluate all preconditions and raise one joined mismatch error."""
     checks = _compiled_preconditions(scenario)
@@ -292,6 +328,9 @@ def _check_world_preconditions(
         mcp_handles=mcp_handles,
         state_probe=state_probe,
         agent_config=config,
+        runtime_handle=handle,
+        workspace_dir=_handle_path(handle, "workspace_dir"),
+        workspace_template=_handle_path(handle, "workspace_template"),
     )
     failures: list[str] = []
     for check in checks:
@@ -504,7 +543,8 @@ def run_scenario(
         # starting them a second time.
         handle = runtime.provision(config, mcps=mcp_handles)
 
-        _check_world_preconditions(scenario, mcp_handles, config, state_probe)
+        _bind_state_probe_workspace(state_probe, handle)
+        _check_world_preconditions(scenario, mcp_handles, config, state_probe, handle)
 
         model = config.model.name if config.model else "unknown"
         quant = config.model.quant if config.model else "unknown"

@@ -1,0 +1,82 @@
+{
+  "model": "gpt-example-1",
+  "source": {
+    "ref": "skill-eval-transcript-001",
+    "system": "fixture"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "content": "What is the contact email for Bluewing Logistics?"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "tool_call",
+          "id": "call_1",
+          "name": "client_lookup",
+          "arguments": {
+            "query": "Bluewing Logistics"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool_call_response",
+          "id": "call_1",
+          "response": {
+            "account_id": "ACC-BLWG-001",
+            "name": "Bluewing Logistics",
+            "email": "ops@bluewing.example"
+          }
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "text",
+          "content": "Bluewing Logistics can be reached at ops@bluewing.example."
+        }
+      ]
+    }
+  ],
+  "tool_definitions": [
+    {
+      "name": "client_lookup",
+      "description": "Look up a client by name or account id.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": ["query"]
+      }
+    }
+  ],
+  "witnessed_calls": [
+    {
+      "tool_name": "client_lookup",
+      "args": {
+        "query": "Bluewing Logistics"
+      },
+      "result": {
+        "account_id": "ACC-BLWG-001",
+        "name": "Bluewing Logistics",
+        "email": "ops@bluewing.example"
+      }
+    }
+  ]
+}

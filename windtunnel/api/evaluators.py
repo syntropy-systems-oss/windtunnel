@@ -426,10 +426,12 @@ def evaluate_trajectory(trace: Trace, scenario: Scenario) -> LayerResult:
       in-order subsequence; see _CallGroups for alternatives-group semantics)
 
     Custom scenario.trajectory_checks run AFTER the built-ins, over the same
-    observed-call list. The layer passes iff ALL checks pass; failure details
-    are joined ("; ") with the evidence source appended once. A custom check
-    that raises is recorded as a failure (same forgiveness as Policy
-    predicates).
+    observed-call list. Checks may also override ``check_trace(trace, calls)``
+    when they need command arguments or observations. The layer passes iff ALL
+    checks pass; failure details are joined ("; ") with the evidence source
+    appended once. Passing custom-check details are appended as annotations. A
+    custom check that raises is recorded as a failure (same forgiveness as
+    Policy predicates).
 
     Scenario tool names are CANONICAL bare names (e.g. ``client_lookup``);
     observed tool names may be platform-decorated (e.g.
@@ -455,20 +457,26 @@ def evaluate_trajectory(trace: Trace, scenario: Scenario) -> LayerResult:
         tool_names = _extract_tool_names(trace)
         evidence = "transcript"
 
-    checks: list[TrajectoryCheck] = [
+    built_in_checks: list[TrajectoryCheck] = [
         _ForbiddenCalls(forbidden=scenario.forbidden_calls),
         _CallGroups(must_call=scenario.must_call, order_matters=scenario.order_matters),
-        *scenario.trajectory_checks,
+    ]
+    checks: list[tuple[TrajectoryCheck, bool]] = [
+        *((check, False) for check in built_in_checks),
+        *((check, True) for check in scenario.trajectory_checks),
     ]
 
     failures: list[str] = []
-    for check in checks:
+    annotations: list[str] = []
+    for check, is_custom in checks:
         try:
-            passed, detail = check.check(tool_names)
+            passed, detail = check.check_trace(trace, tool_names)
         except Exception as exc:
             passed, detail = False, f"{type(check).__name__}(error: {exc})"
         if not passed:
             failures.append(detail)
+        elif is_custom and detail:
+            annotations.append(detail)
 
     if failures:
         return LayerResult(
@@ -476,10 +484,10 @@ def evaluate_trajectory(trace: Trace, scenario: Scenario) -> LayerResult:
             detail=f"{'; '.join(failures)} [evidence: {evidence}]",
         )
 
-    return LayerResult(
-        passed=True,
-        detail=f"trajectory requirements satisfied [evidence: {evidence}]",
-    )
+    detail = "trajectory requirements satisfied"
+    if annotations:
+        detail += "; " + "; ".join(annotations)
+    return LayerResult(passed=True, detail=f"{detail} [evidence: {evidence}]")
 
 
 # ─── Constraint evaluator ─────────────────────────────────────────────────────
