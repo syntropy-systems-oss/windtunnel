@@ -4,6 +4,7 @@ Subcommands:
     wt run      [--scenario S]... [--tag TAG]... [--pack PACK]...
                 [--owner OWNER]... [--soul PATH] [--runtime RUNTIME]
                 [--label LABEL] [--runs N] [--format junit|json --out FILE]
+    wt rescore  (--runs DIR | --trace PATH...) [--write]
     wt report   [--runs DIR] [--out FILE] [--format html|markdown|json]
     wt compare  --labels L1 L2 ...
     wt replay   --trace PATH --runtime RUNTIME
@@ -169,7 +170,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
 
 # ─── run ─────────────────────────────────────────────────────────────────────
 
-def _write_score_sidecar(trace_path: Path, score, scenario) -> Path:
+def _write_score_sidecar(trace_path: Path, score, scenario, *, origin: dict | None = None) -> Path:
     """Write the `.score.json` sidecar next to a saved trace.
 
     The sidecar is the union of BOTH consumer shapes, so one file feeds all
@@ -200,6 +201,8 @@ def _write_score_sidecar(trace_path: Path, score, scenario) -> Path:
             "forbidden_calls": getattr(scenario, "forbidden_calls", []),
         },
     }
+    if origin is not None:
+        sidecar["origin"] = origin
     score_path = trace_path.with_suffix(".score.json")
     score_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
     return score_path
@@ -337,6 +340,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     installed under the "windtunnel.scenario_packs" entry-point group —
     see windtunnel.api.pack and _discover_scenario_packs.
     """
+    from windtunnel.api.preconditions import WorldMismatchError  # noqa: PLC0415
     from windtunnel.api.runner import run_scenario  # noqa: PLC0415
     from windtunnel.api.trace import save_trace, storage_path  # noqa: PLC0415
 
@@ -530,6 +534,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 scenario, runtime, mcps=scenario_mcps, config=config,
                 runs_per_scenario=n_runs, state_probe=scenario_probe,
             )
+        except WorldMismatchError as exc:
+            any_fail = True
+            consecutive_errors = 0
+            print(f"  WORLD   {scenario.name:<40}  preconditions failed")
+            print(f"wt run: {exc}", file=sys.stderr)
+            continue
         except Exception as exc:  # noqa: BLE001 — sweep-level isolation, detail printed
             any_fail = True
             consecutive_errors += 1
@@ -823,26 +833,26 @@ def _select_scenarios(
     )
 
 
-def _print_selection_warnings(selection: _SelectionResult) -> None:
+def _print_selection_warnings(selection: _SelectionResult, *, command: str = "wt run") -> None:
     """Emit non-fatal diagnostics for selector values that matched nothing."""
     if selection.unmatched_scenarios:
         print(
-            f"wt run: unknown scenario(s): {', '.join(sorted(selection.unmatched_scenarios))}",
+            f"{command}: unknown scenario(s): {', '.join(sorted(selection.unmatched_scenarios))}",
             file=sys.stderr,
         )
     if selection.unmatched_tags:
         print(
-            f"wt run: unknown tag(s): {', '.join(sorted(selection.unmatched_tags))}",
+            f"{command}: unknown tag(s): {', '.join(sorted(selection.unmatched_tags))}",
             file=sys.stderr,
         )
     if selection.unmatched_packs:
         print(
-            f"wt run: unknown pack(s): {', '.join(sorted(selection.unmatched_packs))}",
+            f"{command}: unknown pack(s): {', '.join(sorted(selection.unmatched_packs))}",
             file=sys.stderr,
         )
     if selection.unmatched_owners:
         print(
-            f"wt run: unknown owner(s): {', '.join(sorted(selection.unmatched_owners))}",
+            f"{command}: unknown owner(s): {', '.join(sorted(selection.unmatched_owners))}",
             file=sys.stderr,
         )
 
@@ -1044,6 +1054,219 @@ def _aggregate_time_seconds(completed: _CompletedAggregate) -> float:
 def _format_seconds(value: float) -> str:
     """Format JUnit time attributes as seconds."""
     return f"{value:.6f}"
+
+
+# ─── rescore ─────────────────────────────────────────────────────────────────
+
+_SCORE_LAYERS = ("outcome", "trajectory", "constraint", "robustness")
+
+
+def _cmd_rescore(args: argparse.Namespace) -> int:
+    """Handle the `wt rescore` subcommand.
+
+    Recomputes score layers from saved traces and current Scenario definitions.
+    It never provisions a runtime and never modifies trace files.  Exit codes
+    mirror `wt run`: 0 when all newly-scored outcomes pass, 1 when any newly
+    scored outcome fails, and 2 for usage/configuration errors such as missing
+    traces or unresolved scenario definitions.
+    """
+    from windtunnel.api.trace import load_trace  # noqa: PLC0415
+
+    trace_paths = _rescore_trace_paths(args)
+    if trace_paths is None:
+        return 2
+
+    packs = _discover_scenario_packs()
+    selection = _select_scenarios(
+        scenario_patterns=args.scenario or [],
+        tag_filters=args.tag or [],
+        pack_filters=args.pack or [],
+        owner_filters=args.owner or [],
+        packs=packs,
+    )
+    _print_selection_warnings(selection, command="wt rescore")
+    scenarios_by_id = _rescore_scenario_map(selection.entries)
+    if scenarios_by_id is None:
+        return 2
+    if not scenarios_by_id:
+        print("wt rescore: no scenario definitions found.", file=sys.stderr)
+        return 2
+
+    changed = 0
+    new_fail = 0
+    unresolved = 0
+    errors = 0
+    written = 0
+    skipped = 0
+
+    for trace_path in trace_paths:
+        try:
+            trace = load_trace(trace_path)
+        except Exception as exc:  # noqa: BLE001 - keep walking the corpus
+            errors += 1
+            print(f"{trace_path}: ERROR could not load trace ({exc})")
+            continue
+
+        if args.scenario and not any(
+            fnmatch.fnmatchcase(trace.scenario_id, pattern)
+            for pattern in args.scenario
+        ):
+            skipped += 1
+            continue
+
+        scenario = scenarios_by_id.get(trace.scenario_id)
+        if scenario is None:
+            unresolved += 1
+            print(
+                f"{trace_path}: ERROR no current scenario definition for "
+                f"scenario_id={trace.scenario_id!r}"
+            )
+            continue
+
+        old_score = _read_score_sidecar(trace_path)
+        new_score = _score_saved_trace(trace, scenario)
+        layer_parts: list[str] = []
+        trace_changed = False
+        for layer_name in _SCORE_LAYERS:
+            old_verdict = _old_layer_verdict(old_score, layer_name)
+            new_verdict = _score_layer_verdict(new_score, layer_name)
+            if old_verdict != "UNKNOWN" and old_verdict != new_verdict:
+                trace_changed = True
+            layer_parts.append(f"{layer_name} {old_verdict} -> {new_verdict}")
+
+        if trace_changed:
+            changed += 1
+        if not new_score.outcome.passed:
+            new_fail += 1
+
+        write_note = ""
+        if args.write:
+            _write_score_sidecar(
+                trace_path,
+                new_score,
+                scenario,
+                origin={
+                    "kind": "rescore",
+                    "rescored_at": _ledger_timestamp(),
+                    "source_trace": str(trace_path),
+                    "trace_unchanged": True,
+                },
+            )
+            written += 1
+            write_note = " [sidecar written]"
+
+        print(
+            f"{trace_path}: scenario={trace.scenario_id} "
+            + " | ".join(layer_parts)
+            + write_note
+        )
+
+    total = len(trace_paths)
+    print(
+        "summary: "
+        f"traces={total} changed={changed} new_outcome_failures={new_fail} "
+        f"unresolved={unresolved} errors={errors} written={written} skipped={skipped}"
+    )
+
+    if unresolved or errors:
+        return 2
+    return 1 if new_fail else 0
+
+
+def _rescore_trace_paths(args: argparse.Namespace) -> list[Path] | None:
+    """Resolve --runs/--trace into trace JSON paths, excluding sidecars."""
+    explicit = [Path(p) for p in (args.trace or [])]
+    if explicit:
+        missing = [path for path in explicit if not path.is_file()]
+        if missing:
+            for path in missing:
+                print(f"wt rescore: trace file not found: {path}", file=sys.stderr)
+            return None
+        return explicit
+
+    runs_dir = Path(args.runs)
+    if not runs_dir.is_dir():
+        print(f"wt rescore: runs directory not found: {runs_dir}", file=sys.stderr)
+        return None
+    trace_paths = sorted(
+        path for path in runs_dir.rglob("*.json")
+        if not path.name.endswith(".score.json")
+    )
+    if not trace_paths:
+        print(f"wt rescore: no trace files found under {runs_dir}", file=sys.stderr)
+        return None
+    return trace_paths
+
+
+def _rescore_scenario_map(entries: list[_SelectedScenario]) -> dict[str, object] | None:
+    """Return scenario_id -> Scenario, or print ambiguity errors."""
+    by_id: dict[str, list[_SelectedScenario]] = {}
+    for entry in entries:
+        name = str(getattr(entry.scenario, "name", ""))
+        by_id.setdefault(name, []).append(entry)
+
+    ambiguous = {name: values for name, values in by_id.items() if len(values) > 1}
+    if ambiguous:
+        for name, values in sorted(ambiguous.items()):
+            packs = ", ".join(str(getattr(entry.pack, "name", "")) for entry in values)
+            print(
+                f"wt rescore: scenario_id {name!r} is ambiguous across packs: {packs}",
+                file=sys.stderr,
+            )
+        print(
+            "wt rescore: narrow definitions with --pack, --owner, or --tag.",
+            file=sys.stderr,
+        )
+        return None
+
+    return {name: values[0].scenario for name, values in by_id.items()}
+
+
+def _score_saved_trace(trace, scenario) -> object:
+    """Re-run all score layers derivable from a saved trace."""
+    from windtunnel.api.evaluators import (  # noqa: PLC0415
+        evaluate_constraint,
+        evaluate_outcome,
+        evaluate_robustness,
+        evaluate_trajectory,
+    )
+    from windtunnel.api.score import Score  # noqa: PLC0415
+
+    return Score(
+        outcome=evaluate_outcome(trace, scenario),
+        trajectory=evaluate_trajectory(trace, scenario),
+        constraint=evaluate_constraint(trace, scenario),
+        robustness=evaluate_robustness(trace, scenario),
+        failure_cost=scenario.failure_cost,
+    )
+
+
+def _read_score_sidecar(trace_path: Path) -> dict | None:
+    score_path = trace_path.with_suffix(".score.json")
+    if not score_path.is_file():
+        return None
+    try:
+        return json.loads(score_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _old_layer_verdict(score_data: dict | None, layer_name: str) -> str:
+    if score_data is None:
+        return "UNKNOWN"
+    layer = score_data.get(layer_name)
+    if not isinstance(layer, dict):
+        nested = score_data.get("score")
+        if isinstance(nested, dict):
+            layer = nested.get(layer_name)
+    if not isinstance(layer, dict) or "passed" not in layer:
+        return "UNKNOWN"
+    return "PASS" if bool(layer["passed"]) else "FAIL"
+
+
+def _score_layer_verdict(score, layer_name: str) -> str:
+    layer = getattr(score, layer_name)
+    return "PASS" if layer.passed else "FAIL"
 
 
 # ─── triage ──────────────────────────────────────────────────────────────────
@@ -1549,6 +1772,36 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--out", default=None, metavar="FILE",
                        help="Path for --format junit/json output. Must be paired with --format.")
 
+    # ── rescore ──────────────────────────────────────────────────────────────
+    rescore_p = sub.add_parser(
+        "rescore",
+        help="Re-score saved traces against current scenario definitions.",
+    )
+    rescore_input = rescore_p.add_mutually_exclusive_group(required=True)
+    rescore_input.add_argument(
+        "--runs", default=None, metavar="DIR",
+        help="Walk a runs/ directory and re-score every saved trace.",
+    )
+    rescore_input.add_argument(
+        "--trace", nargs="+", metavar="PATH", default=None,
+        help="Explicit trace JSON path(s) to re-score.",
+    )
+    rescore_p.add_argument(
+        "--write", action="store_true",
+        help="Update .score.json sidecars. Trace files are never modified.",
+    )
+    rescore_p.add_argument(
+        "--scenario", action="append", metavar="S", default=None,
+        help="Only re-score traces whose scenario_id matches S. Repeat for multiple; "
+             "shell-style globs such as 'lookup_*' are supported.",
+    )
+    rescore_p.add_argument("--tag", action="append", metavar="TAG", default=None,
+                           help="Restrict scenario definitions to packs/scenarios carrying TAG.")
+    rescore_p.add_argument("--pack", action="append", metavar="PACK", default=None,
+                           help="Restrict scenario definitions to pack PACK.")
+    rescore_p.add_argument("--owner", action="append", metavar="OWNER", default=None,
+                           help="Restrict scenario definitions to packs whose owner matches OWNER.")
+
     # ── replay ───────────────────────────────────────────────────────────────
     replay_p = sub.add_parser("replay", help="Replay a captured trace against a runtime.")
     replay_p.add_argument("--trace", required=True, metavar="PATH",
@@ -1667,6 +1920,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_compare(args)
     if args.command == "run":
         return _cmd_run(args)
+    if args.command == "rescore":
+        return _cmd_rescore(args)
     if args.command == "replay":
         return _cmd_replay(args)
     if args.command == "doctor":
