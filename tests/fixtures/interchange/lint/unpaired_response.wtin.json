@@ -1,0 +1,30 @@
+{
+  "windtunnel_interchange": 1,
+  "session": {
+    "model": "gpt-example-1"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "parts": [
+        {"type": "text", "content": "Email on file for Bluewing?"}
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool_call_response",
+          "id": "call_missing",
+          "response": {"email": "ops@bluewing.example"}
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {"type": "text", "content": "The email on file for Bluewing is ops@bluewing.example."}
+      ]
+    }
+  ]
+}

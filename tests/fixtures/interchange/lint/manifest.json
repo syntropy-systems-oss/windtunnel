@@ -1,0 +1,4 @@
+{
+  "truncated_arguments.wtin.json": "contains '[truncated]'",
+  "unpaired_response.wtin.json": "has no matching tool_call in the message stream"
+}

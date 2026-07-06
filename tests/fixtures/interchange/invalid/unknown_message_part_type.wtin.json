@@ -1,0 +1,14 @@
+{
+  "windtunnel_interchange": 1,
+  "session": {
+    "model": "gpt-example-1"
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "parts": [
+        {"type": "image", "content": "base64-not-a-recognized-part-type"}
+      ]
+    }
+  ]
+}

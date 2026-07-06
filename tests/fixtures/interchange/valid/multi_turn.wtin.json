@@ -1,0 +1,46 @@
+{
+  "windtunnel_interchange": 1,
+  "otel_genai_mapping": "semantic-conventions-genai@development-2026-06",
+  "session": {
+    "model": "gpt-example-1",
+    "provider": "openai"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "parts": [
+        {"type": "text", "content": "What is the status of order 4821?"}
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {"type": "text", "content": "Order 4821 is in transit and due tomorrow."}
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {"type": "text", "content": "Can you also confirm the email on file for Bluewing?"}
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {"type": "text", "content": "The email on file for Bluewing is ops@bluewing.example."}
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {"type": "text", "content": "Thanks, that's all."}
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {"type": "text", "content": "Happy to help."}
+      ]
+    }
+  ]
+}

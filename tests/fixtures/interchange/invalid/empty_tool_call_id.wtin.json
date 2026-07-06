@@ -1,0 +1,25 @@
+{
+  "windtunnel_interchange": 1,
+  "session": {
+    "model": "gpt-example-1"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "parts": [
+        {"type": "text", "content": "What is the status of order 4821?"}
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "tool_call",
+          "id": "",
+          "name": "order_status",
+          "arguments": {"order_id": "4821"}
+        }
+      ]
+    }
+  ]
+}

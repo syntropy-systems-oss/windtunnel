@@ -1284,6 +1284,60 @@ def _cmd_import(args: argparse.Namespace) -> int:
     return 0
 
 
+# ─── validate ────────────────────────────────────────────────────────────────
+
+def _cmd_validate(args: argparse.Namespace) -> int:
+    """Handle the `wt validate` subcommand.
+
+    A thin wrapper over `parse_interchange` and `lint_interchange` — it does
+    not duplicate any parsing, validation, or lint logic. For each path,
+    prints one line: `OK <path>` or `INVALID <path>: <error>`, followed by
+    one `WARN <path>: <message>` line per lint hit on envelopes that parsed.
+    A missing file is a usage error (exit 2), matching `wt import`'s
+    conventions; a well-formed-but-invalid envelope is a validation failure
+    (exit 1), not a usage error. Warnings do not affect the exit code unless
+    `--strict` is given, in which case any warning also exits 1.
+    """
+    from windtunnel.api.interchange import (  # noqa: PLC0415
+        InterchangeFormatError,
+        lint_interchange,
+        parse_interchange,
+    )
+
+    paths = [Path(p) for p in args.paths]
+    missing = [p for p in paths if not p.is_file()]
+    if missing:
+        for p in missing:
+            print(f"wt validate: file not found: {p}", file=sys.stderr)
+        return 2
+
+    all_valid = True
+    any_warnings = False
+    for path in paths:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            print(f"INVALID {path}: invalid JSON: {exc}")
+            all_valid = False
+            continue
+        try:
+            parse_interchange(raw)
+        except InterchangeFormatError as exc:
+            print(f"INVALID {path}: {exc}")
+            all_valid = False
+            continue
+        print(f"OK {path}")
+        for warning in lint_interchange(raw):
+            print(f"WARN {path}: {warning}")
+            any_warnings = True
+
+    if not all_valid:
+        return 1
+    if args.strict and any_warnings:
+        return 1
+    return 0
+
+
 # ─── main ────────────────────────────────────────────────────────────────────
 
 def main(argv: list[str] | None = None) -> int:
@@ -1379,6 +1433,18 @@ def main(argv: list[str] | None = None) -> int:
     import_p.add_argument("--force", action="store_true",
                           help="Allow writing into an existing non-empty directory.")
 
+    # ── validate ─────────────────────────────────────────────────────────────
+    validate_p = sub.add_parser(
+        "validate",
+        help="Validate Contract A *.wtin.json interchange envelope(s).",
+    )
+    validate_p.add_argument("paths", nargs="+", metavar="PATH",
+                            help="Path(s) to *.wtin.json envelope file(s) to validate.")
+    validate_p.add_argument("--strict", action="store_true",
+                            help="Exit 1 if any file produces a lint warning (e.g. "
+                                 "truncated/redacted values, unpaired tool_call_response "
+                                 "ids), not only on schema errors.")
+
     # ── triage ───────────────────────────────────────────────────────────────
     triage_p = sub.add_parser(
         "triage",
@@ -1408,6 +1474,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_replay(args)
     if args.command == "import":
         return _cmd_import(args)
+    if args.command == "validate":
+        return _cmd_validate(args)
     if args.command == "triage":
         return _cmd_triage(args)
 

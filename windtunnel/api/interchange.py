@@ -190,7 +190,15 @@ def _parse_part(raw: Any, message_index: int, part_index: int) -> InterchangePar
             raise InterchangeFormatError(f"{label}.name must be a non-empty string")
         if "arguments" not in d:
             raise InterchangeFormatError(f"{label}.arguments is required")
-        return ToolCallPart(id=call_id, name=name, arguments=d.get("arguments"))
+        arguments = d.get("arguments")
+        if isinstance(arguments, str):
+            raise InterchangeFormatError(
+                f"{label}.arguments must be an object, not a JSON-encoded string "
+                "(emit the parsed arguments object, not json.dumps(...) of it)"
+            )
+        if not isinstance(arguments, dict):
+            raise InterchangeFormatError(f"{label}.arguments must be an object")
+        return ToolCallPart(id=call_id, name=name, arguments=arguments)
 
     if part_type == "tool_call_response":
         call_id = d.get("id")
@@ -264,6 +272,144 @@ def _parse_witnessed_calls(d: dict[str, Any]) -> list[InterchangeWitnessedCall] 
     return calls
 
 
+_TRUNCATION_MARKERS = ("[truncated]", "[redacted]")
+
+
+def lint_interchange(envelope: dict[str, Any]) -> list[str]:
+    """Return non-fatal shape warnings for an envelope that already parses.
+
+    This is the error/warning boundary for the interchange format:
+    ``parse_interchange`` covers schema violations — an envelope that fails
+    it cannot be trusted at all, and must be fixed before anything
+    downstream touches it. ``lint_interchange`` only runs on envelopes that
+    already parse, and flags shapes that are schema-valid but usually mean
+    the emitter is mis-wired — reading from a scrubbed observability source,
+    or reconstructing from the wrong evidence. Callers decide what to do
+    with a warning; nothing here raises.
+
+    Two checks:
+
+    - Truncation/redaction markers (``"[truncated]"``, ``"[redacted]"``,
+      case-insensitive) inside a ``tool_call``'s ``arguments`` or a
+      ``tool_call_response``'s ``response``. Recorded universes built from
+      truncated or redacted values cannot answer the queries a rerun agent
+      will actually ask — this usually means the emitter read from a
+      scrubbed/truncated observability source instead of a full-fidelity
+      capture.
+    - A ``tool_call_response`` whose id has no matching ``tool_call`` in the
+      message stream. This is schema-valid — some producers legitimately
+      inject synthetic tool results — but it can also mean the emitter read
+      from the wrong source, and reconstruction will skip the unpaired
+      response.
+    """
+    trace = parse_interchange(envelope)
+    warnings: list[str] = []
+
+    tool_call_ids: set[str] = set()
+    for message in trace.messages:
+        for part in message.parts:
+            if isinstance(part, ToolCallPart):
+                tool_call_ids.add(part.id)
+
+    for message in trace.messages:
+        for part in message.parts:
+            if isinstance(part, ToolCallPart):
+                warnings.extend(
+                    _scan_for_markers(f"tool_call {part.id!r} arguments", part.arguments)
+                )
+            elif isinstance(part, ToolCallResponsePart):
+                warnings.extend(
+                    _scan_for_markers(
+                        f"tool_call_response {part.id!r} response", part.response
+                    )
+                )
+                if part.id not in tool_call_ids:
+                    warnings.append(
+                        f"tool_call_response {part.id!r} has no matching tool_call in "
+                        "the message stream — this is valid (some producers "
+                        "legitimately inject synthetic tool results), but it can also "
+                        "mean the emitter read from the wrong source; reconstruction "
+                        "will skip unpaired responses"
+                    )
+
+    return warnings
+
+
+def _scan_for_markers(label: str, value: Any) -> list[str]:
+    """Return one warning per truncation/redaction marker found in ``value``."""
+    serialized = json.dumps(value).lower()
+    return [
+        f"{label} contains {marker!r} — the emitter appears to be reading from a "
+        "scrubbed/truncated observability source rather than a full-fidelity "
+        "capture; a universe recorded from this data will not answer real queries"
+        for marker in _TRUNCATION_MARKERS
+        if marker in serialized
+    ]
+
+
+def build_envelope(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    provider: str | None = None,
+    otel_genai_mapping: str = "",
+    source: dict[str, Any] | None = None,
+    tool_definitions: list[dict[str, Any]] | None = None,
+    witnessed_calls: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Reference emitter for a version-1 Contract A ``*.wtin.json`` envelope.
+
+    This is documentation in code form, not a general-purpose builder. Its
+    job is to show, in the host language producers are most likely to also
+    be reading (Python), exactly which keys a valid envelope needs and where
+    they go. A producer writing an emitter in another language should treat
+    this function's body as the spec and the golden fixtures under
+    ``tests/fixtures/interchange/`` plus ``wt validate`` as the conformance
+    corpus to check their own output against — not this function itself,
+    which they cannot call from Go, TypeScript, etc.
+
+    ``messages`` is a list of already-shaped OTel GenAI message dicts, e.g.::
+
+        {
+            "role": "assistant",
+            "parts": [
+                {"type": "text", "content": "..."},
+                {"type": "tool_call", "id": "call_1", "name": "client_lookup",
+                 "arguments": {"query": "Bluewing"}},
+                {"type": "tool_call_response", "id": "call_1",
+                 "response": {"email": "ops@bluewing.example"}},
+            ],
+        }
+
+    ``tool_definitions`` and ``witnessed_calls``, when given, are lists of
+    already-shaped dicts matching the corresponding sections of the Contract
+    A schema (see the module docstring and ``parse_interchange``). This
+    function does not validate its inputs — call ``parse_interchange`` on
+    the result if you want that, which is exactly what ``wt validate`` does.
+
+    Deliberately minimal: no builder class, no options explosion. Producers
+    with more complex needs should construct the envelope dict directly and
+    validate it with ``wt validate`` or ``parse_interchange``.
+    """
+    session: dict[str, Any] = {"model": model}
+    if provider is not None:
+        session["provider"] = provider
+
+    envelope: dict[str, Any] = {
+        "windtunnel_interchange": INTERCHANGE_VERSION,
+        "otel_genai_mapping": otel_genai_mapping,
+        "session": session,
+        "messages": messages,
+    }
+    if source is not None:
+        envelope["source"] = source
+    if tool_definitions is not None:
+        envelope["tool_definitions"] = tool_definitions
+    if witnessed_calls is not None:
+        envelope["witnessed_calls"] = witnessed_calls
+    return envelope
+
+
 def _require_mapping(value: Any, label: str) -> dict[str, Any]:
     """Return ``value`` as a plain dict or raise an envelope-focused error."""
     if not isinstance(value, dict):
@@ -289,6 +435,8 @@ __all__ = [
     "TextPart",
     "ToolCallPart",
     "ToolCallResponsePart",
+    "build_envelope",
+    "lint_interchange",
     "load_interchange",
     "parse_interchange",
 ]

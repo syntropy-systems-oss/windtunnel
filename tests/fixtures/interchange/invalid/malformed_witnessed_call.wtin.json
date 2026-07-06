@@ -1,0 +1,20 @@
+{
+  "windtunnel_interchange": 1,
+  "session": {
+    "model": "gpt-example-1"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "parts": [
+        {"type": "text", "content": "Email on file for Bluewing?"}
+      ]
+    }
+  ],
+  "witnessed_calls": [
+    {
+      "tool_name": "client_lookup",
+      "result": {"email": "ops@bluewing.example"}
+    }
+  ]
+}

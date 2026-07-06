@@ -1,0 +1,13 @@
+{
+  "session": {
+    "model": "gpt-example-1"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "parts": [
+        {"type": "text", "content": "What is the status of order 4821?"}
+      ]
+    }
+  ]
+}
