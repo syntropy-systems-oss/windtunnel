@@ -142,6 +142,17 @@ newest user turn, validates the strict response envelope, and converts
 ordered `{name, arguments}` tool-call objects into the OpenAI-shaped SPI
 response that Wind Tunnel traces already understand.
 
+Runtime configuration is deliberately narrow:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `WT_INJECT_URL` | `http://127.0.0.1:8647` | Base URL for the Contract C endpoint. |
+| `WT_INJECT_TIMEOUT_S` | `120.0` | Per-request agent deadline sent as `timeout_s`; the driver adds a fixed five-second transport grace. |
+
+Contract C v1 has no route for dynamic tool registration. The endpoint owns
+its own tool wiring and must report the complete ordered tool-call transcript
+in every `/wt/inject` response, even when the list is empty.
+
 ## A minimal skeleton
 
 ```python

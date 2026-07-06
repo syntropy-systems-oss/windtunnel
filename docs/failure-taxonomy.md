@@ -252,8 +252,10 @@ a scenario with no dim tag that the rule-based classifier recognizes.
 **When this fires:** The RuleBasedClassifier falls through all rules. This
 is expected for new scenario dimensions that don't yet have a rule.
 
-**Default fix_vector:** None. Escalate to an LLM-judge classifier
-(`--classifier llm_judge`) or hand-label the failure and add a rule.
+**Default fix_vector:** None. Hand-label the failure and add a rule, or wire a
+downstream classifier. The `llm_judge` classifier name exists in the CLI as a
+stub registration point in 0.5.0, but the shipped class raises
+`NotImplementedError`.
 
 ---
 
@@ -271,4 +273,4 @@ is expected for new scenario dimensions that don't yet have a rule.
 | model_capacity              | route_to_stronger_model     | runtime model routing config            |
 | sampler_variance            | adjust_sampler              | scenario sampler config / tool_choice   |
 | side_effect_safety_violation| add_policy                  | scenario effect-class constraint        |
-| unknown                     | (none)                      | escalate to LLM judge or hand-label     |
+| unknown                     | (none)                      | hand-label or add a downstream classifier |

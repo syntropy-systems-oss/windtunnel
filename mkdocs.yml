@@ -40,10 +40,12 @@ nav:
   - Guides:
       - Writing a scenario: writing-a-scenario.md
       - Writing a runtime: writing-a-runtime.md
+      - Importing a trace: importing-a-trace.md
+      - Recording a universe: recording-a-universe.md
       - Writing a classifier: writing-a-classifier.md
       - Writing an optimizer: writing-an-optimizer.md
-      - Recording a universe: recording-a-universe.md
   - Reference:
+      - CLI reference: cli-reference.md
       - Architecture: architecture.md
       - Failure taxonomy: failure-taxonomy.md
   - Design:

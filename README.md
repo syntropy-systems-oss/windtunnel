@@ -167,6 +167,22 @@ fabrication-after-tool-failure.
 
 </details>
 
+## Trace import workflow
+
+Wind Tunnel's core loop is: export a production-shaped trace as a Contract A
+`*.wtin.json` envelope, validate it, import it, author the gate, and run it as
+a regression:
+
+```bash
+wt validate --strict incident.wtin.json
+wt import --trace incident.wtin.json --out scenarios/imported/incident/
+# review scenario.py, scorer.py, fixture.universe.json, and IMPORTED.md
+wt run --runtime <your-runtime> --scenario incident --runs 3
+```
+
+`wt import` is a skeleton generator, not an oracle. The generated scenario
+intentionally fails until a human replaces its placeholder outcome gate.
+
 ## Install
 
 ```bash
@@ -183,18 +199,30 @@ Working on Wind Tunnel itself? See CONTRIBUTING.md for the dev setup
 ## CLI
 
 ```bash
-wt run --scenario lookup_before_action --runtime in_memory --runs 3
-wt report  --runs runs/ --format html
-wt compare --labels baseline candidate
-wt triage  --runs runs/ --classifier rule_based
+wt run      --scenario lookup_before_action --runtime <your-runtime> --runs 3
+wt report   --runs runs/ --format html --out report.html
+wt compare  --labels baseline candidate
+wt replay   --trace runs/<trace>.json --runtime in_memory
+wt doctor   --runtime http_inject
+wt validate --strict incident.wtin.json
+wt import   --trace incident.wtin.json --out scenarios/imported/incident/
+wt triage   --runs runs/ --classifier rule_based
 ```
+
+`wt run` can also emit CI artifacts with `--format junit|json --out FILE`.
+The built-in runtimes are `in_memory` and `http_inject`; runtime plugins are
+discovered from the `windtunnel.runtimes` entry-point group or a `module:attr`
+dotted path.
 
 ## Documentation
 
 - [Getting started](docs/getting-started.md) — install, first scenario, first report
+- [CLI reference](docs/cli-reference.md) — all eight `wt` subcommands in v0.5.0
 - [Architecture](docs/architecture.md) — the two-surface design and the four-layer scoring model
 - [Writing a scenario](docs/writing-a-scenario.md) — the `Scenario` schema, field by field
 - [Writing a runtime](docs/writing-a-runtime.md) — implement the SPI for your platform
+- [Importing a trace](docs/importing-a-trace.md) — turn a Contract A trace into a regression skeleton
+- [Recording a universe](docs/recording-a-universe.md) — serve recorded tool calls as a hermetic upstream
 - [Agent quickstart](docs/agent-quickstart.md) — using a coding agent? Point it at this one file to integrate Wind Tunnel into your repo
 - [Failure taxonomy](docs/failure-taxonomy.md) — classification categories and fix vectors
 - [Writing a classifier](docs/writing-a-classifier.md) · [Writing an optimizer](docs/writing-an-optimizer.md)

@@ -181,19 +181,24 @@ entry-point group — the scenario-side twin of `windtunnel.runtimes`.
 Some dims add a per-dim verdict overlay (e.g. clarify_vs_guess buckets runs
 into acted / clarified / wrongly_guessed / refused_unnecessarily).
 
-## 7. Reporting, comparison, triage
+## 7. CLI surfaces
 
-- `wt report` — static HTML/markdown, no server, no external deps. Groups by
-  scenario × variant; per-cell aggregate verdict, per-layer pass-rates,
-  linked traces.
-- `wt compare` — A/B two labeled run sets (model swap, prompt change,
+The `wt` CLI is the packaged workflow surface:
+
+- `wt run` executes scenarios, writes traces and score sidecars, appends the
+  ledger, and can emit JUnit/JSON for CI.
+- `wt report` renders saved runs as HTML, Markdown, or JSON.
+- `wt compare` compares labeled run sets (model swap, prompt change,
   temperature pin).
-- `wt triage` — classify failures against the
-  [failure taxonomy](failure-taxonomy.md). The rule-based classifier ships;
-  the `FailureClassifier` Protocol accepts LLM judges
-  ([writing-a-classifier.md](writing-a-classifier.md)), and the `Optimizer`
-  Protocol supports propose-fix/apply-fix loops over classified failures
-  ([writing-an-optimizer.md](writing-an-optimizer.md)).
+- `wt replay` replays a saved trace's last user turn against a runtime.
+- `wt doctor` runs the reset-isolation canary against a live runtime.
+- `wt import` generates a scenario skeleton from a Contract A trace envelope.
+- `wt validate` validates and lints Contract A envelopes.
+- `wt triage` classifies saved failures against the
+  [failure taxonomy](failure-taxonomy.md). The shipped classifier is
+  rule-based; `llm_judge` is a stub registration point in 0.5.0.
+
+See [CLI reference](cli-reference.md) for options and exit codes.
 
 ## 8. Fidelity: the design stance
 

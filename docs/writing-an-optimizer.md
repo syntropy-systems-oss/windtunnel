@@ -4,6 +4,11 @@ Wind Tunnel optimizers implement the `Optimizer` Protocol defined in
 `windtunnel/triage/optimizer.py`. Any object with `propose_fix()` and
 `apply_fix()` methods satisfies the Protocol.
 
+Wind Tunnel 0.5.0 ships the Protocol and dataclasses only. The built-in
+`GEPAOptimizer` is a stub whose methods raise `NotImplementedError`, and there
+is no shipped optimizer CLI loop. Treat the GEPA and TextGrad sections below as
+design sketches for downstream implementations, not runnable functionality.
+
 ## The interface
 
 ```python
@@ -22,10 +27,10 @@ class MyOptimizer:
         ...
 ```
 
-## The GEPA optimization loop
+## GEPA design sketch
 
 GEPA (arXiv 2507.19457) uses natural-language gradients to evolve prompts.
-The full loop:
+The intended loop:
 
 ```
 for each failed scenario in bench run:
@@ -47,7 +52,7 @@ The `FailureClassification.evidence` list is the key gradient signal — it
 contains specific trace quotes explaining why the current prompt failed. The
 optimizer turns those quotes into a concrete edit via `propose_fix()`.
 
-## propose_fix() implementation sketch
+## `propose_fix()` design sketch
 
 ```python
 import anthropic
@@ -86,7 +91,7 @@ class MyGEPAOptimizer:
         )
 ```
 
-## apply_fix() implementation sketch
+## `apply_fix()` design sketch
 
 ```python
     def apply_fix(self, proposed):
@@ -117,13 +122,14 @@ class MyGEPAOptimizer:
         )
 ```
 
-## TextGrad integration
+## TextGrad design sketch
 
 TextGrad (arXiv 2406.07496) treats prompt text as optimizable variables.
 The "gradient" is a textual critique of the current prompt. The optimizer
 applies the gradient update to the prompt variable (SOUL.md, tool description).
 
-Same Protocol — different `propose_fix()` implementation:
+This is not implemented in Wind Tunnel 0.5.0. A downstream implementation
+would use the same Protocol with a different `propose_fix()` implementation:
 - Use TextGrad's `Variable` and `TextLoss` abstractions.
 - The `FailureClassification.evidence` list drives the `TextLoss`.
 - The updated variable text becomes `ProposedFix.diff_text`.

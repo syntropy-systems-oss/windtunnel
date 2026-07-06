@@ -59,7 +59,16 @@ class FailureClassification:
 - **Never raise.** Catch all errors and return `FailureClassification(category="unknown",
   confidence=0.0, evidence=[str(exc)])`.
 
-## LLM-judge implementation sketch
+## LLM-judge status
+
+Wind Tunnel 0.5.0 ships the deterministic `RuleBasedClassifier`. It also ships
+an `LLMJudgeClassifier` class and a `wt triage --classifier llm_judge` parser
+choice as a registration point, but the class raises `NotImplementedError`.
+
+The sketch below is design guidance for a future implementation or downstream
+fork. It is not runnable as shipped.
+
+## LLM-judge design sketch
 
 ```python
 import anthropic
@@ -120,7 +129,13 @@ class MyLLMJudgeClassifier:
 
 ## Registering with the CLI
 
-Add your classifier to the `--classifier` choices in `windtunnel/cli.py`:
+There is no classifier entry-point group in 0.5.0. The shipped CLI supports:
+
+- `rule_based`: implemented.
+- `llm_judge`: reserved, but raises `NotImplementedError` until implemented.
+
+For an in-repo classifier, add it to the `--classifier` choices and dispatch in
+`windtunnel/cli.py`:
 
 ```python
 # In _cmd_triage():
@@ -159,6 +174,6 @@ Target: >= 80% agreement on the hand-labeled set.
 ## See also
 
 - `windtunnel/triage/rule_based.py` — the baseline rule-based classifier
-- `windtunnel/triage/llm_judge.py` — the LLM-judge stub with full implementation sketch
+- `windtunnel/triage/llm_judge.py` — the LLM-judge stub with implementation notes
 - [failure-taxonomy.md](failure-taxonomy.md) — category definitions and fix vectors
 - [writing-an-optimizer.md](writing-an-optimizer.md) — how to implement an optimizer

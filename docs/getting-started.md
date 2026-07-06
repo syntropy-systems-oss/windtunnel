@@ -156,7 +156,42 @@ history that the report's latest-run view doesn't keep. Pass-rate trends and
 flake detection are a few lines of `jq` away, and `wt report --format json`
 emits the report's own data as a standalone artifact.
 
-## 6. Gate CI on it
+## 6. Know the rest of the CLI
+
+Wind Tunnel 0.5.0 ships eight `wt` subcommands:
+
+| Command | What it does |
+|---|---|
+| `wt run` | Execute scenarios against a runtime and write traces, score sidecars, ledger rows, and optional CI artifacts. |
+| `wt report` | Render saved runs as HTML, Markdown, or JSON. |
+| `wt compare` | Compare run labels. |
+| `wt replay` | Replay a saved trace's last user turn against a runtime. |
+| `wt doctor` | Run the reset-isolation canary against a live runtime. |
+| `wt import` | Generate a scenario skeleton from a Contract A `*.wtin.json` trace envelope. |
+| `wt validate` | Validate and lint Contract A envelopes; use `--strict` in producer CI. |
+| `wt triage` | Classify failed saved runs with the shipped rule-based classifier. |
+
+The headline import workflow starts with a trace envelope:
+
+```bash
+wt validate --strict incident.wtin.json
+wt import --trace incident.wtin.json --out scenarios/imported/incident/
+```
+
+That generated scenario intentionally fails until you author its outcome gate.
+See [importing a trace](importing-a-trace.md) for the full workflow, and
+[CLI reference](cli-reference.md) for all options and exit codes.
+
+If you are bringing up a runtime, run the reset canary before trusting scores:
+
+```bash
+wt doctor --runtime <your-runtime>
+```
+
+`wt doctor` requires a live model. For hermetic CI checks without a live model,
+call `run_reset_canary(..., probe_recall=False, state_probe=...)` from pytest.
+
+## 7. Gate CI on it
 
 `wt run` already exits like `go test` (0 pass, 1 regression or error). For
 CI systems that want structure, not just an exit code:
@@ -172,7 +207,7 @@ GitHub Actions, GitLab, and Jenkins render it natively. The JSON document
 holds the same records the ledger gets, for anything that doesn't speak
 JUnit.
 
-## 7. Triage failures
+## 8. Triage failures
 
 ```bash
 wt triage --runs runs/ --classifier rule_based
@@ -182,7 +217,8 @@ Each failed run is classified against the
 [failure taxonomy](failure-taxonomy.md) (wrong tool, guessed instead of
 clarified, fabricated after silent tool failure, ...) with a confidence and a
 fix vector. See [writing-a-classifier.md](writing-a-classifier.md) to add
-your own rules or an LLM judge.
+your own rules. The `llm_judge` classifier name is reserved in the CLI but is
+still a shipped stub that raises `NotImplementedError`.
 
 ## Next steps
 
@@ -190,4 +226,5 @@ your own rules or an LLM judge.
   — implement four small Protocols and every scenario above runs against your
   production-shaped stack unchanged.
 - Author a full dimension: [writing-a-scenario.md](writing-a-scenario.md).
+- Import a trace-backed regression: [importing-a-trace.md](importing-a-trace.md).
 - Understand the design: [architecture.md](architecture.md).
