@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.5.0...v0.6.0) (2026-07-06)
+
+
+### Features
+
+* **runtime:** terminus driver — bench Harbor's Terminus-2 terminal agent ([#26](https://github.com/syntropy-systems-oss/windtunnel/issues/26)) ([f32d626](https://github.com/syntropy-systems-oss/windtunnel/commit/f32d6265a85243fa9ce5e21b59a964fe679b3c7e))
+* skill-eval example pack + docker-default isolation for terminus ([#28](https://github.com/syntropy-systems-oss/windtunnel/issues/28)) ([b8fd974](https://github.com/syntropy-systems-oss/windtunnel/commit/b8fd974f474a53317b3a972067b07a74d1e8b23f))
+* **skill:** generate agent skill pipeline ([#24](https://github.com/syntropy-systems-oss/windtunnel/issues/24)) ([6ce4740](https://github.com/syntropy-systems-oss/windtunnel/commit/6ce4740b7caf849325ae98956e4bb663b4181486))
+* world preconditions, wt rescore, and the reset ordering contract ([#25](https://github.com/syntropy-systems-oss/windtunnel/issues/25)) ([6533a4d](https://github.com/syntropy-systems-oss/windtunnel/commit/6533a4dcb89bf859b6713ac213bf8bc68f310293))
+
+
+### Documentation
+
+* reorganize user guides and CLI reference ([#22](https://github.com/syntropy-systems-oss/windtunnel/issues/22)) ([ded4212](https://github.com/syntropy-systems-oss/windtunnel/commit/ded421238793289c61bd6efa8d44bab852c64428))
+* **terminus:** state the Harbor/Terminus-2 relationship; cap harbor &lt;0.18 ([#27](https://github.com/syntropy-systems-oss/windtunnel/issues/27)) ([41cd011](https://github.com/syntropy-systems-oss/windtunnel/commit/41cd011251923a0f1275b708cd0e488761ad22db))
+
 ## [0.5.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.4.0...v0.5.0) (2026-07-06)
 
 
