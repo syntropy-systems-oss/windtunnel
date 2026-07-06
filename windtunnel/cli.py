@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
+import importlib
+import importlib.util
 import json
 import shutil
 import sys
@@ -369,7 +372,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     # Discover scenario packs (built-ins + the "windtunnel.scenario_packs"
     # entry-point group). The pack is the unit that carries a dim's scenarios,
     # its mock-MCP factory, and the transport-only flag — see windtunnel.api.pack.
-    packs = _discover_scenario_packs()
+    pack_sources = args.pack_source or []
+    packs = _discover_scenario_packs(pack_sources) if pack_sources else _discover_scenario_packs()
 
     # Load scenarios
     selection = _select_scenarios(
@@ -606,8 +610,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return _finish(1 if any_fail else 0)
 
 
-def _discover_scenario_packs() -> list:
-    """Return all ScenarioPacks: built-ins first, then entry-point packs.
+def _discover_scenario_packs(extra_sources: list[str] | None = None) -> list:
+    """Return all ScenarioPacks: built-ins, entry points, then local sources.
 
     The scenario-side mirror of _resolve_runtime_plugin:
       1. Built-ins — windtunnel.scenarios.builtin_packs(), an explicit ordered
@@ -617,6 +621,10 @@ def _discover_scenario_packs() -> list:
          returning one (the callable form lets a pack defer scenario
          construction to load time, the same instance-or-class latitude the
          runtimes group gives plugins).
+      3. Explicit local sources from --pack-source. Each source is either
+         "module:attr" or "path/to/file.py:attr" and resolves under the same
+         ScenarioPack-or-zero-arg-callable rule. This is the authoring escape
+         hatch for examples before they are packaged as entry points.
 
     One deliberate asymmetry: runtimes resolve ONE plugin by --runtime NAME,
     but every installed pack is loaded — packs ADD scenarios to the selection
@@ -626,31 +634,71 @@ def _discover_scenario_packs() -> list:
     """
     from importlib.metadata import entry_points  # noqa: PLC0415
 
-    from windtunnel.api.pack import ScenarioPack  # noqa: PLC0415
     from windtunnel.scenarios import builtin_packs  # noqa: PLC0415
 
     packs: list = list(builtin_packs())
     for ep in entry_points(group="windtunnel.scenario_packs"):
         try:
             obj = ep.load()
-            if not isinstance(obj, ScenarioPack) and callable(obj):
-                obj = obj()
         except Exception as exc:  # noqa: BLE001 — any load failure gets the same exit
             print(
                 f"wt run: could not load scenario pack {ep.name!r} ({ep.value}): {exc}",
                 file=sys.stderr,
             )
             sys.exit(2)
-        if not isinstance(obj, ScenarioPack):
-            print(
-                f"wt run: scenario pack entry point {ep.name!r} ({ep.value}) must "
-                f"resolve to a ScenarioPack instance or a zero-arg callable "
-                f"returning one, got {type(obj).__name__}.",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-        packs.append(obj)
+        packs.append(_coerce_scenario_pack(obj, f"entry point {ep.name!r}", ep.value))
+    for source in extra_sources or []:
+        packs.append(_load_scenario_pack_source(source))
     return packs
+
+
+def _coerce_scenario_pack(obj: object, label: str, value: str) -> object:
+    from windtunnel.api.pack import ScenarioPack  # noqa: PLC0415
+
+    if not isinstance(obj, ScenarioPack) and callable(obj):
+        obj = obj()
+    if not isinstance(obj, ScenarioPack):
+        print(
+            f"wt run: scenario pack {label} ({value}) must resolve to a "
+            "ScenarioPack instance or a zero-arg callable returning one, "
+            f"got {type(obj).__name__}.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return obj
+
+
+def _load_scenario_pack_source(source: str) -> object:
+    module_or_path, sep, attr = source.partition(":")
+    if not sep or not module_or_path or not attr:
+        print(
+            "wt run: --pack-source must be module:attr or path/to/file.py:attr, "
+            f"got {source!r}.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    try:
+        if module_or_path.endswith(".py") or "/" in module_or_path or "\\" in module_or_path:
+            path = Path(module_or_path)
+            if not path.is_file():
+                raise FileNotFoundError(path)
+            digest = hashlib.sha1(str(path.resolve()).encode("utf-8")).hexdigest()[:12]
+            module_name = f"_windtunnel_pack_{digest}"
+            spec = importlib.util.spec_from_file_location(module_name, path)
+            if spec is None or spec.loader is None:
+                raise ImportError(f"could not load module spec for {path}")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+        else:
+            module = importlib.import_module(module_or_path)
+        obj = getattr(module, attr)
+    except Exception as exc:  # noqa: BLE001 - source load failures are usage errors
+        print(f"wt run: could not load scenario pack source {source!r}: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    return _coerce_scenario_pack(obj, f"source {source!r}", source)
 
 
 class _InMemoryPlugin:
@@ -1085,7 +1133,8 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
     if trace_paths is None:
         return 2
 
-    packs = _discover_scenario_packs()
+    pack_sources = args.pack_source or []
+    packs = _discover_scenario_packs(pack_sources) if pack_sources else _discover_scenario_packs()
     selection = _select_scenarios(
         scenario_patterns=args.scenario or [],
         tag_filters=args.tag or [],
@@ -1751,6 +1800,10 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--pack", action="append", metavar="PACK", default=None,
                        help="Run scenarios from pack PACK. Repeat for OR matching "
                             "within packs; composes with other selectors by AND.")
+    run_p.add_argument("--pack-source", action="append", metavar="SOURCE", default=None,
+                       help="Load an additional local scenario pack from module:attr "
+                            "or path/to/file.py:attr. Repeat for multiple sources; "
+                            "use --pack to select it by name.")
     run_p.add_argument("--owner", action="append", metavar="OWNER", default=None,
                        help="Run scenarios from packs whose owner matches OWNER. "
                             "Repeat for OR matching within owners; composes with "
@@ -1808,6 +1861,9 @@ def _build_parser() -> argparse.ArgumentParser:
                            help="Restrict scenario definitions to packs/scenarios carrying TAG.")
     rescore_p.add_argument("--pack", action="append", metavar="PACK", default=None,
                            help="Restrict scenario definitions to pack PACK.")
+    rescore_p.add_argument("--pack-source", action="append", metavar="SOURCE", default=None,
+                           help="Load an additional local scenario pack from module:attr "
+                                "or path/to/file.py:attr before resolving traces.")
     rescore_p.add_argument("--owner", action="append", metavar="OWNER", default=None,
                            help="Restrict scenario definitions to packs whose owner matches OWNER.")
 

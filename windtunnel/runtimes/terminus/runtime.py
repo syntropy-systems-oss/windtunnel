@@ -355,6 +355,10 @@ class _TerminusHandle:
         return self._workspace.workspace_dir
 
     @property
+    def workspace_template(self) -> Path | None:
+        return self._workspace.template
+
+    @property
     def run_dir(self) -> Path:
         return self._workspace.run_dir
 

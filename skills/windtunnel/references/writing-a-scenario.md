@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/writing-a-scenario.md at 366546bce648 — do not edit; edit docs/writing-a-scenario.md. -->
+<!-- GENERATED from docs/writing-a-scenario.md at 20eb25a75810 — do not edit; edit docs/writing-a-scenario.md. -->
 ---
 description: "Reference for authoring backend-agnostic Scenario objects, scoring fields, perturbations, dimensions, and scenario packs."
 ---
@@ -66,9 +66,10 @@ Built-ins:
 - `ToolAvailable(name)` verifies that one of the scenario's MCP handles reports
   the named tool in `served_tools()`. `requires_tools=["client_lookup"]` is
   shorthand for the same check.
-- `FileExists(path)` checks a bench-host filesystem path. It is meaningful when
-  the bench and agent world share that filesystem, which is common for local
-  drivers; it is not proof that a remote agent container can see the path.
+- `FileExists(path)` checks a filesystem path. Absolute paths are checked on
+  the bench host. Relative paths resolve against a runtime workspace template
+  when the driver exposes one, then the live workspace, then the current working
+  directory.
 - `Check(fn, description)` wraps a custom function over `PreconditionContext`
   (`mcp_handles`, optional `state_probe`, and `agent_config`). Return `None` or
   `True` to pass, a string to fail with that detail, or `False` to fail with the
@@ -94,7 +95,8 @@ Fields are grouped by the scoring layer each feeds.
 ### World preconditions (fail-fast, not scoring)
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `preconditions` | `list[Precondition]` | `[]` | Checks over the live MCP handles, optional `StateProbe`, and `AgentConfig`; fail before reset/send. |
+| `preconditions` | `list[Precondition]` | `[]` | Checks over the live MCP handles, optional `StateProbe`, runtime workspace paths, and `AgentConfig`; fail before reset/send. |
+| `requires_files` | `list[str]` | `[]` | Sugar for `FileExists(path)` preconditions, useful for workspace-template fixture inputs. |
 | `requires_tools` | `list[str]` | `[]` | Sugar for `ToolAvailable(<name>)` preconditions. |
 
 ### Outcome layer (the gate)
