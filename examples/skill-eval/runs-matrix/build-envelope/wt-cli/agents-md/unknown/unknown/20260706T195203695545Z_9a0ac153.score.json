@@ -1,0 +1,59 @@
+{
+  "outcome": {
+    "passed": true,
+    "detail": "workspace checks passed: uv run wt validate --strict out.wtin.json -> 0"
+  },
+  "trajectory": {
+    "passed": true,
+    "detail": "trajectory requirements satisfied; docs_read=False doc_read_commands=0 [evidence: transcript]"
+  },
+  "constraint": {
+    "passed": true,
+    "detail": "all constraints satisfied"
+  },
+  "robustness": {
+    "passed": true,
+    "detail": "no perturbations declared"
+  },
+  "failure_cost": {
+    "severity": "medium",
+    "customer_visible": false,
+    "reversible": true,
+    "side_effect_performed": false
+  },
+  "score": {
+    "outcome": {
+      "passed": true,
+      "detail": "workspace checks passed: uv run wt validate --strict out.wtin.json -> 0"
+    },
+    "trajectory": {
+      "passed": true,
+      "detail": "trajectory requirements satisfied; docs_read=False doc_read_commands=0 [evidence: transcript]"
+    },
+    "constraint": {
+      "passed": true,
+      "detail": "all constraints satisfied"
+    },
+    "robustness": {
+      "passed": true,
+      "detail": "no perturbations declared"
+    },
+    "failure_cost": {
+      "severity": "medium",
+      "customer_visible": false,
+      "reversible": true,
+      "side_effect_performed": false
+    }
+  },
+  "scenario": {
+    "name": "build-envelope",
+    "prompt": "Using the windtunnel library installed in this environment, produce a Contract A interchange envelope from transcript.json and write it to out.wtin.json so that `uv run wt validate --strict out.wtin.json` exits 0.",
+    "target_facts": [],
+    "requires_tool_use": false,
+    "tags": [
+      "dim:skill_eval"
+    ],
+    "must_call": [],
+    "forbidden_calls": []
+  }
+}

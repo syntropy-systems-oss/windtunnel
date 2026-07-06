@@ -3,7 +3,7 @@ name: windtunnel
 description: Bench tool-using LLM agents with the wt CLI, scenario packs, trace import/interchange,
   Contract C inject endpoints, reset isolation, and recorded tool universes.
 ---
-<!-- GENERATED from agents/skill-template.md + docs/ at 79852fbe00fc — do not edit; edit docs/ or agents/skill-template.md. -->
+<!-- GENERATED from agents/skill-template.md + docs/ at 7da2124d6f29 — do not edit; edit docs/ or agents/skill-template.md. -->
 # Wind Tunnel
 
 Wind Tunnel is unittest for agents: a reliability bench for tool-using LLM
