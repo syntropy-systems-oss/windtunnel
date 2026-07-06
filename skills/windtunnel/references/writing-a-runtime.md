@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/writing-a-runtime.md at aee3187ebb4b — do not edit; edit docs/writing-a-runtime.md. -->
+<!-- GENERATED from docs/writing-a-runtime.md at 7ddd04acc8fb — do not edit; edit docs/writing-a-runtime.md. -->
 ---
 description: "Guide to implementing Wind Tunnel runtime protocols or Contract C endpoints with reset isolation and tool-call evidence."
 ---
@@ -118,7 +118,9 @@ Two lifecycle levels, deliberately distinct:
 
 - **`reset_state()`** — between runs. Cheap and frequent. Wipe sessions,
   conversation history, memory stores, tool-call logs — anything that lets
-  run N leak into run N+1. **Treat a failed wipe as fatal.** Cross-run
+  run N leak into run N+1. The runner calls it after `provision()` and before
+  **every** run, including the first run of the first scenario; drivers may
+  therefore rely on `reset_state()` as the seed point. **Treat a failed wipe as fatal.** Cross-run
   contamination is the classic source of false passes (the reference bench
   was once burned by a full-text-search index that survived the wipe and
   answered scenario N+1's question from scenario N's data — wipe the

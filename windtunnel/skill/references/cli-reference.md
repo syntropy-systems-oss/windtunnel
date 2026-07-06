@@ -1,18 +1,19 @@
-<!-- GENERATED from docs/cli-reference.md at ca5882469974 — do not edit; edit docs/cli-reference.md. -->
+<!-- GENERATED from docs/cli-reference.md at 417d17336a1a — do not edit; edit docs/cli-reference.md. -->
 ---
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at 543c02ce39a4 — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at d6d90859638e — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
-The `wt` command ships 9 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
+The `wt` command ships 10 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
 
 | Command | Purpose |
 |---|---|
 | `wt report` | Generate a report from a runs/ directory. |
 | `wt compare` | Compare results across variant labels. |
 | `wt run` | Run scenarios against a runtime. |
+| `wt rescore` | Re-score saved traces against current scenario definitions. |
 | `wt replay` | Replay a captured trace against a runtime. |
 | `wt doctor` | Bring-up check: run the reset-isolation canary against a live runtime. |
 | `wt import` | Generate a scenario skeleton from a Contract A *.wtin.json trace. |
@@ -20,7 +21,7 @@ The `wt` command ships 9 subcommands. This page is generated from `windtunnel.cl
 | `wt triage` | Classify failed runs and emit a markdown report grouped by failure category. |
 | `wt skill` | Print or install the packaged Wind Tunnel agent skill. |
 
-Exit code conventions: `0` means success, `1` means a runtime failure or regression, and `2` means usage or configuration error.
+Exit code conventions: `0` means success, `1` means a runtime failure, regression, world mismatch, or newly-scored outcome failure, and `2` means usage or configuration error.
 
 ## `wt report`
 
@@ -83,6 +84,28 @@ Arguments and options:
 | `--runs-dir` | no | runs | Directory to write trace files (default: ./runs). |
 | `--format` | no |  | Machine-readable run output format. Must be paired with --out. Choices: junit, json. |
 | `--out` | no |  | Path for --format junit/json output. Must be paired with --format. |
+
+## `wt rescore`
+
+Re-score saved traces against current scenario definitions.
+
+Usage:
+
+```bash
+wt rescore [-h] (--runs DIR | --trace PATH [PATH ...]) [--write] [--scenario S] [--tag TAG] [--pack PACK] [--owner OWNER]
+```
+
+Arguments and options:
+
+| Name | Required | Default | Help |
+|---|---:|---|---|
+| `--runs` | no |  | Walk a runs/ directory and re-score every saved trace. |
+| `--trace` | no |  | Explicit trace JSON path(s) to re-score. |
+| `--write` | no | false | Update .score.json sidecars. Trace files are never modified. |
+| `--scenario` | no |  | Only re-score traces whose scenario_id matches S. Repeat for multiple; shell-style globs such as 'lookup_*' are supported. |
+| `--tag` | no |  | Restrict scenario definitions to packs/scenarios carrying TAG. |
+| `--pack` | no |  | Restrict scenario definitions to pack PACK. |
+| `--owner` | no |  | Restrict scenario definitions to packs whose owner matches OWNER. |
 
 ## `wt replay`
 
