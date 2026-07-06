@@ -8,6 +8,9 @@ Subcommands:
     wt compare  --labels L1 L2 ...
     wt replay   --trace PATH --runtime RUNTIME
     wt doctor   --runtime RUNTIME [--soul PATH] [--label LABEL]
+    wt import   --trace PATH --out DIR [--force]
+    wt validate [--strict] PATH [PATH ...]
+    wt triage   [--runs DIR] [--classifier rule_based|llm_judge]
 
 Design: argparse (stdlib) — no click dependency. Each subcommand is a
 function; main() is the dispatch entry point. Exit code 0 = all pass,

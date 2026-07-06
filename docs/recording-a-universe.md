@@ -140,67 +140,11 @@ Recording against live production tools is deliberately out of scope — that
 is an exporter's job, upstream of the
 [interchange format](design/0001-trace-reseeding.md#contract-a-the-trace-interchange-format).
 
-## Importing a production trace: `wt import`
+## When the universe comes from a trace
 
-When the recording comes from the outside world, you don't hand-author any
-of this. Export the incident as a `*.wtin.json` interchange envelope (OTel
-GenAI-shaped messages; see the
-[design spine](design/0001-trace-reseeding.md#contract-a-the-trace-interchange-format))
-and let the importer build the skeleton:
+`wt import` emits a `fixture.universe.json` from a Contract A `*.wtin.json`
+trace envelope, alongside a scenario skeleton and scorer stub. That production
+trace workflow now has its own guide: [importing a trace](importing-a-trace.md).
 
-```bash
-wt import --trace prod_incident_412.wtin.json --out scenarios/imported/lookup_bluewing/
-```
-
-That emits a self-contained directory:
-
-- **`fixture.universe.json`** — recordings drained from the envelope's
-  `witnessed_calls` (preferred) or reconstructed from the transcript's
-  tool-call/response pairs, `on_miss: fail_call`. `witnessed_calls` is
-  legitimate evidence from either side of the tool boundary: server-witnessed
-  (logged by the tool server itself, e.g. from `execute_tool`-shaped spans)
-  is the higher bar, since it can't be skewed by anything the agent's own
-  transcript got wrong; runner-witnessed (captured agent-side, alongside the
-  rest of the transcript) is common and legitimate for producers who don't
-  control the tool server they're calling into. Either is preferred over
-  transcript reconstruction, which only ever sees the agent's own account of
-  a call.
-- **`scenario.py`** — prompt/`user_turns` from the user messages, an
-  `origin:<ref>` tag from the envelope's provenance (it flows into the run
-  ledger, so a red CI row traces back to the incident), `must_call`
-  pre-filled but commented out.
-- **`scorer.py`** — an `outcome_fn` stub with candidate facts from the final
-  assistant text and a TODO pointing at the scorer library.
-- **`IMPORTED.md`** — what was inferred, from which evidence, and what still
-  needs human judgment.
-
-The importer is a *skeleton generator*, deliberately: a trace shows what the
-agent did, not what it should have done. The generated scenario **fails
-until you author its gate** — its placeholder `target_facts` can never
-match, because a green unauthored import would be a lie.
-
-Producing the envelope itself is the producer's responsibility — Wind
-Tunnel only reads it. Before handing a `*.wtin.json` file to `wt import`
-(or wiring up an exporter that emits one), check its shape with:
-
-```bash
-wt validate incident.wtin.json
-```
-
-`wt validate` runs the same parser `wt import` uses, so a clean bill of
-health there means the file will import too. The golden fixtures under
-[`tests/fixtures/interchange/`](../tests/fixtures/interchange/) are the
-conformance corpus for the format: `valid/` covers the shapes an envelope
-is allowed to take (minimal, multi-turn, runner-witnessed, reconstructable
-tool-call/response pairs, `tool_definitions`, and forward-tolerant unknown
-fields), and `invalid/` pairs one broken envelope per rule with the error
-`wt validate` should raise. `windtunnel.api.build_envelope` is a minimal
-reference emitter for producers writing their own in another language.
-
-`wt validate` also lints envelopes that parse cleanly — schema-valid shapes
-that usually mean an emitter is reading from the wrong source, like
-truncated/redacted tool values or a `tool_call_response` with no matching
-`tool_call`. These print as `WARN` lines and don't fail validation by
-default; pass `--strict` to treat any warning as a failure. The `lint/`
-fixtures under `tests/fixtures/interchange/` are the corpus for those
-checks, paired with the warning each should produce.
+This page is the universe-fixture reference: the file format, matching rules,
+divergence policies, and mock-server lifecycle.

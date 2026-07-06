@@ -78,7 +78,7 @@ Rules you must not violate when authoring:
   evaluator's job.
 - Synthetic data must be fictional (fake orgs, `.example` email domains).
 
-## 4. The three commands
+## 4. The working commands
 
 ```bash
 uv run wt run --runtime in_memory --runs 1        # smoke the scenario wiring (no infra)
@@ -96,6 +96,26 @@ to `runs/ledger.ndjsonl` — the queryable pass-rate history.
 failures. Note: under `in_memory` (a scripted stub) any
 `requires_tool_use` scenario fails by design — it proves the gate works; real
 verdicts need a real runtime.
+
+Runtime bring-up:
+
+```bash
+uv run wt doctor --runtime <your-driver>
+```
+
+`wt doctor` runs the reset-isolation canary in recall mode, so it needs a live
+model. For CI without a live model, call
+`run_reset_canary(..., probe_recall=False, state_probe=...)` from pytest.
+
+Trace import:
+
+```bash
+uv run wt validate --strict incident.wtin.json
+uv run wt import --trace incident.wtin.json --out windtunnel/imported/incident/
+```
+
+The generated scenario fails until you author its gate. Add it to a
+`ScenarioPack` before expecting `wt run` to discover it.
 
 ## 5. The SPI, verbatim
 
@@ -143,7 +163,9 @@ registered under the `windtunnel.scenario_packs` entry-point group — see
 - Have a production trace as a `*.wtin.json` envelope? `wt import --trace
   <file> --out windtunnel/imported/<name>/` generates the scenario skeleton,
   fixture, and scorer stub for you (the scenario fails until you author the
-  gate — review its `IMPORTED.md`).
+  gate — review its `IMPORTED.md`). Validate first with `wt validate --strict`;
+  see [importing-a-trace.md](importing-a-trace.md).
+- Need a complete command list? See [cli-reference.md](cli-reference.md).
 
 ## 7. Done-ness checklist
 
