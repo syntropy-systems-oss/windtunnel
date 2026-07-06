@@ -215,10 +215,13 @@ everyone else: add two routes, get benched.
 
 Version 1 ships with `http_inject`, a built-in runtime speaking exactly
 this contract — no payload configuration surface, base URL as its only
-required setting (default `http://127.0.0.1:8647`). It is implemented on
-the standard library (`urllib.request`), keeping Wind Tunnel's runtime
-dependency count where it is. Selection follows the existing resolution
-order in `wt run --runtime` (built-ins → entry points → dotted path).
+required setting (default `http://127.0.0.1:8647`, overridden with
+`WT_INJECT_URL`). The request deadline defaults to 120 seconds, can be
+overridden with `WT_INJECT_TIMEOUT_S`, and the driver adds the specified
+five-second transport grace. It is implemented on the standard library
+(`urllib.request`), keeping Wind Tunnel's runtime dependency count where it
+is. Selection follows the existing resolution order in `wt run --runtime`
+(built-ins → entry points → dotted path).
 
 ## The reset canary
 

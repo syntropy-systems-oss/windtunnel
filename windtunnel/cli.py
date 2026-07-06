@@ -321,10 +321,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
     Drives selected scenarios against the specified runtime, writes traces
     to the runs/ directory, and exits non-zero if any scenario fails.
 
-    Supports --runtime in_memory (built-in) for smoke testing, plus any
-    runtime plugin installed under the "windtunnel.runtimes" entry-point
-    group (e.g. acme / acme_gateway from a platform driver package)
-    or a 'module:attr' dotted path — see windtunnel.spi.runtime_plugin.
+    Supports built-in runtimes for smoke testing and Contract C endpoints,
+    plus any runtime plugin installed under the "windtunnel.runtimes"
+    entry-point group (e.g. acme / acme_gateway from a platform driver
+    package) or a 'module:attr' dotted path — see
+    windtunnel.spi.runtime_plugin.
 
     Scenarios arrive as ScenarioPacks: the built-in dims plus any pack
     installed under the "windtunnel.scenario_packs" entry-point group —
@@ -639,9 +640,9 @@ def _discover_scenario_packs() -> list:
 class _InMemoryPlugin:
     """Built-in RuntimePlugin for the zero-infrastructure scripted runtime.
 
-    The only runtime that ships inside the framework itself — everything else
-    (platform driver packages) arrives via the
-    "windtunnel.runtimes" entry-point group and stays OUT of cli.py.
+    One of the small runtimes that ship inside the framework itself —
+    platform driver packages arrive via the "windtunnel.runtimes"
+    entry-point group and stay OUT of cli.py.
     No pre_run hook: a scripted runtime has no bench infrastructure to prep.
     """
 
@@ -650,11 +651,19 @@ class _InMemoryPlugin:
         return InMemoryRuntime(scripted_responses=["ok"])
 
 
+class _HttpInjectPlugin:
+    """Built-in RuntimePlugin for Contract C HTTP inject endpoints."""
+
+    def build(self, runtime_name: str, label: str, soul_path: str | None) -> object:
+        from windtunnel.runtimes.http_inject import HttpInjectRuntime  # noqa: PLC0415
+        return HttpInjectRuntime()
+
+
 def _resolve_runtime_plugin(runtime_name: str) -> object:
     """Resolve a --runtime name to a RuntimePlugin instance.
 
     Resolution order (see windtunnel.spi.runtime_plugin for the contract):
-      1. Built-ins — "in_memory".
+      1. Built-ins — "in_memory", "http_inject".
       2. Entry points in group "windtunnel.runtimes", matched by NAME.
          The entry-point value is a RuntimePlugin instance or class
          (a class is instantiated with no args).
@@ -662,7 +671,10 @@ def _resolve_runtime_plugin(runtime_name: str) -> object:
          the escape hatch for drivers not (yet) packaged with an entry point.
       4. Error (exit 2) listing the built-in + discovered names.
     """
-    builtin = {"in_memory": _InMemoryPlugin}
+    builtin = {
+        "http_inject": _HttpInjectPlugin,
+        "in_memory": _InMemoryPlugin,
+    }
     if runtime_name in builtin:
         return builtin[runtime_name]()
 
