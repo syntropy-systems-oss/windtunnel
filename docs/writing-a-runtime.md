@@ -131,6 +131,17 @@ a flag in the platform, plus a stub for any external identity provider, so
 the bench is hermetic. Whatever you do, keep real credentials in env vars,
 never in runtime code or scenario definitions.
 
+## The paved path: `http_inject`
+
+If your agent process can expose two HTTP routes, prefer the built-in
+`http_inject` runtime over writing a custom driver. Implement the Contract C
+routes (`POST /wt/inject` and `POST /wt/reset`) described in the
+[inject-protocol design](design/0002-inject-protocol.md), then run Wind
+Tunnel with `wt run --runtime http_inject`. The runtime sends only the
+newest user turn, validates the strict response envelope, and converts
+ordered `{name, arguments}` tool-call objects into the OpenAI-shaped SPI
+response that Wind Tunnel traces already understand.
+
 ## A minimal skeleton
 
 ```python

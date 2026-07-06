@@ -8,8 +8,9 @@ driver) live in a separate installable package while `wt --runtime <name>`
 keeps working unchanged.
 
 Discovery (resolved by the CLI, in order):
-  1. Built-ins — currently only "in_memory" (zero-infrastructure scripted
-     runtime, ships with the framework).
+  1. Built-ins — "in_memory" (zero-infrastructure scripted runtime) and
+     "http_inject" (Contract C endpoint driver), both shipped with the
+     framework.
   2. Entry points — `importlib.metadata.entry_points(group="windtunnel.runtimes")`,
      matched by entry-point NAME == the --runtime value. The entry-point value
      must reference a RuntimePlugin INSTANCE or a RuntimePlugin CLASS; a class

@@ -2,7 +2,7 @@
 
 Resolution goes:
 
-  1. built-ins ("in_memory")
+  1. built-ins ("in_memory", "http_inject")
   2. importlib.metadata entry points, group "windtunnel.runtimes", by NAME
   3. "module:attr" dotted path
   4. error (exit 2) listing what IS available
@@ -57,17 +57,30 @@ class TestBuiltinResolution:
         plugin = _resolve_runtime_plugin("in_memory")
         assert isinstance(plugin, _InMemoryPlugin)
 
+    def test_http_inject_resolves_to_builtin_plugin(self) -> None:
+        from windtunnel.cli import _HttpInjectPlugin, _resolve_runtime_plugin
+        plugin = _resolve_runtime_plugin("http_inject")
+        assert isinstance(plugin, _HttpInjectPlugin)
+
     def test_in_memory_build_returns_in_memory_runtime(self) -> None:
         from windtunnel.cli import _resolve_runtime_plugin
         from windtunnel.runtimes.in_memory import InMemoryRuntime
         runtime = _resolve_runtime_plugin("in_memory").build("in_memory", "lbl", None)
         assert isinstance(runtime, InMemoryRuntime)
 
+    def test_http_inject_build_returns_http_inject_runtime(self) -> None:
+        from windtunnel.cli import _resolve_runtime_plugin
+        from windtunnel.runtimes.http_inject import HttpInjectRuntime
+        runtime = _resolve_runtime_plugin("http_inject").build("http_inject", "lbl", None)
+        assert isinstance(runtime, HttpInjectRuntime)
+
     def test_builtin_plugin_pre_run_is_absent(self) -> None:
         """The CLI invokes pre_run via getattr — the built-in plugin omitting it
         is the living proof that the hook is optional."""
         from windtunnel.cli import _resolve_runtime_plugin
         plugin = _resolve_runtime_plugin("in_memory")
+        assert getattr(plugin, "pre_run", None) is None
+        plugin = _resolve_runtime_plugin("http_inject")
         assert getattr(plugin, "pre_run", None) is None
 
     def test_build_runtime_in_memory_unchanged(self) -> None:
@@ -76,6 +89,12 @@ class TestBuiltinResolution:
         from windtunnel.runtimes.in_memory import InMemoryRuntime
         runtime = _build_runtime("in_memory", "lbl", soul_path=None)
         assert isinstance(runtime, InMemoryRuntime)
+
+    def test_build_runtime_http_inject(self) -> None:
+        from windtunnel.cli import _build_runtime
+        from windtunnel.runtimes.http_inject import HttpInjectRuntime
+        runtime = _build_runtime("http_inject", "lbl", soul_path=None)
+        assert isinstance(runtime, HttpInjectRuntime)
 
 
 
@@ -129,6 +148,7 @@ class TestUnknownRuntimeError:
         # points also appear depends on what's installed in the env — the
         # driver suites assert their own names show up.)
         assert "in_memory" in err
+        assert "http_inject" in err
 
 
 # ─── SPI conformance ─────────────────────────────────────────────────────────
@@ -137,4 +157,3 @@ class TestUnknownRuntimeError:
 class TestRuntimePluginProtocol:
     def test_protocol_exported_from_spi(self) -> None:
         from windtunnel.spi import RuntimePlugin  # noqa: F401
-

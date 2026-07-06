@@ -1,0 +1,300 @@
+"""HttpInjectRuntime — built-in Contract C inject-protocol runtime.
+
+Configuration is intentionally narrow: the base URL defaults to
+``http://127.0.0.1:8647`` and may be overridden with ``WT_INJECT_URL``.
+The per-request agent deadline defaults to ``120.0`` seconds and may be
+overridden with ``WT_INJECT_TIMEOUT_S``. Inject transport calls use that
+deadline plus a fixed five-second grace period, matching the protocol's
+driver-deadline rule.
+
+Agent-level failures are valid inject envelopes: when a response includes a
+non-empty ``error`` string, ``send()`` returns the assistant message exactly
+as supplied (possibly empty content) and attaches the raw error string as a
+top-level ``worker_warnings`` list. ``windtunnel.api.runner`` copies those
+warnings into ``Trace.worker_warnings``, so the run records the error without
+fabricating reply text.
+
+``provision(config, mcps)`` ignores ``mcps``. Contract C v1 has no route for
+tool registration; the endpoint owns its own tool wiring and reports the
+complete ordered tool-call transcript in each inject response.
+"""
+from __future__ import annotations
+
+import json
+import os
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+from windtunnel.spi.agent_runtime import AgentConfig, AgentHandle, Message, Response
+
+DEFAULT_BASE_URL = "http://127.0.0.1:8647"
+DEFAULT_TIMEOUT_S = 120.0
+GRACE_TIMEOUT_S = 5.0
+PROTOCOL_VERSION = 1
+
+
+def _resolve_timeout(timeout_s: float | None) -> float:
+    if timeout_s is None:
+        raw = os.environ.get("WT_INJECT_TIMEOUT_S")
+        if raw is None:
+            value = DEFAULT_TIMEOUT_S
+        else:
+            try:
+                value = float(raw)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"WT_INJECT_TIMEOUT_S must be a float, got {raw!r}"
+                ) from exc
+    else:
+        value = float(timeout_s)
+    if value <= 0:
+        raise RuntimeError(f"http_inject timeout_s must be positive, got {value!r}")
+    return value
+
+
+def _decode_http_error_body(body: bytes) -> str:
+    return body.decode("utf-8", errors="replace")
+
+
+def _decode_json_body(body: bytes, operation: str) -> str:
+    try:
+        return body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(
+            f"http_inject {operation}: response body is not valid UTF-8: {exc}"
+        ) from exc
+
+
+def _post_json(
+    url: str,
+    payload: dict[str, Any],
+    *,
+    timeout_s: float,
+    operation: str,
+) -> dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+    request = Request(
+        url,
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=timeout_s) as response:  # noqa: S310
+            status = int(getattr(response, "status", response.getcode()))
+            response_body = response.read()
+    except HTTPError as exc:
+        error_body = _decode_http_error_body(exc.read())
+        raise RuntimeError(
+            f"http_inject {operation}: expected HTTP 200, got {exc.code}: {error_body}"
+        ) from exc
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"http_inject {operation}: transport timeout after {timeout_s:.1f}s"
+        ) from exc
+    except URLError as exc:
+        raise RuntimeError(
+            f"http_inject {operation}: transport error: {exc.reason}"
+        ) from exc
+
+    if status != 200:
+        error_body = _decode_http_error_body(response_body)
+        raise RuntimeError(
+            f"http_inject {operation}: expected HTTP 200, got {status}: {error_body}"
+        )
+
+    text = _decode_json_body(response_body, operation)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"http_inject {operation}: response body is not valid JSON: {exc}; "
+            f"body={text!r}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(
+            f"http_inject {operation}: response JSON must be an object, "
+            f"got {type(parsed).__name__}"
+        )
+    return parsed
+
+
+def _require_version_echo(envelope: dict[str, Any], operation: str) -> None:
+    observed = envelope.get("wt_inject")
+    if observed != PROTOCOL_VERSION:
+        raise RuntimeError(
+            f"http_inject {operation}: response field 'wt_inject' must equal "
+            f"{PROTOCOL_VERSION}, got {observed!r}"
+        )
+
+
+def _validate_inject_envelope(envelope: dict[str, Any]) -> None:
+    _require_version_echo(envelope, "inject")
+
+    if "reply" not in envelope:
+        raise RuntimeError("http_inject inject: response missing required field 'reply'")
+    if not isinstance(envelope["reply"], str):
+        raise RuntimeError(
+            "http_inject inject: response field 'reply' must be a string, "
+            f"got {type(envelope['reply']).__name__}"
+        )
+
+    if "tool_calls" not in envelope:
+        raise RuntimeError(
+            "http_inject inject: response missing required field 'tool_calls'"
+        )
+    tool_calls = envelope["tool_calls"]
+    if not isinstance(tool_calls, list):
+        raise RuntimeError(
+            "http_inject inject: response field 'tool_calls' must be a list, "
+            f"got {type(tool_calls).__name__}"
+        )
+
+    for idx, call in enumerate(tool_calls):
+        if not isinstance(call, dict):
+            raise RuntimeError(
+                f"http_inject inject: tool_calls[{idx}] must be an object, "
+                f"got {type(call).__name__}"
+            )
+        name = call.get("name")
+        if not isinstance(name, str) or not name:
+            raise RuntimeError(
+                f"http_inject inject: tool_calls[{idx}].name must be a non-empty string"
+            )
+        if "arguments" not in call:
+            raise RuntimeError(
+                f"http_inject inject: tool_calls[{idx}] missing required field "
+                "'arguments'"
+            )
+        arguments = call["arguments"]
+        if not isinstance(arguments, dict):
+            raise RuntimeError(
+                f"http_inject inject: tool_calls[{idx}].arguments must be a JSON "
+                f"object, got {type(arguments).__name__}"
+            )
+
+    if "error" in envelope:
+        error = envelope["error"]
+        if not isinstance(error, str):
+            raise RuntimeError(
+                "http_inject inject: response field 'error' must be a string, "
+                f"got {type(error).__name__}"
+            )
+        if not error:
+            raise RuntimeError(
+                "http_inject inject: response field 'error' must be non-empty "
+                "when present"
+            )
+    if envelope["reply"] == "" and not envelope.get("error"):
+        raise RuntimeError(
+            "http_inject inject: response field 'reply' may be empty only when "
+            "non-empty 'error' is present"
+        )
+
+
+def _validate_reset_envelope(envelope: dict[str, Any]) -> None:
+    _require_version_echo(envelope, "reset")
+
+
+def _newest_user_text(messages: list[Message]) -> str:
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            content = message.get("content")
+            if not isinstance(content, str):
+                raise RuntimeError(
+                    "http_inject send: newest user message content must be a string, "
+                    f"got {type(content).__name__}"
+                )
+            return content
+    raise RuntimeError("http_inject send: no user message found")
+
+
+def _openai_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    converted: list[dict[str, Any]] = []
+    for idx, call in enumerate(tool_calls):
+        converted.append({
+            "id": f"call_{idx}",
+            "type": "function",
+            "function": {
+                "name": call["name"],
+                "arguments": json.dumps(call["arguments"]),
+            },
+        })
+    return converted
+
+
+def _to_response(envelope: dict[str, Any]) -> Response:
+    tool_calls = _openai_tool_calls(envelope["tool_calls"])
+    response: Response = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": envelope["reply"],
+                    "tool_calls": tool_calls,
+                },
+                "finish_reason": "tool_calls" if tool_calls else "stop",
+            }
+        ]
+    }
+    error = envelope.get("error")
+    if isinstance(error, str) and error:
+        response["worker_warnings"] = [error]
+    return response
+
+
+class _HttpInjectHandle:
+    """AgentHandle that POSTs Contract C requests to one endpoint."""
+
+    def __init__(self, base_url: str, timeout_s: float) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._timeout_s = timeout_s
+
+    def send(self, messages: list[Message], session_id: str) -> Response:
+        text = _newest_user_text(messages)
+        envelope = _post_json(
+            f"{self._base_url}/wt/inject",
+            {
+                "wt_inject": PROTOCOL_VERSION,
+                "session_id": session_id,
+                "text": text,
+                "timeout_s": self._timeout_s,
+            },
+            timeout_s=self._timeout_s + GRACE_TIMEOUT_S,
+            operation="inject",
+        )
+        _validate_inject_envelope(envelope)
+        return _to_response(envelope)
+
+    def reset_state(self) -> None:
+        envelope = _post_json(
+            f"{self._base_url}/wt/reset",
+            {"wt_inject": PROTOCOL_VERSION},
+            timeout_s=self._timeout_s + GRACE_TIMEOUT_S,
+            operation="reset",
+        )
+        _validate_reset_envelope(envelope)
+
+    def teardown(self) -> None:
+        # urllib opens per-request connections; there is no client to close.
+        pass
+
+
+class HttpInjectRuntime:
+    """Contract C AgentRuntime backed by the built-in HTTP inject wire."""
+
+    def __init__(self, base_url: str | None = None, timeout_s: float | None = None) -> None:
+        self._base_url = (base_url or os.environ.get("WT_INJECT_URL") or DEFAULT_BASE_URL).rstrip("/")
+        self._timeout_s = _resolve_timeout(timeout_s)
+        self.provisions: list[tuple[AgentConfig, _HttpInjectHandle]] = []
+
+    def provision(self, config: AgentConfig, mcps: list | None = None) -> AgentHandle:  # type: ignore[override]
+        # mcps: ignored — Contract C v1 has no tool-registration route.
+        handle = _HttpInjectHandle(self._base_url, self._timeout_s)
+        self.provisions.append((config, handle))
+        return handle  # type: ignore[return-value]

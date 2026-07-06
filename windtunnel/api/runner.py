@@ -242,6 +242,25 @@ def _extract_reply(response: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]
     return content, tool_calls
 
 
+def _extract_response_worker_warnings(response: dict[str, Any]) -> list[str]:
+    """Return runtime-supplied warnings from a send() response, if present.
+
+    Runtimes may need to surface scoreable agent-level failures without
+    raising and without inventing assistant content. A top-level
+    ``worker_warnings`` list is copied into the Trace alongside probe/MCP
+    warnings; malformed warning payloads degrade to one diagnostic string.
+    """
+    if "worker_warnings" not in response:
+        return []
+    warnings = response["worker_warnings"]
+    if not isinstance(warnings, list):
+        return [
+            "runtime_warning_shape: response worker_warnings must be a list, "
+            f"got {type(warnings).__name__}",
+        ]
+    return [str(warning) for warning in warnings]
+
+
 # ─── Core single-run driver ───────────────────────────────────────────────────
 
 def _run_once(
@@ -285,6 +304,7 @@ def _run_once(
     # Multi-turn when user_turns is non-empty; else single-turn [prompt]
     user_turns: list[str] = scenario.user_turns or [scenario.prompt]
     responses: list[str] = []
+    runtime_warnings: list[str] = []
 
     for turn_idx, user_text in enumerate(user_turns):
         # Record user turn
@@ -317,6 +337,7 @@ def _run_once(
 
         # Extract assistant content + tool_calls (shape-tolerant)
         reply_text, tool_calls = _extract_reply(response)
+        runtime_warnings.extend(_extract_response_worker_warnings(response))
 
         turns.append(Turn(
             role="assistant",
@@ -350,7 +371,7 @@ def _run_once(
         finished_at=finished_at,
         turns=turns,
         tool_schema_hash=compute_hash(scenario.name),
-        worker_warnings=probe_warnings + mcp_warnings,
+        worker_warnings=runtime_warnings + probe_warnings + mcp_warnings,
         mcp_calls=mcp_calls,
         observations=observations,
     )
