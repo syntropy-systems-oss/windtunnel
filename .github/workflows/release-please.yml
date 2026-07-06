@@ -19,6 +19,31 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      # release-please bumps pyproject.toml on its PR branch but knows nothing
+      # about uv.lock, so every release used to leave the lockfile one version
+      # behind (and every subsequent `uv run` tried to sync it as a side
+      # effect). Re-lock on the release PR branch here, in the same run — a
+      # separate workflow can't do it because pushes made with GITHUB_TOKEN
+      # never trigger other workflows (the same recursion guard the publish
+      # job below works around).
+      - uses: actions/checkout@v4
+        if: ${{ steps.release.outputs.pr }}
+        with:
+          ref: ${{ fromJson(steps.release.outputs.pr).headBranchName }}
+      - uses: astral-sh/setup-uv@v5
+        if: ${{ steps.release.outputs.pr }}
+      - name: Sync uv.lock with the release version bump
+        if: ${{ steps.release.outputs.pr }}
+        run: |
+          uv lock
+          if ! git diff --quiet uv.lock; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add uv.lock
+            git commit -m "chore: sync uv.lock with release version"
+            git push
+          fi
+
   # Publish runs in the SAME workflow run, gated on release-please having just
   # cut a release. It deliberately does NOT listen for the `release: published`
   # event: release-please creates that release with the default GITHUB_TOKEN,
