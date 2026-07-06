@@ -82,10 +82,18 @@ and **conventional commits** — commit messages drive the version:
   (pre-1.0, majors are taken as minors).
 - On every push to `main`, release-please maintains a release PR that
   accumulates the CHANGELOG and the next version (in `pyproject.toml` +
-  `.release-please-manifest.json`). **Merging that PR is the release**: it
-  tags `vX.Y.Z`, creates the GitHub release, and the publish workflow
-  (`.github/workflows/publish.yml`) builds with `uv build` and uploads to
-  PyPI via Trusted Publishing — no API tokens anywhere.
+  `.release-please-manifest.json`). **Merging that PR is the release**: in
+  one `.github/workflows/release-please.yml` run it tags `vX.Y.Z`, creates
+  the GitHub release, and — gated on `release_created` — a chained `publish`
+  job builds with `uv build` and uploads to PyPI via Trusted Publishing.
+  No API tokens, and no human in the loop.
+- Publishing is a *job in the same run*, not a separate workflow keyed off
+  the `release: published` event. release-please cuts the release with the
+  default `GITHUB_TOKEN`, and GitHub refuses to trigger workflows from
+  `GITHUB_TOKEN`-authored events, so an event-driven publish workflow never
+  fires for a bot-cut release. (That gap is why v0.4.0 was tagged but never
+  reached PyPI — it was the first release published entirely by the bot; the
+  earlier ones were cut by a human, which does fire the event.)
 
 Pre-1.0: breaking changes are allowed but must be a `feat!:` so the
 changelog calls them out. The config encodes the pre-1.0 stance:
@@ -115,7 +123,7 @@ Things the workflows need that only the GitHub/PyPI UIs can grant:
    (release-please needs it).
 3. **PyPI Trusted Publisher**: on PyPI, add a publisher for project
    `windtunnel-bench` → owner `syntropy-systems-oss`, repo `windtunnel`,
-   workflow `publish.yml`, environment `pypi`. (For a not-yet-existing
+   workflow `release-please.yml`, environment `pypi`. (For a not-yet-existing
    project, use PyPI's "pending publisher" flow.) Then create the `pypi`
    environment in repo Settings → Environments. The bare name
    `windtunnel` is a squatted empty registration on PyPI; a PEP 541

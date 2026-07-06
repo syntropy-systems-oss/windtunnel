@@ -1,0 +1,93 @@
+{
+  "windtunnel_interchange": 1,
+  "otel_genai_mapping": "semantic-conventions-genai@development-2026-06",
+  "source": {
+    "ref": "incident-2026-06-30-412",
+    "system": "runner-side-capture",
+    "captured_at": "2026-06-30T12:01:00Z"
+  },
+  "session": {
+    "model": "gpt-example-1",
+    "provider": "openai"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "parts": [
+        {"type": "text", "content": "What is the status of order 4821?"}
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "tool_call",
+          "id": "call_1",
+          "name": "order_status",
+          "arguments": {"order_id": "4821"}
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool_call_response",
+          "id": "call_1",
+          "response": {"status": "in_transit", "eta": "tomorrow"}
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {"type": "text", "content": "Order 4821 is in transit and due tomorrow."}
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {"type": "text", "content": "Can you also confirm the email on file for Bluewing?"}
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "tool_call",
+          "id": "call_2",
+          "name": "client_lookup",
+          "arguments": {"query": "Bluewing"}
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool_call_response",
+          "id": "call_2",
+          "response": {"email": "ops@bluewing.example"}
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {"type": "text", "content": "The email on file for Bluewing is ops@bluewing.example."}
+      ]
+    }
+  ],
+  "witnessed_calls": [
+    {
+      "tool_name": "order_status",
+      "args": {"order_id": "4821"},
+      "result": {"status": "in_transit", "eta": "tomorrow"}
+    },
+    {
+      "tool_name": "client_lookup",
+      "args": {"query": "Bluewing"},
+      "result": {"email": "ops@bluewing.example"}
+    }
+  ]
+}

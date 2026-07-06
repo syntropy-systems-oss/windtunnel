@@ -1,0 +1,21 @@
+{
+  "windtunnel_interchange": 1,
+  "session": {
+    "model": "gpt-example-1"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "parts": [
+        {"type": "text", "content": "Email on file for Bluewing?"}
+      ]
+    }
+  ],
+  "tool_definitions": [
+    {
+      "name": "client_lookup",
+      "description": "Look up a client by name or account id.",
+      "input_schema": "not-an-object"
+    }
+  ]
+}

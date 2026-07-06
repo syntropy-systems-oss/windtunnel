@@ -8,6 +8,7 @@ Example::
     from windtunnel.api.evaluators import evaluate_outcome
 """
 from windtunnel.api.aggregate import AggregateResult, ScenarioRunResult, aggregate_runs
+from windtunnel.api.canary import CanaryResult, run_reset_canary
 from windtunnel.api.evaluators import (
     evaluate_constraint,
     evaluate_outcome,
@@ -26,6 +27,7 @@ from windtunnel.api.interchange import (
     TextPart,
     ToolCallPart,
     ToolCallResponsePart,
+    build_envelope,
     load_interchange,
     parse_interchange,
 )
@@ -109,6 +111,8 @@ __all__ = [
     "ToolReturnsMalformedJson", "ToolTimeoutPerScenario", "ToolReturnsEmptyUnexpected",
     # aggregate
     "AggregateResult", "ScenarioRunResult", "aggregate_runs",
+    # canary
+    "CanaryResult", "run_reset_canary",
     # runner
     "ScenarioResult", "run_scenario",
     # replay
@@ -122,6 +126,6 @@ __all__ = [
     # interchange/import
     "InterchangeFormatError", "InterchangeMessage", "InterchangePart",
     "InterchangeToolDefinition", "InterchangeTrace", "InterchangeWitnessedCall",
-    "TextPart", "ToolCallPart", "ToolCallResponsePart", "load_interchange",
-    "parse_interchange", "ImportResult", "write_imported_scenario",
+    "TextPart", "ToolCallPart", "ToolCallResponsePart", "build_envelope",
+    "load_interchange", "parse_interchange", "ImportResult", "write_imported_scenario",
 ]

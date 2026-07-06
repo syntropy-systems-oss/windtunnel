@@ -1,0 +1,19 @@
+{
+  "windtunnel_interchange": 1,
+  "session": {
+    "model": "gpt-example-1"
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "toolCall",
+          "id": "call_1",
+          "name": "client_lookup",
+          "arguments": {"query": "Bluewing"}
+        }
+      ]
+    }
+  ]
+}

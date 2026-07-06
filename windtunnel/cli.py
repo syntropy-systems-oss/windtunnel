@@ -7,6 +7,7 @@ Subcommands:
     wt report   [--runs DIR] [--out FILE] [--format html|markdown|json]
     wt compare  --labels L1 L2 ...
     wt replay   --trace PATH --runtime RUNTIME
+    wt doctor   --runtime RUNTIME [--soul PATH] [--label LABEL]
 
 Design: argparse (stdlib) — no click dependency. Each subcommand is a
 function; main() is the dispatch entry point. Exit code 0 = all pass,
@@ -1243,6 +1244,64 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     return 0
 
 
+# ─── doctor ──────────────────────────────────────────────────────────────────
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    """Handle the `wt doctor` subcommand.
+
+    `wt doctor` is the one-command "is this endpoint conformant" check an
+    operator runs after standing up a stack: resolve --runtime exactly the
+    way `wt run` does, then run the reset-isolation canary
+    (windtunnel.api.canary.run_reset_canary) against it in RECALL mode —
+    doctor is a bring-up tool for a box with a live model, and there is no
+    portable way for the CLI to conjure a StateProbe for an arbitrary
+    runtime. Hermetic (recall-free) canary runs stay library/pytest-only:
+    importing run_reset_canary(..., probe_recall=False, state_probe=...)
+    directly is what belongs in a driver repo's CI, where no live model is
+    available. See docs/writing-a-runtime.md for both.
+    """
+    from windtunnel.api.canary import run_reset_canary  # noqa: PLC0415
+    from windtunnel.spi.agent_runtime import AgentConfig  # noqa: PLC0415
+
+    runtime_name: str = args.runtime
+    label: str = args.label or "wt_doctor"
+
+    # Mirrors wt run's --soul handling: the flag is a PATH, the file content
+    # is threaded into AgentConfig.system_prompt (not passed to build()).
+    system_prompt: str | None = None
+    if args.soul:
+        soul_path = Path(args.soul)
+        if not soul_path.is_file():
+            print(f"wt doctor: --soul file not found: {args.soul}", file=sys.stderr)
+            return 2
+        system_prompt = soul_path.read_text()
+
+    # _build_runtime resolves the plugin via _resolve_runtime_plugin exactly
+    # like `wt run` (same built-in/entry-point/dotted-path order, same exit-2
+    # behavior on an unresolvable name — see _resolve_runtime_plugin).
+    runtime = _build_runtime(runtime_name, label, soul_path=args.soul)
+    config = AgentConfig(
+        agent_id="wt-doctor", variant_id=label, system_prompt=system_prompt,
+    )
+
+    print(
+        f"wt doctor: probing runtime {runtime_name!r} for reset-isolation "
+        "leaks (recall mode — requires a live model)..."
+    )
+    try:
+        result = run_reset_canary(runtime, config)
+    except RuntimeError as exc:
+        print(f"wt doctor: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"  nonce:  {result.nonce}")
+    print(f"  {result.detail}")
+    if result.leaked:
+        print(f"  evidence: {len(result.evidence)} response(s) contained the nonce")
+        return 1
+    return 0
+
+
 # ─── import ──────────────────────────────────────────────────────────────────
 
 def _cmd_import(args: argparse.Namespace) -> int:
@@ -1281,6 +1340,60 @@ def _cmd_import(args: argparse.Namespace) -> int:
         return 2
 
     print(f"wrote: {result.out_dir}", file=sys.stderr)
+    return 0
+
+
+# ─── validate ────────────────────────────────────────────────────────────────
+
+def _cmd_validate(args: argparse.Namespace) -> int:
+    """Handle the `wt validate` subcommand.
+
+    A thin wrapper over `parse_interchange` and `lint_interchange` — it does
+    not duplicate any parsing, validation, or lint logic. For each path,
+    prints one line: `OK <path>` or `INVALID <path>: <error>`, followed by
+    one `WARN <path>: <message>` line per lint hit on envelopes that parsed.
+    A missing file is a usage error (exit 2), matching `wt import`'s
+    conventions; a well-formed-but-invalid envelope is a validation failure
+    (exit 1), not a usage error. Warnings do not affect the exit code unless
+    `--strict` is given, in which case any warning also exits 1.
+    """
+    from windtunnel.api.interchange import (  # noqa: PLC0415
+        InterchangeFormatError,
+        lint_interchange,
+        parse_interchange,
+    )
+
+    paths = [Path(p) for p in args.paths]
+    missing = [p for p in paths if not p.is_file()]
+    if missing:
+        for p in missing:
+            print(f"wt validate: file not found: {p}", file=sys.stderr)
+        return 2
+
+    all_valid = True
+    any_warnings = False
+    for path in paths:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            print(f"INVALID {path}: invalid JSON: {exc}")
+            all_valid = False
+            continue
+        try:
+            parse_interchange(raw)
+        except InterchangeFormatError as exc:
+            print(f"INVALID {path}: {exc}")
+            all_valid = False
+            continue
+        print(f"OK {path}")
+        for warning in lint_interchange(raw):
+            print(f"WARN {path}: {warning}")
+            any_warnings = True
+
+    if not all_valid:
+        return 1
+    if args.strict and any_warnings:
+        return 1
     return 0
 
 
@@ -1366,6 +1479,30 @@ def main(argv: list[str] | None = None) -> int:
     replay_p.add_argument("--runs-dir", default="runs", metavar="DIR",
                           help="Directory to write replayed traces (default: ./runs).")
 
+    # ── doctor ───────────────────────────────────────────────────────────────
+    doctor_p = sub.add_parser(
+        "doctor",
+        help="Bring-up check: run the reset-isolation canary against a live runtime.",
+    )
+    doctor_p.add_argument("--runtime", default="in_memory", metavar="RUNTIME",
+                          help="Runtime to check (default: in_memory). Resolved "
+                               "exactly like `wt run --runtime`: built-in "
+                               "'in_memory', an installed plugin name (entry-"
+                               "point group 'windtunnel.runtimes'), or a "
+                               "'module:attr' dotted path to a RuntimePlugin. "
+                               "Runs the canary in RECALL mode, which requires "
+                               "a live model behind the runtime — doctor is a "
+                               "bring-up tool, not a CI check. For CI runners "
+                               "without a live model, call "
+                               "run_reset_canary(..., probe_recall=False, "
+                               "state_probe=...) directly from pytest instead.")
+    doctor_p.add_argument("--soul", default=None, metavar="PATH",
+                          help="Path to SOUL.md / persona doc to inject "
+                               "(mirrors `wt run --soul`).")
+    doctor_p.add_argument("--label", default=None, metavar="LABEL",
+                          help="Variant label recorded for this check "
+                               "(default: wt_doctor).")
+
     # ── import ───────────────────────────────────────────────────────────────
     import_p = sub.add_parser(
         "import",
@@ -1378,6 +1515,18 @@ def main(argv: list[str] | None = None) -> int:
                                "fixture.universe.json, and IMPORTED.md.")
     import_p.add_argument("--force", action="store_true",
                           help="Allow writing into an existing non-empty directory.")
+
+    # ── validate ─────────────────────────────────────────────────────────────
+    validate_p = sub.add_parser(
+        "validate",
+        help="Validate Contract A *.wtin.json interchange envelope(s).",
+    )
+    validate_p.add_argument("paths", nargs="+", metavar="PATH",
+                            help="Path(s) to *.wtin.json envelope file(s) to validate.")
+    validate_p.add_argument("--strict", action="store_true",
+                            help="Exit 1 if any file produces a lint warning (e.g. "
+                                 "truncated/redacted values, unpaired tool_call_response "
+                                 "ids), not only on schema errors.")
 
     # ── triage ───────────────────────────────────────────────────────────────
     triage_p = sub.add_parser(
@@ -1406,8 +1555,12 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_run(args)
     if args.command == "replay":
         return _cmd_replay(args)
+    if args.command == "doctor":
+        return _cmd_doctor(args)
     if args.command == "import":
         return _cmd_import(args)
+    if args.command == "validate":
+        return _cmd_validate(args)
     if args.command == "triage":
         return _cmd_triage(args)
 

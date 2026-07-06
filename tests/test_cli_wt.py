@@ -677,3 +677,109 @@ class TestWtRunScoreSidecar:
         assert new_traces, "replay saved no trace"
         for trace_path in new_traces:
             assert trace_path.with_suffix(".score.json").exists()
+
+
+class _DoctorLeakyHandle:
+    """Deliberately broken handle for `wt doctor` tests: reset_state() does
+    NOT wipe history and send() echoes back any nonce-shaped word it has
+    ever seen — models a driver whose reset is a no-op (see
+    tests/test_reset_canary.py's _LeakyHandle for the library-level idiom).
+    """
+
+    def __init__(self) -> None:
+        self.seen_nonces: list[str] = []
+        self.teardown_count = 0
+
+    def send(self, messages: list[dict], session_id: str) -> dict:
+        text = messages[-1]["content"]
+        for word in text.replace(":", " ").replace(".", " ").split():
+            if len(word) == 32:  # uuid4().hex length
+                self.seen_nonces.append(word)
+        reply = " ".join(self.seen_nonces) if self.seen_nonces else "ok"
+        return {"choices": [{"message": {"role": "assistant", "content": reply}}]}
+
+    def reset_state(self) -> None:
+        pass  # deliberately does not clear seen_nonces — the bug under test
+
+    def teardown(self) -> None:
+        self.teardown_count += 1
+
+
+class _DoctorLeakyRuntime:
+    def __init__(self) -> None:
+        self.handle = _DoctorLeakyHandle()
+
+    def provision(self, config, mcps=None):
+        return self.handle
+
+
+class TestWtDoctor:
+    """`wt doctor` — bring-up canary check."""
+
+    def test_wt_doctor_help_exits_zero(self) -> None:
+        result = _wt("doctor", "--help")
+        assert result.returncode == 0
+
+    def test_wt_doctor_help_mentions_runtime(self) -> None:
+        result = _wt("doctor", "--help")
+        combined = result.stdout + result.stderr
+        assert "runtime" in combined.lower()
+
+    def test_wt_doctor_help_mentions_pytest_for_hermetic_mode(self) -> None:
+        # Hermetic (recall-free) mode is library/pytest-only — the CLI has no
+        # portable way to conjure a StateProbe, so the help text must say so.
+        result = _wt("doctor", "--help")
+        combined = result.stdout + result.stderr
+        assert "pytest" in combined.lower()
+
+    def test_doctor_clean_in_memory_runtime_exits_zero(self) -> None:
+        # in_memory is a scripted runtime (always replies "ok"), so it never
+        # recalls the nonce — a real, non-monkeypatched clean run.
+        result = _wt("doctor", "--runtime", "in_memory", timeout=30)
+        assert result.returncode == 0, result.stderr
+        assert "no leak observed" in result.stdout.lower()
+
+    def test_doctor_unresolvable_runtime_exits_two(self) -> None:
+        result = _wt("doctor", "--runtime", "definitely-not-a-real-runtime")
+        assert result.returncode == 2
+        assert "unknown runtime" in (result.stdout + result.stderr).lower()
+
+    def test_doctor_leaky_runtime_exits_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import windtunnel.cli as cli
+
+        runtime = _DoctorLeakyRuntime()
+        monkeypatch.setattr(
+            cli, "_build_runtime", lambda runtime_name, label, soul_path: runtime
+        )
+
+        rc = cli.main(["doctor", "--runtime", "fake_leaky"])
+
+        assert rc == 1
+        assert runtime.handle.teardown_count == 1
+
+    def test_doctor_leaky_runtime_prints_leak_evidence(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import windtunnel.cli as cli
+
+        runtime = _DoctorLeakyRuntime()
+        monkeypatch.setattr(
+            cli, "_build_runtime", lambda runtime_name, label, soul_path: runtime
+        )
+
+        cli.main(["doctor", "--runtime", "fake_leaky"])
+
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "leak proven" in combined.lower()
+        assert "evidence" in combined.lower()
+
+    def test_doctor_soul_file_not_found_exits_two(self, tmp_path: Path) -> None:
+        result = _wt(
+            "doctor", "--runtime", "in_memory",
+            "--soul", str(tmp_path / "missing_soul.md"),
+        )
+        assert result.returncode == 2
+        assert "soul" in (result.stdout + result.stderr).lower()
