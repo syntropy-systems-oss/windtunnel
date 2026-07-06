@@ -1,3 +1,4 @@
+<!-- GENERATED from docs/agent-quickstart.md at f9559c8cb4ea — do not edit; edit docs/agent-quickstart.md. -->
 ---
 description: "Self-contained guide for coding agents to add Wind Tunnel scenarios, runtime wiring, and run commands to a project."
 ---

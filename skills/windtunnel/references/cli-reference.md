@@ -1,3 +1,4 @@
+<!-- GENERATED from docs/cli-reference.md at ca5882469974 — do not edit; edit docs/cli-reference.md. -->
 ---
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.

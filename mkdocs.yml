@@ -34,6 +34,9 @@ markdown_extensions:
   - pymdownx.highlight
   - pymdownx.details
 
+not_in_nav: |
+  agents/**
+
 nav:
   - Home: index.md
   - Getting started: getting-started.md

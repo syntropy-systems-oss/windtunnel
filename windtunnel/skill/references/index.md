@@ -1,3 +1,4 @@
+<!-- GENERATED from docs/index.md at af7035031d4f — do not edit; edit docs/index.md. -->
 ---
 description: "Overview of Wind Tunnel's four-layer agent reliability bench, import workflow, CLI, and starting points."
 ---

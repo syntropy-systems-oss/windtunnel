@@ -1,3 +1,4 @@
+<!-- GENERATED from docs/writing-a-runtime.md at aee3187ebb4b — do not edit; edit docs/writing-a-runtime.md. -->
 ---
 description: "Guide to implementing Wind Tunnel runtime protocols or Contract C endpoints with reset isolation and tool-call evidence."
 ---

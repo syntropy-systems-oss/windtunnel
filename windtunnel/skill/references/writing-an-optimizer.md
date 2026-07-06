@@ -1,3 +1,4 @@
+<!-- GENERATED from docs/writing-an-optimizer.md at 39841cf2a4a5 — do not edit; edit docs/writing-an-optimizer.md. -->
 ---
 description: "Design guide for prompt optimizer implementations using Wind Tunnel failure classifications and fix vectors."
 ---

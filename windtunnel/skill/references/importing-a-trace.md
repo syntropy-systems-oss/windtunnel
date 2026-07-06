@@ -1,3 +1,4 @@
+<!-- GENERATED from docs/importing-a-trace.md at 4fd316623bfe — do not edit; edit docs/importing-a-trace.md. -->
 ---
 description: "Workflow for validating a Contract A trace, importing a failing scenario skeleton, and authoring the regression gate."
 ---

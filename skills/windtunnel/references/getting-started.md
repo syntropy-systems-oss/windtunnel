@@ -1,3 +1,4 @@
+<!-- GENERATED from docs/getting-started.md at ed831723fa98 — do not edit; edit docs/getting-started.md. -->
 ---
 description: "Step-by-step guide to install Wind Tunnel, run and report scenarios, gate CI, and triage failures."
 ---

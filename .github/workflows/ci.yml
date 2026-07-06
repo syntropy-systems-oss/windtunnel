@@ -15,10 +15,14 @@ jobs:
           python-version: "3.11"
       - name: Install
         run: uv sync
+      - name: Generated agent skill is current
+        run: |
+          uv run --group docs python scripts/build_agent_skill.py
+          git diff --exit-code
       - name: Lockfile is current (uv lock --check)
         run: uv lock --check
       - name: Lint
-        run: uv run ruff check windtunnel/ tests/
+        run: uv run ruff check windtunnel/ tests/ scripts/
       - name: Unit tests (no infrastructure required)
         run: uv run pytest -m "not integration" -q --timeout=120
 

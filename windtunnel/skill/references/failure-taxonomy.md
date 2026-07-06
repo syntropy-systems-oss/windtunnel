@@ -1,3 +1,4 @@
+<!-- GENERATED from docs/failure-taxonomy.md at 2e8904c29a63 — do not edit; edit docs/failure-taxonomy.md. -->
 ---
 description: "Catalog of Wind Tunnel failure categories, distinguishing signals, and fix vectors for triage."
 ---
