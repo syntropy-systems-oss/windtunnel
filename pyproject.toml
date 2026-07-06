@@ -18,6 +18,13 @@ dependencies = [
     "mcp>=1.27.1",
 ]
 
+[project.optional-dependencies]
+# Terminus-2 driver (windtunnel.runtimes.terminus). Harbor requires Python
+# >=3.12 while windtunnel core supports 3.11 — the marker keeps the base
+# install feather-weight and 3.11-compatible; the driver imports harbor
+# lazily and raises a clear error when the extra isn't installed.
+terminus = ["harbor>=0.17.1; python_version >= '3.12'"]
+
 [project.urls]
 Homepage = "https://github.com/syntropy-systems-oss/windtunnel"
 Issues = "https://github.com/syntropy-systems-oss/windtunnel/issues"
