@@ -95,6 +95,34 @@ class TestInMemoryRuntimeConformance:
         assert trace.scenario_id == "echo_test"
         assert len(trace.turns) >= 2  # user + assistant
 
+    def test_reset_after_provision_before_first_send(self) -> None:
+        events: list[str] = []
+
+        class OrderedHandle:
+            def reset_state(self) -> None:
+                events.append("reset")
+
+            def send(self, messages, session_id):
+                events.append("send")
+                return {
+                    "choices": [
+                        {"message": {"role": "assistant", "content": "ECHO", "tool_calls": []}}
+                    ]
+                }
+
+            def teardown(self) -> None:
+                events.append("teardown")
+
+        class OrderedRuntime:
+            def provision(self, config, mcps=None):
+                events.append("provision")
+                return OrderedHandle()
+
+        run_scenario(_echo_scenario("ECHO"), OrderedRuntime())
+
+        assert events[:3] == ["provision", "reset", "send"]
+        assert events[-1] == "teardown"
+
     def test_run_scenario_scores_outcome(self) -> None:
         scenario = _echo_scenario("ECHO")
         runtime = InMemoryRuntime(scripted_responses=["ECHO back at you"])
@@ -185,5 +213,4 @@ class TestCrossRuntimeComparability:
         r_a = run_scenario(scenario, self._make_runtime_a())
         r_b = run_scenario(scenario, self._make_runtime_b())
         assert r_a.runs[0].trace.run_id != r_b.runs[0].trace.run_id
-
 

@@ -23,7 +23,12 @@ from windtunnel.spi.agent_runtime import (
     Response,
     SamplingConfig,
 )
-from windtunnel.spi.mcp_server import MCPCall, MCPHandle, MCPServer
+from windtunnel.spi.mcp_server import (
+    MCPCall,
+    MCPHandle,
+    MCPServer,
+    ToolIntrospectableMCPHandle,
+)
 
 # ─── AgentConfig ─────────────────────────────────────────────────────────────
 
@@ -225,6 +230,11 @@ class _ConcreteMCPHandle:
         self._mode = mode
 
 
+class _ConcreteToolIntrospectableMCPHandle(_ConcreteMCPHandle):
+    def served_tools(self) -> list[str]:
+        return ["client_lookup"]
+
+
 class _ConcreteMCPServer:
     """Minimal concrete MCPServer."""
 
@@ -239,6 +249,17 @@ class TestMCPServerProtocol:
     def test_concrete_handle_satisfies_protocol(self) -> None:
         handle = _ConcreteMCPHandle()
         assert isinstance(handle, MCPHandle)
+
+    def test_served_tools_is_optional_on_mcp_handle(self) -> None:
+        handle = _ConcreteMCPHandle()
+        assert isinstance(handle, MCPHandle)
+        assert not isinstance(handle, ToolIntrospectableMCPHandle)
+
+    def test_tool_introspectable_handle_satisfies_optional_protocol(self) -> None:
+        handle = _ConcreteToolIntrospectableMCPHandle()
+        assert isinstance(handle, MCPHandle)
+        assert isinstance(handle, ToolIntrospectableMCPHandle)
+        assert handle.served_tools() == ["client_lookup"]
 
     def test_concrete_server_satisfies_protocol(self) -> None:
         server = _ConcreteMCPServer()

@@ -54,6 +54,12 @@ from windtunnel.api.evaluators import (
     evaluate_robustness,
     evaluate_trajectory,
 )
+from windtunnel.api.preconditions import (
+    Precondition,
+    PreconditionContext,
+    ToolAvailable,
+    WorldMismatchError,
+)
 from windtunnel.api.scenario import PreSendPerturbation, Scenario
 from windtunnel.api.score import LayerResult, Score
 from windtunnel.api.trace import Trace, Turn, compute_hash
@@ -261,6 +267,45 @@ def _extract_response_worker_warnings(response: dict[str, Any]) -> list[str]:
     return [str(warning) for warning in warnings]
 
 
+# ─── World preconditions ─────────────────────────────────────────────────────
+
+def _compiled_preconditions(scenario: Scenario) -> list[Precondition]:
+    """Return explicit preconditions plus requires_tools sugar."""
+    return [
+        *(ToolAvailable(name) for name in scenario.requires_tools),
+        *scenario.preconditions,
+    ]
+
+
+def _check_world_preconditions(
+    scenario: Scenario,
+    mcp_handles: list[MCPHandle],
+    config: AgentConfig,
+    state_probe: StateProbe | None,
+) -> None:
+    """Evaluate all preconditions and raise one joined mismatch error."""
+    checks = _compiled_preconditions(scenario)
+    if not checks:
+        return
+
+    ctx = PreconditionContext(
+        mcp_handles=mcp_handles,
+        state_probe=state_probe,
+        agent_config=config,
+    )
+    failures: list[str] = []
+    for check in checks:
+        try:
+            failure = check.check(ctx)
+        except Exception as exc:  # noqa: BLE001 - fail closed, but keep checking
+            failure = f"check raised {exc}"
+        if failure is not None:
+            failures.append(f"{check!r}: {failure}")
+
+    if failures:
+        raise WorldMismatchError(scenario.name, failures)
+
+
 # ─── Core single-run driver ───────────────────────────────────────────────────
 
 def _run_once(
@@ -458,6 +503,8 @@ def run_scenario(
         # plugins can register them into the live MCP server without
         # starting them a second time.
         handle = runtime.provision(config, mcps=mcp_handles)
+
+        _check_world_preconditions(scenario, mcp_handles, config, state_probe)
 
         model = config.model.name if config.model else "unknown"
         quant = config.model.quant if config.model else "unknown"

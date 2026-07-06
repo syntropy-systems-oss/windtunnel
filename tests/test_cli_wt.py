@@ -558,6 +558,123 @@ class TestWtRunCiOutput:
         ])
         assert rc == 1
 
+    def test_world_mismatch_prints_without_traceback(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+    ) -> None:
+        import windtunnel.api.runner as runner
+        import windtunnel.cli as cli
+        from windtunnel.api.preconditions import WorldMismatchError
+
+        scenario = _scenario("needs_world", tags=["dim:custom"])
+        pack = _pack("custom", [scenario])
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [pack])
+        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path: object())
+        monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda runtime_name: object())
+
+        def fail_world(*_args, **_kwargs):
+            raise WorldMismatchError("needs_world", ["ToolAvailable('missing'): missing"])
+
+        monkeypatch.setattr(runner, "run_scenario", fail_world)
+
+        rc = cli.main([
+            "run",
+            "--scenario", scenario.name,
+            "--runs-dir", str(tmp_path / "runs"),
+        ])
+
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert rc == 1
+        assert "needs_world" in combined
+        assert "missing" in combined
+        assert "Traceback" not in combined
+
+
+class TestWtRescore:
+    def test_rescore_help_exits_zero(self) -> None:
+        result = _wt("rescore", "--help")
+        assert result.returncode == 0
+
+    def test_rescore_saved_trace_flips_score_without_runtime(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+    ) -> None:
+        import windtunnel.cli as cli
+        from windtunnel.api.pack import ScenarioPack
+        from windtunnel.api.runner import run_scenario
+        from windtunnel.api.scenario import Scenario
+        from windtunnel.api.trace import save_trace, storage_path
+        from windtunnel.runtimes.in_memory import InMemoryRuntime
+
+        scenario = Scenario(
+            name="rescore_flip",
+            prompt="say ok",
+            target_facts=[["ok"]],
+        )
+        result = run_scenario(scenario, InMemoryRuntime(scripted_responses=["ok"]))
+        runs_dir = tmp_path / "runs"
+        trace_path = storage_path(result.runs[0].trace, base_dir=runs_dir)
+        save_trace(result.runs[0].trace, trace_path)
+        cli._write_score_sidecar(trace_path, result.runs[0].score, scenario)
+
+        scenario.target_facts = [["missing-now"]]
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [
+            ScenarioPack(name="local", scenarios=[scenario]),
+        ])
+        monkeypatch.setattr(
+            cli,
+            "_build_runtime",
+            lambda *_args, **_kwargs: pytest.fail("rescore must not build a runtime"),
+        )
+
+        rc = cli.main(["rescore", "--trace", str(trace_path)])
+
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "outcome PASS -> FAIL" in out
+        assert "summary: traces=1 changed=1 new_outcome_failures=1" in out
+
+    def test_rescore_write_updates_sidecar_with_origin_marker(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        import windtunnel.cli as cli
+        from windtunnel.api.pack import ScenarioPack
+        from windtunnel.api.runner import run_scenario
+        from windtunnel.api.scenario import Scenario
+        from windtunnel.api.trace import save_trace, storage_path
+        from windtunnel.runtimes.in_memory import InMemoryRuntime
+
+        scenario = Scenario(
+            name="rescore_write",
+            prompt="say ok",
+            target_facts=[["ok"]],
+        )
+        result = run_scenario(scenario, InMemoryRuntime(scripted_responses=["ok"]))
+        trace_path = storage_path(result.runs[0].trace, base_dir=tmp_path / "runs")
+        save_trace(result.runs[0].trace, trace_path)
+        cli._write_score_sidecar(trace_path, result.runs[0].score, scenario)
+
+        scenario.target_facts = [["missing-now"]]
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [
+            ScenarioPack(name="local", scenarios=[scenario]),
+        ])
+
+        rc = cli.main(["rescore", "--trace", str(trace_path), "--write"])
+
+        sidecar = json.loads(trace_path.with_suffix(".score.json").read_text(encoding="utf-8"))
+        trace_data = json.loads(trace_path.read_text(encoding="utf-8"))
+        assert rc == 1
+        assert sidecar["outcome"]["passed"] is False
+        assert sidecar["origin"]["kind"] == "rescore"
+        assert trace_data["scenario_id"] == "rescore_write"
+
 
 class TestWtReplay:
     def test_replay_without_args_exits_nonzero(self) -> None:

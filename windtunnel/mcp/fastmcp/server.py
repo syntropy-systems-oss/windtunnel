@@ -141,11 +141,16 @@ class LoggingFastMCP:
             self._mcp = None  # type: ignore[assignment]
         self._name = name
         self._call_log = _CallLog()
+        self._served_tools: list[str] = []
+        self._served_tools_lock = threading.Lock()
 
     def tool(self, **kwargs: Any) -> Any:
         """Decorator that registers a tool AND wraps it with call logging."""
         def decorator(fn: Any) -> Any:
             tool_name = kwargs.get("name") or fn.__name__
+            with self._served_tools_lock:
+                if tool_name not in self._served_tools:
+                    self._served_tools.append(tool_name)
 
             def wrapped(*args: Any, **fkwargs: Any) -> Any:
                 # Check failure mode before calling the real tool
@@ -216,6 +221,9 @@ class LoggingFastMCP:
             call_log.reset()
             return JSONResponse({"ok": True})
 
+        async def _tools_get(request: Request) -> Response:
+            return JSONResponse(self.served_tools())
+
         # Inject into FastMCP's custom routes list (appended once per instance).
         # Guard against duplicate injection if build_app() is called multiple times.
         existing_paths = {
@@ -228,6 +236,10 @@ class LoggingFastMCP:
         if "/calls/reset" not in existing_paths:
             self._mcp._custom_starlette_routes.append(
                 Route("/calls/reset", endpoint=_calls_reset, methods=["POST"])
+            )
+        if "/tools" not in existing_paths:
+            self._mcp._custom_starlette_routes.append(
+                Route("/tools", endpoint=_tools_get, methods=["GET"])
             )
 
         return self._mcp.streamable_http_app()
@@ -257,6 +269,11 @@ class LoggingFastMCP:
     def call_log(self) -> _CallLog:
         return self._call_log
 
+    def served_tools(self) -> list[str]:
+        """Return canonical tool names registered on this mock server."""
+        with self._served_tools_lock:
+            return list(self._served_tools)
+
 
 # ─── InProcessMCPHandle ───────────────────────────────────────────────────────
 
@@ -283,6 +300,9 @@ class InProcessMCPHandle:
 
     def configure_failure_mode(self, mode: str | None) -> None:
         self._logging_mcp.call_log.set_failure_mode(mode)
+
+    def served_tools(self) -> list[str]:
+        return self._logging_mcp.served_tools()
 
 
 # ─── FastMCPServer ────────────────────────────────────────────────────────────
@@ -372,6 +392,22 @@ class _SubprocessMCPHandle:
         # Failure mode must be set via environment variable before the subprocess
         # starts (MOCK_MCP_FAILURE_MODE in extra_env).
         pass
+
+    def served_tools(self) -> list[str]:
+        """Fetch canonical tool names from the mock server's /tools endpoint."""
+        if not self.calls_url:
+            return []
+        tools_url = self.calls_url.rstrip("/").replace("/calls", "/tools")
+        if not tools_url.endswith("/tools"):
+            tools_url = self.calls_url.rstrip("/") + "/tools"
+        try:
+            import urllib.request as _urllib_request
+            with _urllib_request.urlopen(tools_url, timeout=5) as resp:
+                raw = resp.read().decode("utf-8")
+            data = __import__("json").loads(raw)
+            return [str(name) for name in data]
+        except Exception:
+            return []
 
 
 class FastMCPServer:

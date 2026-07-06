@@ -44,6 +44,10 @@ Design decisions captured here:
    The sugar fields (must_call/forbidden_calls/order_matters) compile
    into built-in checks inside evaluate_trajectory; custom checks in
    Scenario.trajectory_checks run after them and are ANDed in.
+
+7. Preconditions are not scoring. They are world-shape assertions checked
+   before the runner spends any agent turn. requires_tools is sugar that
+   compiles into ToolAvailable preconditions at run time.
 """
 from __future__ import annotations
 
@@ -52,6 +56,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import ClassVar
 
+from windtunnel.api.preconditions import Precondition
 from windtunnel.api.score import FailureCost, LayerResult
 from windtunnel.api.trace import Trace
 
@@ -267,6 +272,13 @@ class Scenario:
     # History: this was a duck-typed extension attached via setattr by
     # dim_multi_turn_drift; it is now a first-class field.
     user_turns: list[str] = field(default_factory=list)
+
+    # ── World preconditions ───────────────────────────────────────────────────
+    # preconditions: checks over the already-started MCP handles, optional
+    # StateProbe, and AgentConfig. They fail fast before reset_state()/send().
+    # requires_tools is sugar for ToolAvailable(<name>) preconditions.
+    preconditions: list[Precondition] = field(default_factory=list)
+    requires_tools: list[str] = field(default_factory=list)
 
     # ── Constraint layer ───────────────────────────────────────────────────────
     policies: list[Policy] = field(default_factory=list)

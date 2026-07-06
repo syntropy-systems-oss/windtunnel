@@ -12,8 +12,12 @@ Covers:
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+import pytest
+
+from windtunnel.api.preconditions import Check, FileExists, WorldMismatchError
 from windtunnel.api.runner import ScenarioResult, run_matrix, run_scenario
 from windtunnel.api.scenario import Scenario
 from windtunnel.runtimes.in_memory import InMemoryRuntime
@@ -307,9 +311,21 @@ class _StubMCPHandle:
         pass
 
 
+class _IntrospectableMCPHandle(_StubMCPHandle):
+    def __init__(self, calls: list[MCPCall], tools: list[str]) -> None:
+        super().__init__(calls)
+        self._tools = tools
+
+    def served_tools(self) -> list[str]:
+        return list(self._tools)
+
+
 class _StubMCPServer:
-    def __init__(self, calls: list[MCPCall]) -> None:
-        self.handle = _StubMCPHandle(calls)
+    def __init__(self, calls: list[MCPCall], *, tools: list[str] | None = None) -> None:
+        if tools is None:
+            self.handle = _StubMCPHandle(calls)
+        else:
+            self.handle = _IntrospectableMCPHandle(calls, tools)
         self.stop_count = 0
 
     def start(self) -> _StubMCPHandle:
@@ -370,6 +386,55 @@ class TestMcpCallCollection:
         result = run_scenario(_scenario(), runtime, mcps=[server])
         stored = result.runs[0].trace.mcp_calls[0]["result"]
         assert isinstance(stored, str)  # repr() fallback
+
+
+# ─── World preconditions ─────────────────────────────────────────────────────
+
+class TestWorldPreconditions:
+    def test_requires_tools_sugar_passes_when_mcp_serves_tool(self) -> None:
+        scenario = _scenario()
+        scenario.requires_tools = ["client_lookup"]
+        server = _StubMCPServer([], tools=["client_lookup"])
+        runtime = InMemoryRuntime(scripted_responses=["ok"])
+
+        result = run_scenario(scenario, runtime, mcps=[server])
+
+        assert result.aggregate.verdict == "PASS"
+
+    def test_world_mismatch_raises_before_reset_or_send(self) -> None:
+        scenario = _scenario()
+        scenario.requires_tools = ["missing_tool"]
+        runtime = InMemoryRuntime(scripted_responses=["ok"])
+        server = _StubMCPServer([], tools=["client_lookup"])
+
+        with pytest.raises(WorldMismatchError) as excinfo:
+            run_scenario(scenario, runtime, mcps=[server])
+
+        assert "missing_tool" in str(excinfo.value)
+        _, handle = runtime.provisions[0]
+        assert handle.reset_count == 0
+        assert handle.calls == []
+        assert handle.teardown_count == 1
+        assert server.stop_count == 1
+
+    def test_world_mismatch_reports_all_failures(self, tmp_path: Path) -> None:
+        missing = tmp_path / "not-seeded.txt"
+        scenario = _scenario()
+        scenario.requires_tools = ["missing_tool"]
+        scenario.preconditions = [
+            FileExists(missing),
+            Check(lambda _ctx: "custom fixture missing", "custom fixture"),
+        ]
+        runtime = InMemoryRuntime(scripted_responses=["ok"])
+        server = _StubMCPServer([], tools=["client_lookup"])
+
+        with pytest.raises(WorldMismatchError) as excinfo:
+            run_scenario(scenario, runtime, mcps=[server])
+
+        message = str(excinfo.value)
+        assert "missing_tool" in message
+        assert "not-seeded.txt" in message
+        assert "custom fixture missing" in message
 
 
 # ─── StateProbe — external-state observations ─────────────────────────────────
@@ -529,4 +594,3 @@ class TestRunMatrix:
         results = run_matrix(scenario, runtime, sampling_variants=variants, runs_per_cell=2)
         for key, res in results.items():
             assert res.aggregate.verdict == "PASS", f"variant {key} failed"
-

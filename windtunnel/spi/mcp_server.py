@@ -24,6 +24,9 @@ MCPHandle
     Live handle to a running MCP server.
 
     url: the HTTP URL the agent should be configured to use.
+    served_tools() -> list[str] (optional)
+        Best-effort metadata: canonical tool names this handle serves.
+        Used by world preconditions when available.
     call_log() -> list[MCPCall]
         Every tool call routed through this server since last reset.
     reset_call_log() -> None
@@ -135,6 +138,21 @@ class MCPHandle(Protocol):
 
         Implementers: store mode and check it in each tool handler.
         """
+        ...
+
+
+@runtime_checkable
+class ToolIntrospectableMCPHandle(Protocol):
+    """Optional MCPHandle extension for served-tool metadata.
+
+    This stays separate from MCPHandle so existing third-party handles remain
+    conformant.  Implement it when the server can report the canonical bare
+    tool names it exposes; ToolAvailable preconditions use it to fail fast
+    when a scenario's expected world is not actually mounted.
+    """
+
+    def served_tools(self) -> list[str]:
+        """Return canonical tool names served by this handle."""
         ...
 
 

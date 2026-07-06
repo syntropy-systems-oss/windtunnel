@@ -28,7 +28,9 @@ AgentHandle
         Wipes per-session state so the next scenario starts clean.
         For the RawDockerRuntime this means wiping state.db's
         messages/sessions/FTS tables. Should complete in <1 second.
-        Called before every scenario run (unless skip_reset=True).
+        Called after provision and before EVERY scenario run, including
+        the first run of the first scenario (unless skip_reset=True).
+        Drivers may rely on reset_state() as the seed point.
 
     teardown() -> None
         **Between batches** (expensive, infrequent).
@@ -179,8 +181,12 @@ class AgentHandle(Protocol):
     def reset_state(self) -> None:
         """Wipe per-session state between scenarios.
 
-        Called before EACH scenario run (cheap, frequent — target <1s).
-        Must leave the agent ready to start a fresh, uncontaminated scenario.
+        Called after provision and before EVERY scenario run, including
+        the first run of the first scenario (unless skip_reset=True). Drivers
+        may rely on reset_state() as the seed point.
+
+        Cheap and frequent — target <1s. Must leave the agent ready to start
+        a fresh, uncontaminated scenario.
 
         For RawDockerRuntime: wipes state.db messages/sessions/FTS tables.
         For InMemoryRuntime: clears in-process conversation state.

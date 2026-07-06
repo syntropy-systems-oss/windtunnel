@@ -88,6 +88,10 @@ class RecordedMCPHandle:
         with self._lock:
             self._failure_mode = mode
 
+    def served_tools(self) -> list[str]:
+        """Return canonical tool names from the recorded universe."""
+        return [tool.name for tool in self._universe.tools]
+
     def call_tool(self, tool_name: str, args: dict[str, Any] | None = None) -> Any:
         """Resolve one tool call against the universe and record the result."""
         normalized_args = normalize_tool_args(args or {})

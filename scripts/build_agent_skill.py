@@ -246,7 +246,7 @@ def _generate_cli_reference() -> None:
     lines.extend(
         [
             "",
-            "Exit code conventions: `0` means success, `1` means a runtime failure or regression, and `2` means usage or configuration error.",
+            "Exit code conventions: `0` means success, `1` means a runtime failure, regression, world mismatch, or newly-scored outcome failure, and `2` means usage or configuration error.",
             "",
         ]
     )

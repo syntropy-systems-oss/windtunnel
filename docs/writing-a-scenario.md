@@ -32,6 +32,54 @@ expectation."
 
 ---
 
+## World preconditions: verify before spending a turn
+
+A scenario can declare the world shape it needs before the runner spends an
+agent turn. This is the same philosophy as the reset canary: never spend a turn
+against a world you have not verified. The runner checks preconditions after MCP
+servers are started and the runtime is provisioned, but before `reset_state()`
+or `send()` for the first run. All checks run, and every failure is reported
+together as `WorldMismatchError`.
+
+```python
+from windtunnel.api import Check, FileExists, Scenario
+
+def fixture_seeded(ctx):
+    rows = (ctx.state_probe.capture() if ctx.state_probe else {}).get("db", {}).get("rows", [])
+    return None if rows else "seed rows missing"
+
+Scenario(
+    name="lookup_seeded_customer",
+    prompt="Find the seeded customer.",
+    target_facts=[["Customer A"]],
+    requires_tools=["client_lookup"],  # sugar for ToolAvailable("client_lookup")
+    preconditions=[
+        FileExists("/tmp/windtunnel-fixture.db"),
+        Check(fixture_seeded, "fixture contains seed rows"),
+    ],
+)
+```
+
+Built-ins:
+
+- `ToolAvailable(name)` verifies that one of the scenario's MCP handles reports
+  the named tool in `served_tools()`. `requires_tools=["client_lookup"]` is
+  shorthand for the same check.
+- `FileExists(path)` checks a bench-host filesystem path. It is meaningful when
+  the bench and agent world share that filesystem, which is common for local
+  drivers; it is not proof that a remote agent container can see the path.
+- `Check(fn, description)` wraps a custom function over `PreconditionContext`
+  (`mcp_handles`, optional `state_probe`, and `agent_config`). Return `None` or
+  `True` to pass, a string to fail with that detail, or `False` to fail with the
+  wrapper description.
+
+When `WorldMismatchError` reaches `wt run`, the CLI prints a non-traceback
+message naming the scenario and failed preconditions, then exits `1`. The
+scenario selection was valid, but the bench world was wrong, so this is treated
+like a failed run rather than a usage error (`2`).
+
+---
+
 ## The `Scenario` schema (`api/scenario.py`)
 
 Fields are grouped by the scoring layer each feeds.
@@ -41,6 +89,12 @@ Fields are grouped by the scoring layer each feeds.
 |---|---|---|
 | `name` | `str` | Scenario identity (used as `--scenario` selector + trace `scenario_id`). |
 | `prompt` | `str` | The user prompt that drives the run. |
+
+### World preconditions (fail-fast, not scoring)
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `preconditions` | `list[Precondition]` | `[]` | Checks over the live MCP handles, optional `StateProbe`, and `AgentConfig`; fail before reset/send. |
+| `requires_tools` | `list[str]` | `[]` | Sugar for `ToolAvailable(<name>)` preconditions. |
 
 ### Outcome layer (the gate)
 | Field | Type | Default | Meaning |
@@ -114,6 +168,27 @@ Scenario(
 - `no_divergence()` — not an outcome scorer but a constraint-layer `Policy`:
   it fails when the run left the recording of a
   [universe fixture](recording-a-universe.md).
+
+**Fast scorer iteration with `wt rescore`.** A saved trace contains the
+transcript, server-witnessed MCP calls, and `trace.observations`, so most scorer
+changes do not need another live agent run. The authoring loop is: "you find the
+equilibrium scorer against a fixed trace corpus, then spend GPU only to grow the
+corpus." Use:
+
+```bash
+wt rescore --runs runs/
+wt rescore --trace runs/.../20260102T030405000000Z_abcd1234.json --write
+```
+
+`wt rescore` resolves each trace's `scenario_id` against the currently
+discovered scenario packs, then re-runs outcome, trajectory, constraint, and
+robustness from the saved trace plus current scenario definitions. In the
+current core robustness is derivable from the trace's perturbation markers, so
+it is recomputed too. The command is read-only by default; `--write` updates the
+`.score.json` sidecar with an `origin.kind = "rescore"` marker. Trace files are
+never modified. Exit codes mirror `wt run`: `0` when all newly-scored outcomes
+pass, `1` when any newly-scored outcome fails, and `2` for usage/configuration
+errors such as missing traces or unresolved scenario definitions.
 
 **AND-of-OR `target_facts`:** a list of groups; each inner group is satisfied if
 **any** member appears (OR), and **every** outer group must be satisfied (AND).
