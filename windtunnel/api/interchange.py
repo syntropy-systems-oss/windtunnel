@@ -190,7 +190,15 @@ def _parse_part(raw: Any, message_index: int, part_index: int) -> InterchangePar
             raise InterchangeFormatError(f"{label}.name must be a non-empty string")
         if "arguments" not in d:
             raise InterchangeFormatError(f"{label}.arguments is required")
-        return ToolCallPart(id=call_id, name=name, arguments=d.get("arguments"))
+        arguments = d.get("arguments")
+        if isinstance(arguments, str):
+            raise InterchangeFormatError(
+                f"{label}.arguments must be an object, not a JSON-encoded string "
+                "(emit the parsed arguments object, not json.dumps(...) of it)"
+            )
+        if not isinstance(arguments, dict):
+            raise InterchangeFormatError(f"{label}.arguments must be an object")
+        return ToolCallPart(id=call_id, name=name, arguments=arguments)
 
     if part_type == "tool_call_response":
         call_id = d.get("id")
@@ -262,6 +270,81 @@ def _parse_witnessed_calls(d: dict[str, Any]) -> list[InterchangeWitnessedCall] 
             )
         )
     return calls
+
+
+_TRUNCATION_MARKERS = ("[truncated]", "[redacted]")
+
+
+def lint_interchange(envelope: dict[str, Any]) -> list[str]:
+    """Return non-fatal shape warnings for an envelope that already parses.
+
+    This is the error/warning boundary for the interchange format:
+    ``parse_interchange`` covers schema violations — an envelope that fails
+    it cannot be trusted at all, and must be fixed before anything
+    downstream touches it. ``lint_interchange`` only runs on envelopes that
+    already parse, and flags shapes that are schema-valid but usually mean
+    the emitter is mis-wired — reading from a scrubbed observability source,
+    or reconstructing from the wrong evidence. Callers decide what to do
+    with a warning; nothing here raises.
+
+    Two checks:
+
+    - Truncation/redaction markers (``"[truncated]"``, ``"[redacted]"``,
+      case-insensitive) inside a ``tool_call``'s ``arguments`` or a
+      ``tool_call_response``'s ``response``. Recorded universes built from
+      truncated or redacted values cannot answer the queries a rerun agent
+      will actually ask — this usually means the emitter read from a
+      scrubbed/truncated observability source instead of a full-fidelity
+      capture.
+    - A ``tool_call_response`` whose id has no matching ``tool_call`` in the
+      message stream. This is schema-valid — some producers legitimately
+      inject synthetic tool results — but it can also mean the emitter read
+      from the wrong source, and reconstruction will skip the unpaired
+      response.
+    """
+    trace = parse_interchange(envelope)
+    warnings: list[str] = []
+
+    tool_call_ids: set[str] = set()
+    for message in trace.messages:
+        for part in message.parts:
+            if isinstance(part, ToolCallPart):
+                tool_call_ids.add(part.id)
+
+    for message in trace.messages:
+        for part in message.parts:
+            if isinstance(part, ToolCallPart):
+                warnings.extend(
+                    _scan_for_markers(f"tool_call {part.id!r} arguments", part.arguments)
+                )
+            elif isinstance(part, ToolCallResponsePart):
+                warnings.extend(
+                    _scan_for_markers(
+                        f"tool_call_response {part.id!r} response", part.response
+                    )
+                )
+                if part.id not in tool_call_ids:
+                    warnings.append(
+                        f"tool_call_response {part.id!r} has no matching tool_call in "
+                        "the message stream — this is valid (some producers "
+                        "legitimately inject synthetic tool results), but it can also "
+                        "mean the emitter read from the wrong source; reconstruction "
+                        "will skip unpaired responses"
+                    )
+
+    return warnings
+
+
+def _scan_for_markers(label: str, value: Any) -> list[str]:
+    """Return one warning per truncation/redaction marker found in ``value``."""
+    serialized = json.dumps(value).lower()
+    return [
+        f"{label} contains {marker!r} — the emitter appears to be reading from a "
+        "scrubbed/truncated observability source rather than a full-fidelity "
+        "capture; a universe recorded from this data will not answer real queries"
+        for marker in _TRUNCATION_MARKERS
+        if marker in serialized
+    ]
 
 
 def build_envelope(
@@ -353,6 +436,7 @@ __all__ = [
     "ToolCallPart",
     "ToolCallResponsePart",
     "build_envelope",
+    "lint_interchange",
     "load_interchange",
     "parse_interchange",
 ]

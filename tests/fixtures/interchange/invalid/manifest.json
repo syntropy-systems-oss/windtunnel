@@ -4,5 +4,8 @@
   "session_model_empty.wtin.json": "session.model must be a non-empty string",
   "unknown_message_part_type.wtin.json": "must be one of ['text', 'tool_call', 'tool_call_response']",
   "malformed_witnessed_call.wtin.json": "witnessed_calls[0].args must be an object",
-  "malformed_tool_definition.wtin.json": "tool_definitions[0].input_schema must be an object"
+  "malformed_tool_definition.wtin.json": "tool_definitions[0].input_schema must be an object",
+  "stringified_arguments.wtin.json": "arguments must be an object, not a JSON-encoded string",
+  "empty_tool_call_id.wtin.json": "messages[1].parts[0].id must be a non-empty string",
+  "camelcase_part_type.wtin.json": "must be one of ['text', 'tool_call', 'tool_call_response']"
 }

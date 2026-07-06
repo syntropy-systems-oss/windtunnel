@@ -13,6 +13,7 @@ import pytest
 from windtunnel.api.interchange import (
     InterchangeFormatError,
     build_envelope,
+    lint_interchange,
     load_interchange,
     parse_interchange,
 )
@@ -21,6 +22,7 @@ from windtunnel.cli import main
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "interchange"
 VALID_DIR = FIXTURES_DIR / "valid"
 INVALID_DIR = FIXTURES_DIR / "invalid"
+LINT_DIR = FIXTURES_DIR / "lint"
 
 
 def _wt(*args: str, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
@@ -45,6 +47,12 @@ def _invalid_manifest() -> dict[str, str]:
     return manifest
 
 
+def _lint_manifest() -> dict[str, str]:
+    manifest = json.loads((LINT_DIR / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest, "expected at least one lint golden fixture"
+    return manifest
+
+
 class TestGoldenFixtures:
     """Every golden fixture behaves exactly as its directory promises."""
 
@@ -60,6 +68,11 @@ class TestGoldenFixtures:
         assert trace.windtunnel_interchange >= 1
         assert trace.model
 
+    @pytest.mark.parametrize("path", _valid_fixtures(), ids=lambda p: p.name)
+    def test_valid_fixture_lints_clean(self, path: Path) -> None:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        assert lint_interchange(raw) == []
+
     @pytest.mark.parametrize("name,expected_substring", sorted(_invalid_manifest().items()))
     def test_invalid_fixture_raises_with_expected_message(
         self, name: str, expected_substring: str
@@ -73,6 +86,25 @@ class TestGoldenFixtures:
     def test_manifest_only_references_existing_files(self) -> None:
         manifest_names = set(_invalid_manifest().keys())
         actual_names = {p.name for p in INVALID_DIR.glob("*.wtin.json")}
+        assert manifest_names == actual_names
+
+
+class TestLintGoldenFixtures:
+    """Every `lint/` golden parses cleanly and produces its expected warning."""
+
+    @pytest.mark.parametrize("name,expected_substring", sorted(_lint_manifest().items()))
+    def test_lint_fixture_parses_and_warns(self, name: str, expected_substring: str) -> None:
+        path = LINT_DIR / name
+        assert path.is_file(), f"manifest references missing fixture: {name}"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        # Must parse without error: lint goldens are schema-valid by definition.
+        load_interchange(path)
+        warnings = lint_interchange(raw)
+        assert any(expected_substring in warning for warning in warnings), warnings
+
+    def test_manifest_only_references_existing_files(self) -> None:
+        manifest_names = set(_lint_manifest().keys())
+        actual_names = {p.name for p in LINT_DIR.glob("*.wtin.json")}
         assert manifest_names == actual_names
 
 
@@ -100,6 +132,32 @@ class TestWtValidateCli:
         assert f"OK {valid_path}" in out
         assert f"INVALID {invalid_path}:" in out
         assert "windtunnel_interchange must be a positive integer" in out
+
+    def test_prints_warn_line_for_lint_hit(self, capsys: pytest.CaptureFixture) -> None:
+        path = LINT_DIR / "truncated_arguments.wtin.json"
+        rc = main(["validate", str(path)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert f"OK {path}" in out
+        assert f"WARN {path}:" in out
+        assert "[truncated]" in out
+
+    def test_lint_warning_exits_zero_without_strict(self) -> None:
+        path = LINT_DIR / "unpaired_response.wtin.json"
+        rc = main(["validate", str(path)])
+        assert rc == 0
+
+    def test_lint_warning_exits_one_with_strict(self, capsys: pytest.CaptureFixture) -> None:
+        path = LINT_DIR / "unpaired_response.wtin.json"
+        rc = main(["validate", "--strict", str(path)])
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert f"WARN {path}:" in out
+
+    def test_strict_with_clean_file_exits_zero(self) -> None:
+        path = VALID_DIR / "minimal.wtin.json"
+        rc = main(["validate", "--strict", str(path)])
+        assert rc == 0
 
     def test_no_paths_is_usage_error(self) -> None:
         result = _wt("validate")
@@ -204,3 +262,91 @@ class TestBuildEnvelope:
         path = tmp_path / "emitted.wtin.json"
         path.write_text(json.dumps(envelope), encoding="utf-8")
         assert main(["validate", str(path)]) == 0
+
+
+def _envelope_with_tool_call_part(part: dict) -> dict:
+    """A minimal envelope wrapping one message part, for direct parser tests."""
+    return {
+        "windtunnel_interchange": 1,
+        "session": {"model": "gpt-example-1"},
+        "messages": [{"role": "assistant", "parts": [part]}],
+    }
+
+
+class TestParserStrictness:
+    """Direct unit tests for the Deliverable 1 strictness additions."""
+
+    def test_stringified_tool_call_arguments_rejected(self) -> None:
+        envelope = _envelope_with_tool_call_part(
+            {
+                "type": "tool_call",
+                "id": "call_1",
+                "name": "client_lookup",
+                "arguments": '{"query": "Bluewing"}',
+            }
+        )
+        with pytest.raises(InterchangeFormatError, match="JSON-encoded string"):
+            parse_interchange(envelope)
+
+    def test_non_object_tool_call_arguments_rejected(self) -> None:
+        envelope = _envelope_with_tool_call_part(
+            {
+                "type": "tool_call",
+                "id": "call_1",
+                "name": "client_lookup",
+                "arguments": ["Bluewing"],
+            }
+        )
+        with pytest.raises(InterchangeFormatError, match="arguments must be an object"):
+            parse_interchange(envelope)
+
+    def test_dict_tool_call_arguments_accepted(self) -> None:
+        envelope = _envelope_with_tool_call_part(
+            {
+                "type": "tool_call",
+                "id": "call_1",
+                "name": "client_lookup",
+                "arguments": {"query": "Bluewing"},
+            }
+        )
+        trace = parse_interchange(envelope)
+        part = trace.messages[0].parts[0]
+        assert part.arguments == {"query": "Bluewing"}
+
+    def test_empty_tool_call_id_rejected(self) -> None:
+        envelope = _envelope_with_tool_call_part(
+            {
+                "type": "tool_call",
+                "id": "",
+                "name": "client_lookup",
+                "arguments": {"query": "Bluewing"},
+            }
+        )
+        with pytest.raises(InterchangeFormatError, match="id must be a non-empty string"):
+            parse_interchange(envelope)
+
+    def test_camelcase_part_type_rejected(self) -> None:
+        envelope = _envelope_with_tool_call_part(
+            {
+                "type": "toolCall",
+                "id": "call_1",
+                "name": "client_lookup",
+                "arguments": {"query": "Bluewing"},
+            }
+        )
+        with pytest.raises(
+            InterchangeFormatError,
+            match=r"must be one of \['text', 'tool_call', 'tool_call_response'\]",
+        ):
+            parse_interchange(envelope)
+
+    def test_version_as_string_rejected(self) -> None:
+        envelope = {
+            "windtunnel_interchange": "1",
+            "session": {"model": "gpt-example-1"},
+            "messages": [],
+        }
+        with pytest.raises(
+            InterchangeFormatError, match="windtunnel_interchange must be a positive integer"
+        ):
+            parse_interchange(envelope)

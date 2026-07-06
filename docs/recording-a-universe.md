@@ -155,8 +155,16 @@ wt import --trace prod_incident_412.wtin.json --out scenarios/imported/lookup_bl
 That emits a self-contained directory:
 
 - **`fixture.universe.json`** — recordings drained from the envelope's
-  server-witnessed calls (preferred) or reconstructed from the transcript's
-  tool-call/response pairs, `on_miss: fail_call`.
+  `witnessed_calls` (preferred) or reconstructed from the transcript's
+  tool-call/response pairs, `on_miss: fail_call`. `witnessed_calls` is
+  legitimate evidence from either side of the tool boundary: server-witnessed
+  (logged by the tool server itself, e.g. from `execute_tool`-shaped spans)
+  is the higher bar, since it can't be skewed by anything the agent's own
+  transcript got wrong; runner-witnessed (captured agent-side, alongside the
+  rest of the transcript) is common and legitimate for producers who don't
+  control the tool server they're calling into. Either is preferred over
+  transcript reconstruction, which only ever sees the agent's own account of
+  a call.
 - **`scenario.py`** — prompt/`user_turns` from the user messages, an
   `origin:<ref>` tag from the envelope's provenance (it flows into the run
   ledger, so a red CI row traces back to the incident), `must_call`
@@ -183,8 +191,16 @@ wt validate incident.wtin.json
 health there means the file will import too. The golden fixtures under
 [`tests/fixtures/interchange/`](../tests/fixtures/interchange/) are the
 conformance corpus for the format: `valid/` covers the shapes an envelope
-is allowed to take (minimal, with `witnessed_calls`, reconstructable
+is allowed to take (minimal, multi-turn, runner-witnessed, reconstructable
 tool-call/response pairs, `tool_definitions`, and forward-tolerant unknown
 fields), and `invalid/` pairs one broken envelope per rule with the error
 `wt validate` should raise. `windtunnel.api.build_envelope` is a minimal
 reference emitter for producers writing their own in another language.
+
+`wt validate` also lints envelopes that parse cleanly — schema-valid shapes
+that usually mean an emitter is reading from the wrong source, like
+truncated/redacted tool values or a `tool_call_response` with no matching
+`tool_call`. These print as `WARN` lines and don't fail validation by
+default; pass `--strict` to treat any warning as a failure. The `lint/`
+fixtures under `tests/fixtures/interchange/` are the corpus for those
+checks, paired with the warning each should produce.
