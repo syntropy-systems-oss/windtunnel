@@ -43,6 +43,7 @@ nav:
   - Guides:
       - Writing a scenario: writing-a-scenario.md
       - Writing a runtime: writing-a-runtime.md
+      - Driving Terminus-2: driving-terminus.md
       - Importing a trace: importing-a-trace.md
       - Recording a universe: recording-a-universe.md
       - Writing a classifier: writing-a-classifier.md

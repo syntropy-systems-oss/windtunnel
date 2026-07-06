@@ -675,11 +675,19 @@ class _HttpInjectPlugin:
         return HttpInjectRuntime()
 
 
+class _TerminusPlugin:
+    """Built-in RuntimePlugin for Harbor Terminus-2 terminal agents."""
+
+    def build(self, runtime_name: str, label: str, soul_path: str | None) -> object:
+        from windtunnel.runtimes.terminus import TerminusRuntime  # noqa: PLC0415
+        return TerminusRuntime()
+
+
 def _resolve_runtime_plugin(runtime_name: str) -> object:
     """Resolve a --runtime name to a RuntimePlugin instance.
 
     Resolution order (see windtunnel.spi.runtime_plugin for the contract):
-      1. Built-ins — "in_memory", "http_inject".
+      1. Built-ins — "in_memory", "http_inject", "terminus".
       2. Entry points in group "windtunnel.runtimes", matched by NAME.
          The entry-point value is a RuntimePlugin instance or class
          (a class is instantiated with no args).
@@ -690,6 +698,7 @@ def _resolve_runtime_plugin(runtime_name: str) -> object:
     builtin = {
         "http_inject": _HttpInjectPlugin,
         "in_memory": _InMemoryPlugin,
+        "terminus": _TerminusPlugin,
     }
     if runtime_name in builtin:
         return builtin[runtime_name]()
