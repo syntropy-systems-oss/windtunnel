@@ -47,6 +47,14 @@ from windtunnel.api.perturbations import (
     ToolTimeout,
     ToolTimeoutPerScenario,
 )
+from windtunnel.api.preconditions import (
+    Check,
+    FileExists,
+    Precondition,
+    PreconditionContext,
+    ToolAvailable,
+    WorldMismatchError,
+)
 from windtunnel.api.replay import GenerateFn, replay
 from windtunnel.api.runner import ScenarioResult, run_scenario
 from windtunnel.api.scenario import (
@@ -96,6 +104,9 @@ __all__ = [
     # scenario
     "NumberFact", "Perturbation", "Policy", "PreSendPerturbation", "Scenario",
     "TrajectoryCheck",
+    # preconditions
+    "Check", "FileExists", "Precondition", "PreconditionContext", "ToolAvailable",
+    "WorldMismatchError",
     # scorers
     "all_of", "any_of", "observation", "llm_judge", "substantiated_by_tools",
     "no_divergence",
