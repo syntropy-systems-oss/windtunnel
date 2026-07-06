@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.4.0...v0.5.0) (2026-07-06)
+
+
+### Features
+
+* **canary:** reset-isolation canary as a library-level conformance helper ([#18](https://github.com/syntropy-systems-oss/windtunnel/issues/18)) ([09cda97](https://github.com/syntropy-systems-oss/windtunnel/commit/09cda97a355b234f7694f77764b2040bb237eab5))
+* **interchange:** Contract A conformance kit — wt validate, golden fixtures, reference emitter ([#17](https://github.com/syntropy-systems-oss/windtunnel/issues/17)) ([e41c710](https://github.com/syntropy-systems-oss/windtunnel/commit/e41c710a989901c38d3b2e37849a54aab7987ef7))
+* **runtime:** http_inject built-in speaking the Contract C inject protocol ([#21](https://github.com/syntropy-systems-oss/windtunnel/issues/21)) ([ec90579](https://github.com/syntropy-systems-oss/windtunnel/commit/ec9057995908e2865c50de26356ed7e73e6acf20))
+
+
+### Bug Fixes
+
+* **ci:** publish to PyPI from the release-please run, not a release event ([#15](https://github.com/syntropy-systems-oss/windtunnel/issues/15)) ([50d6290](https://github.com/syntropy-systems-oss/windtunnel/commit/50d6290b9f6ca08305ff70406561b7fed4ca2863))
+
+
+### Documentation
+
+* **design:** 0002 — the inject protocol (Contract C) ([#16](https://github.com/syntropy-systems-oss/windtunnel/issues/16)) ([cecce26](https://github.com/syntropy-systems-oss/windtunnel/commit/cecce26de68062bba80b1d229ba3246439af5456))
+
 ## [0.4.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.3.0...v0.4.0) (2026-07-03)
 
 
