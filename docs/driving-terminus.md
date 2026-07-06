@@ -3,13 +3,23 @@ description: "Guide to driving Harbor Terminus-2 from Wind Tunnel as a terminal-
 ---
 # Driving Terminus-2
 
-The `terminus` runtime lets Wind Tunnel bench Harbor's Terminus-2 terminal
-agent as a neutral coding and shell agent. This is useful for skill evaluation:
-Wind Tunnel owns the scenario, fixture workspace, scoring rules, and trajectory
-checks, while Terminus-2 gets only its normal terminal loop.
+The `terminus` runtime lets Wind Tunnel bench Terminus-2 — the reference
+terminal agent that ships inside [Harbor](https://harborframework.com/),
+the Terminal-Bench team's evaluation framework — as a neutral coding and
+shell agent. Harbor and Terminus-2 are not separate products: Harbor is the
+orchestration framework, Terminus-2 is one agent implementation it hosts.
+This runtime imports Terminus-2 from the `harbor` package and drives it
+directly, while Wind Tunnel owns the scenario, fixture workspace, scoring
+rules, and trajectory checks; Terminus-2 gets only its normal terminal loop.
 
-Harbor rewards and verifiers are not used. Wind Tunnel scores the final
-workspace state and the recorded trace.
+Wind Tunnel deliberately does **not** wrap Harbor's own trial orchestration:
+Harbor's `Trial` machinery bundles task packaging, environment lifecycle,
+verifiers, and result persistence — jobs Wind Tunnel already owns. Harbor
+rewards and verifiers are therefore unused; Wind Tunnel scores the final
+workspace state and the recorded trace. (A Trial-wrapping driver would be
+the right shape for a different goal — benching Harbor's *other* agent
+adapters or its cloud-sandbox environments — and can exist alongside this
+one if that demand materializes.)
 
 ## Install
 

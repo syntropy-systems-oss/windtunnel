@@ -2786,7 +2786,7 @@ docs = [
 
 [package.metadata]
 requires-dist = [
-    { name = "harbor", marker = "python_full_version >= '3.12' and extra == 'terminus'", specifier = ">=0.17.1" },
+    { name = "harbor", marker = "python_full_version >= '3.12' and extra == 'terminus'", specifier = ">=0.17.1,<0.18" },
     { name = "mcp", specifier = ">=1.27.1" },
 ]
 
