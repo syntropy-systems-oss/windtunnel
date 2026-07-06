@@ -48,4 +48,5 @@ nav:
       - Failure taxonomy: failure-taxonomy.md
   - Design:
       - "0001: Trace re-seeding": design/0001-trace-reseeding.md
+      - "0002: Inject protocol": design/0002-inject-protocol.md
   - Agent quickstart: agent-quickstart.md
