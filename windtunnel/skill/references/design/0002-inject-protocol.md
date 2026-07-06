@@ -1,3 +1,4 @@
+<!-- GENERATED from docs/design/0002-inject-protocol.md at 6f877b96c3c5 — do not edit; edit docs/design/0002-inject-protocol.md. -->
 ---
 description: "Design specification for Contract C inject protocol, its reset route, error handling, built-in runtime, and canary."
 ---

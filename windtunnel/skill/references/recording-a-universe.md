@@ -1,3 +1,4 @@
+<!-- GENERATED from docs/recording-a-universe.md at 867524f3b425 — do not edit; edit docs/recording-a-universe.md. -->
 ---
 description: "Reference for recorded tool-universe fixtures, matching rules, divergence policies, and RecordedMCPServer usage."
 ---

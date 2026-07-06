@@ -1,3 +1,4 @@
+<!-- GENERATED from docs/writing-a-classifier.md at 50a92986e336 — do not edit; edit docs/writing-a-classifier.md. -->
 ---
 description: "Guide to implementing failure classifiers and testing them against Wind Tunnel's taxonomy fixtures."
 ---

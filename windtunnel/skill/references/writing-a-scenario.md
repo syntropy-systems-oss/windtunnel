@@ -1,3 +1,4 @@
+<!-- GENERATED from docs/writing-a-scenario.md at bbe5a84e3c31 — do not edit; edit docs/writing-a-scenario.md. -->
 ---
 description: "Reference for authoring backend-agnostic Scenario objects, scoring fields, perturbations, dimensions, and scenario packs."
 ---

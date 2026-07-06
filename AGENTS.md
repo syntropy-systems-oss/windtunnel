@@ -1,40 +1,26 @@
-# Wind Tunnel — agent notes
+<!-- GENERATED from agents/skill-template.md + docs/ at fcdb4c76f791 — do not edit; edit docs/ or agents/skill-template.md. -->
+# Wind Tunnel Agent Index
 
-unittest for agents: scenarios score tool-using LLM agents on four layers
-(outcome / trajectory / constraint / robustness). Layout: `windtunnel/api`
-(scenario authoring), `windtunnel/spi` (runtime Protocols),
-`windtunnel/scenarios/dim_*` (the dimension catalog), `tests/`.
+Wind Tunnel is unittest for tool-using LLM agents: scenarios score outcome,
+trajectory, constraint, and robustness layers from reproducible traces.
+
+Installed skill: `wt skill path`
+
+## Highest-Importance References
+
+- `references/agent-quickstart.md` - Self-contained guide for coding agents to add Wind Tunnel scenarios, runtime wiring, and run commands to a project.
+- `references/agents/integration-checklist.md` - Agent-only shortest path for getting a project benched by Wind Tunnel through Contract C and one authored scenario.
+- `references/agents/anti-patterns.md` - Agent-only list of Wind Tunnel integration mistakes that produce misleading benches or hard validation failures.
+- `references/writing-a-runtime.md` - Guide to implementing Wind Tunnel runtime protocols or Contract C endpoints with reset isolation and tool-call evidence.
+- `references/design/0002-inject-protocol.md` - Design specification for Contract C inject protocol, its reset route, error handling, built-in runtime, and canary.
+- `references/importing-a-trace.md` - Workflow for validating a Contract A trace, importing a failing scenario skeleton, and authoring the regression gate.
 
 ## Commands
 
 ```bash
-uv sync                                  # setup (.venv + dev group)
-uv run pytest -m "not integration" -q    # unit suite — must always pass, no infra
-uv run ruff check windtunnel/ tests/     # lint — keep at zero
-uv run wt run --scenario <name> --runtime in_memory --runs 1   # smoke a scenario
+uv run wt skill path
+uv run wt validate --strict <file.wtin.json>
+uv run wt doctor --runtime <runtime>
+uv run wt run --runtime in_memory --scenario <name> --runs 1
+uv run pytest -q
 ```
-
-## Invariants (test-enforced — do not weaken)
-
-- Scenarios NEVER import `windtunnel.runtimes.*` (`tests/test_import_invariants.py`).
-- Scenario `must_call`/`forbidden_calls` use canonical bare tool names
-  (`client_lookup`); the evaluator matches platform decorations.
-- The per-run pass/fail gate is the **outcome layer only**; trajectory,
-  constraint, and robustness are recorded, not gating
-  (`windtunnel/api/aggregate.py`).
-- `evaluate_outcome` scores the actual last assistant turn, even if empty —
-  never backfill from earlier turns (`windtunnel/api/evaluators.py`).
-- Synthetic data stays fictional: fake orgs, `.example` domains.
-
-## Gotchas
-
-- The `in_memory` runtime never calls tools — `requires_tool_use` scenarios
-  correctly FAIL under it. That's the gate working, not a bug.
-- Entry points (`windtunnel.runtimes` and `windtunnel.scenario_packs` groups)
-  refresh only on reinstall: after touching pyproject entry points, `uv sync`
-  before trusting resolution.
-- `runs/` is generated output (gitignored); traces pair with `.score.json`
-  sidecars written by `wt run`/`wt replay`.
-
-Integrating Wind Tunnel into another repo? Use
-[docs/agent-quickstart.md](docs/agent-quickstart.md).

@@ -1,3 +1,4 @@
+<!-- GENERATED from docs/architecture.md at b512c87618dd — do not edit; edit docs/architecture.md. -->
 ---
 description: "Architecture overview of Wind Tunnel's API/SPI split, runner data path, scoring layers, perturbations, and CLI surfaces."
 ---

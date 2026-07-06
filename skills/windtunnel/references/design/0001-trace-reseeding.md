@@ -1,3 +1,4 @@
+<!-- GENERATED from docs/design/0001-trace-reseeding.md at 89cadcbe4e2d — do not edit; edit docs/design/0001-trace-reseeding.md. -->
 ---
 description: "Design spine for trace re-seeding, Contract A interchange, Contract B universes, import, scorer, ledger, and CI ergonomics."
 ---

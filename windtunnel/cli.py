@@ -11,6 +11,7 @@ Subcommands:
     wt import   --trace PATH --out DIR [--force]
     wt validate [--strict] PATH [PATH ...]
     wt triage   [--runs DIR] [--classifier rule_based|llm_judge]
+    wt skill    path | install [--dest DIR] [--copy]
 
 Design: argparse (stdlib) — no click dependency. Each subcommand is a
 function; main() is the dispatch entry point. Exit code 0 = all pass,
@@ -21,10 +22,12 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import shutil
 import sys
 import traceback
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from importlib import resources
 from pathlib import Path
 
 
@@ -1412,10 +1415,74 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _installed_skill_dir() -> Path:
+    """Return the installed Wind Tunnel skill directory as a filesystem path."""
+    skill = resources.files("windtunnel").joinpath("skill")
+    if not skill.is_dir():
+        raise FileNotFoundError("windtunnel skill resources are not installed")
+    return Path(str(skill)).resolve()
+
+
+def _cmd_skill(args: argparse.Namespace) -> int:
+    """Handle the `wt skill` subcommand."""
+    action = getattr(args, "skill_action", None)
+    if action == "path":
+        try:
+            print(_installed_skill_dir())
+        except OSError as exc:
+            print(f"wt skill path: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    if action == "install":
+        try:
+            source = _installed_skill_dir()
+        except OSError as exc:
+            print(f"wt skill install: {exc}", file=sys.stderr)
+            return 1
+
+        dest_dir = Path(args.dest)
+        target = dest_dir / "windtunnel"
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            if args.copy:
+                if target.is_symlink() or target.is_file():
+                    target.unlink()
+                elif target.exists():
+                    shutil.rmtree(target)
+                shutil.copytree(source, target)
+                print(target.resolve())
+                return 0
+
+            if target.is_symlink():
+                target.unlink()
+            elif target.exists():
+                print(
+                    "wt skill install: refusing to overwrite existing non-symlink "
+                    f"destination: {target}",
+                    file=sys.stderr,
+                )
+                print(
+                    "Use --copy to replace it with a standalone copy that may go stale.",
+                    file=sys.stderr,
+                )
+                return 1
+
+            target.symlink_to(source, target_is_directory=True)
+            print(target.resolve())
+            return 0
+        except OSError as exc:
+            print(f"wt skill install: {exc}", file=sys.stderr)
+            return 1
+
+    print("wt skill: expected one of: path, install", file=sys.stderr)
+    return 2
+
+
 # ─── main ────────────────────────────────────────────────────────────────────
 
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point. Returns exit code (0 = all pass, non-zero = regression/error)."""
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the wt argparse tree used by both the CLI and generated docs."""
     parser = argparse.ArgumentParser(
         prog="wt",
         description="Wind Tunnel — unittest for agents.",
@@ -1560,6 +1627,38 @@ def main(argv: list[str] | None = None) -> int:
              "llm_judge (stub — raises NotImplementedError until implemented).",
     )
 
+    # ── skill ────────────────────────────────────────────────────────────────
+    skill_p = sub.add_parser(
+        "skill",
+        help="Print or install the packaged Wind Tunnel agent skill.",
+    )
+    skill_sub = skill_p.add_subparsers(dest="skill_action")
+    skill_sub.add_parser(
+        "path",
+        help="Print the absolute path of the installed Wind Tunnel skill directory.",
+    )
+    skill_install_p = skill_sub.add_parser(
+        "install",
+        help="Install the Wind Tunnel skill into an agent skills directory.",
+    )
+    skill_install_p.add_argument(
+        "--dest",
+        default=".agents/skills",
+        metavar="DIR",
+        help="Directory that will receive a windtunnel skill entry (default: .agents/skills).",
+    )
+    skill_install_p.add_argument(
+        "--copy",
+        action="store_true",
+        help="Copy instead of symlinking. The copy survives package uninstall but may go stale.",
+    )
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point. Returns exit code (0 = all pass, non-zero = regression/error)."""
+    parser = _build_parser()
     args = parser.parse_args(argv)
 
     if args.command == "report":
@@ -1578,6 +1677,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_validate(args)
     if args.command == "triage":
         return _cmd_triage(args)
+    if args.command == "skill":
+        return _cmd_skill(args)
 
     parser.print_help()
     return 1
