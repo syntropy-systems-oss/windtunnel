@@ -43,3 +43,16 @@ read the docs.
 
 Run instructions and exact commands are in
 `examples/skill-eval/README.md`.
+
+## First live results
+
+The matrix has been run at least once for real — the day the pack shipped,
+against a local qwen3.6:35b via an OpenAI-compatible endpoint. The table and
+observations live in
+[`examples/skill-eval/README.md`](https://github.com/syntropy-systems-oss/windtunnel/tree/main/examples/skill-eval)
+(single runs, so read them as observations, not conclusions). The headline:
+outcomes mostly tied while *cost* diverged — and the one catastrophic
+divergence was an agent that completed the work but, without the reference
+explaining that imported scenarios are deliberately failing stubs, could
+never convince itself it was done. Documentation bought termination
+knowledge more than task knowledge.

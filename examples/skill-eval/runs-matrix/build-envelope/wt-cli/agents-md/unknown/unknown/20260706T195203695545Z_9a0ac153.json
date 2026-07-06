@@ -1,0 +1,265 @@
+{
+  "run_id": "9a0ac153-76a0-46f0-b4bf-4afab5122443",
+  "scenario_id": "build-envelope",
+  "agent_id": "wt-cli",
+  "variant_id": "agents-md",
+  "model": "unknown",
+  "quant": "unknown",
+  "sampler": {},
+  "started_at": "2026-07-06T19:52:03.695545+00:00",
+  "finished_at": "2026-07-06T19:53:58.307661+00:00",
+  "turns": [
+    {
+      "role": "user",
+      "content": "Using the windtunnel library installed in this environment, produce a Contract A interchange envelope from transcript.json and write it to out.wtin.json so that `uv run wt validate --strict out.wtin.json` exits 0.",
+      "tool_calls": [],
+      "tool_results": [],
+      "latency_ms": 0.0,
+      "rendered_prompt": null,
+      "rendered_prompt_hash": null
+    },
+    {
+      "role": "assistant",
+      "content": "New Terminal Output:\n\nI have no name!@e03fb16417f2:/workspace$\n",
+      "tool_calls": [
+        {
+          "id": "call_0",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"ls -la /workspace/\\n\"}"
+          }
+        },
+        {
+          "id": "call_1",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"cat /workspace/transcript.json\\n\"}"
+          }
+        },
+        {
+          "id": "call_2",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"pip show windtunnel 2>/dev/null; pip show wt 2>/dev/null; which wt 2>/dev/null; type wt 2>/dev/null\\n\"}"
+          }
+        },
+        {
+          "id": "call_3",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"uv pip list 2>/dev/null | grep -i windtunnel\\n\"}"
+          }
+        },
+        {
+          "id": "call_4",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"cat /workspace/incident.wtin.json\\n\"}"
+          }
+        },
+        {
+          "id": "call_5",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"cat /workspace/pyproject.toml\\n\"}"
+          }
+        },
+        {
+          "id": "call_6",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"/workspace/.venv/bin/wt --help 2>&1\\n\"}"
+          }
+        },
+        {
+          "id": "call_7",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"/workspace/.venv/bin/wt validate --help 2>&1\\n\"}"
+          }
+        },
+        {
+          "id": "call_8",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"find /workspace -type f | head -40\\n\"}"
+          }
+        },
+        {
+          "id": "call_9",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"cat /workspace/.windtunnel/* 2>/dev/null\\n\"}"
+          }
+        },
+        {
+          "id": "call_10",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"/workspace/.venv/bin/wt import --help 2>&1\\n\"}"
+          }
+        },
+        {
+          "id": "call_11",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"uv pip list --path /workspace/.venv/lib/python*/site-packages/windtunnel 2>&1 | head -20\\n\"}"
+          }
+        },
+        {
+          "id": "call_12",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"ls /workspace/notes/ /workspace/runs/\\n\"}"
+          }
+        },
+        {
+          "id": "call_13",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"cat /workspace/runs/saved_trace.json | head -60\\n\"}"
+          }
+        },
+        {
+          "id": "call_14",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"python3 -c 'import windtunnel; print(dir(windtunnel))' 2>&1\\n\"}"
+          }
+        },
+        {
+          "id": "call_15",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"find /opt/windtunnel-src -name '*.py' 2>/dev/null | head -20\\n\"}"
+          }
+        },
+        {
+          "id": "call_16",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"python3 -c 'import windtunnel; print(windtunnel.__file__)' 2>&1\\n\"}"
+          }
+        },
+        {
+          "id": "call_17",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"grep -r 'envelope' /opt/windtunnel-src/windtunnel --include='*.py' -l\\n\"}"
+          }
+        },
+        {
+          "id": "call_18",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"grep -r 'Contract A\\\\|contract_a\\\\|wtin_interchange\\\\|windtunnel_interchange' /opt/windtunnel-src/windtunnel --include='*.py' -l\\n\"}"
+          }
+        },
+        {
+          "id": "call_19",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"find /opt/windtunnel-src/windtunnel -name '*.py' | head -30\\n\"}"
+          }
+        },
+        {
+          "id": "call_20",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"grep -rn 'otel_genai_mapping\\\\|witnessed_calls\\\\|tool_definitions' /opt/windtunnel-src/windtunnel --include='*.py' | head -20\\n\"}"
+          }
+        },
+        {
+          "id": "call_21",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"find /opt/windtunnel-src/windtunnel -name '*.py' -exec cat {} \\\\; | grep -c 'class'\\n\"}"
+          }
+        },
+        {
+          "id": "call_22",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"cat /opt/windtunnel-src/windtunnel/api/interchange.py\\n\"}"
+          }
+        },
+        {
+          "id": "call_23",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"python3 << 'PYEOF'\\nimport json\\nfrom pathlib import Path\\nfrom windtunnel.api.interchange import load_interchange, build_envelope\\n\\n# Load transcript\\nwith open(\\\"/workspace/transcript.json\\\") as f:\\n    transcript = json.load(f)\\n\\n# Build Contract A envelope using the library's reference emitter\\nenvelope = build_envelope(\\n    model=transcript[\\\"model\\\"],\\n    provider=\\\"example\\\",\\n    otel_genai_mapping=\\\"semantic-conventions-genai@development-2026-06\\\",\\n    source={\\n        \\\"ref\\\": transcript[\\\"source\\\"][\\\"ref\\\"],\\n        \\\"system\\\": transcript[\\\"source\\\"][\\\"system\\\"],\\n        \\\"captured_at\\\": \\\"2026-06-30T12:01:00Z\\\",\\n    },\\n    messages=transcript[\\\"messages\\\"],\\n    tool_definitions=transcript.get(\\\"tool_definitions\\\", []),\\n    witnessed_calls=transcript.get(\\\"witnessed_calls\\\", []),\\n)\\n\\n# Validate the constructed envelope first\\nload_interchange(json.dumps(envelope))  # just check parse works\\nprint(\\\"Envelope validated internally.\\\")\\n\\n# Normalize to ensure deterministic key order matching incident.wtin.json\\nenvelope = {\\n    \\\"windtunnel_interchange\\\": envelope[\\\"windtunnel_interchange\\\"],\\n    \\\"otel_genai_mapping\\\": envelope[\\\"otel_genai_mapping\\\"],\\n    \\\"session\\\": envelope[\\\"session\\\"],\\n    \\\"source\\\": envelope[\\\"source\\\"],\\n    \\\"messages\\\": envelope[\\\"messages\\\"],\\n    \\\"tool_definitions\\\": envelope[\\\"tool_definitions\\\"],\\n    \\\"witnessed_calls\\\": envelope[\\\"witnessed_calls\\\"],\\n}\\n\\nPath(\\\"/workspace/out.wtin.json\\\").write_text(\\n    json.dumps(envelope, indent=2) + \\\"\\\\n\\\"\\n)\\nprint(\\\"Wrote out.wtin.json\\\")\\nPYEOF\\n\"}"
+          }
+        },
+        {
+          "id": "call_24",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"cd /workspace && uv run wt validate --strict out.wtin.json; echo \\\"EXIT: $?\\\"\\n\"}"
+          }
+        },
+        {
+          "id": "call_25",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"python3 << 'PYEOF'\\nimport json\\nfrom pathlib import Path\\nfrom windtunnel.api.interchange import load_interchange, parse_interchange, build_envelope\\n\\n# Load transcript\\nwith open(\\\"/workspace/transcript.json\\\") as f:\\n    transcript = json.load(f)\\n\\n# Build Contract A envelope using the library's reference emitter\\nenvelope = build_envelope(\\n    model=transcript[\\\"model\\\"],\\n    provider=\\\"example\\\",\\n    otel_genai_mapping=\\\"semantic-conventions-genai@development-2026-06\\\",\\n    source={\\n        \\\"ref\\\": transcript[\\\"source\\\"][\\\"ref\\\"],\\n        \\\"system\\\": transcript[\\\"source\\\"][\\\"system\\\"],\\n        \\\"captured_at\\\": \\\"2026-06-30T12:01:00Z\\\",\\n    },\\n    messages=transcript[\\\"messages\\\"],\\n    tool_definitions=transcript.get(\\\"tool_definitions\\\", []),\\n    witnessed_calls=transcript.get(\\\"witnessed_calls\\\", []),\\n)\\n\\n# Internal parse-only validation (no file I/O)\\nparse_interchange(envelope)\\nprint(\\\"Envelope validated internally via parse_interchange.\\\")\\n\\n# Normalize key order to match incident.wtin.json\\nenvelope = {\\n    \\\"windtunnel_interchange\\\": envelope[\\\"windtunnel_interchange\\\"],\\n    \\\"otel_genai_mapping\\\": envelope[\\\"otel_genai_mapping\\\"],\\n    \\\"session\\\": envelope[\\\"session\\\"],\\n    \\\"source\\\": envelope[\\\"source\\\"],\\n    \\\"messages\\\": envelope[\\\"messages\\\"],\\n    \\\"tool_definitions\\\": envelope[\\\"tool_definitions\\\"],\\n    \\\"witnessed_calls\\\": envelope[\\\"witnessed_calls\\\"],\\n}\\n\\nPath(\\\"/workspace/out.wtin.json\\\").write_text(\\n    json.dumps(envelope, indent=2) + \\\"\\\\n\\\"\\n)\\nprint(\\\"Wrote out.wtin.json\\\")\\nPYEOF\\n\"}"
+          }
+        },
+        {
+          "id": "call_26",
+          "type": "function",
+          "function": {
+            "name": "terminal",
+            "arguments": "{\"command\": \"uv run wt validate --strict out.wtin.json; echo \\\"EXIT: $?\\\"\\n\"}"
+          }
+        }
+      ],
+      "tool_results": [],
+      "latency_ms": 114612.02799999999,
+      "rendered_prompt": null,
+      "rendered_prompt_hash": null
+    }
+  ],
+  "tool_schema_hash": "sha256:9efed9d32cb58c928265985c14c572c3773d5829583a04bdc20a3f3eff4ee9ea",
+  "worker_warnings": [],
+  "mcp_calls": [],
+  "observations": {
+    "workspace_check": {
+      "scenario": "build-envelope",
+      "passed": true,
+      "commands": [
+        {
+          "command": "uv run wt validate --strict out.wtin.json",
+          "exit_code": 0,
+          "stdout_tail": "OK out.wtin.json\n",
+          "stderr_tail": ""
+        }
+      ]
+    }
+  }
+}

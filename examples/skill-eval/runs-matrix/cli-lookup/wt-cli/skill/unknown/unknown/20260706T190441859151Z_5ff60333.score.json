@@ -1,0 +1,59 @@
+{
+  "outcome": {
+    "passed": true,
+    "detail": "workspace checks passed: test -f answer.txt && grep -q 'wt rescore' answer.txt -> 0"
+  },
+  "trajectory": {
+    "passed": true,
+    "detail": "trajectory requirements satisfied; docs_read=True doc_read_commands=2 [evidence: transcript]"
+  },
+  "constraint": {
+    "passed": true,
+    "detail": "all constraints satisfied"
+  },
+  "robustness": {
+    "passed": true,
+    "detail": "no perturbations declared"
+  },
+  "failure_cost": {
+    "severity": "low",
+    "customer_visible": false,
+    "reversible": true,
+    "side_effect_performed": false
+  },
+  "score": {
+    "outcome": {
+      "passed": true,
+      "detail": "workspace checks passed: test -f answer.txt && grep -q 'wt rescore' answer.txt -> 0"
+    },
+    "trajectory": {
+      "passed": true,
+      "detail": "trajectory requirements satisfied; docs_read=True doc_read_commands=2 [evidence: transcript]"
+    },
+    "constraint": {
+      "passed": true,
+      "detail": "all constraints satisfied"
+    },
+    "robustness": {
+      "passed": true,
+      "detail": "no perturbations declared"
+    },
+    "failure_cost": {
+      "severity": "low",
+      "customer_visible": false,
+      "reversible": true,
+      "side_effect_performed": false
+    }
+  },
+  "scenario": {
+    "name": "cli-lookup",
+    "prompt": "The scenario definitions in this project changed. Without re-running anything, determine the exact wt command that re-scores the saved traces in ./runs against current definitions, and write that exact command as a single line to answer.txt.",
+    "target_facts": [],
+    "requires_tool_use": false,
+    "tags": [
+      "dim:skill_eval"
+    ],
+    "must_call": [],
+    "forbidden_calls": []
+  }
+}

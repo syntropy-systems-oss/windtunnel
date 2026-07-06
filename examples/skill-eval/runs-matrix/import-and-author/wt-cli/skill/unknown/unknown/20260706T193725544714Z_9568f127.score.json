@@ -1,0 +1,60 @@
+{
+  "outcome": {
+    "passed": true,
+    "detail": "workspace checks passed: test -f imported/scenario.py -> 0; test -f imported/fixture.universe.json -> 0; test -f imported/scorer.py -> 0; test -f imported/IMPORTED.md -> 0; ! grep -q 'TODO_REPLACE_WITH_REVIEWED_OUTCOME_FACT' imported/scenario.py -> 0; uv run wt validate incident.wtin.json -> 0"
+  },
+  "trajectory": {
+    "passed": true,
+    "detail": "trajectory requirements satisfied; docs_read=True doc_read_commands=1 [evidence: transcript]"
+  },
+  "constraint": {
+    "passed": true,
+    "detail": "all constraints satisfied"
+  },
+  "robustness": {
+    "passed": true,
+    "detail": "no perturbations declared"
+  },
+  "failure_cost": {
+    "severity": "high",
+    "customer_visible": false,
+    "reversible": true,
+    "side_effect_performed": false
+  },
+  "score": {
+    "outcome": {
+      "passed": true,
+      "detail": "workspace checks passed: test -f imported/scenario.py -> 0; test -f imported/fixture.universe.json -> 0; test -f imported/scorer.py -> 0; test -f imported/IMPORTED.md -> 0; ! grep -q 'TODO_REPLACE_WITH_REVIEWED_OUTCOME_FACT' imported/scenario.py -> 0; uv run wt validate incident.wtin.json -> 0"
+    },
+    "trajectory": {
+      "passed": true,
+      "detail": "trajectory requirements satisfied; docs_read=True doc_read_commands=1 [evidence: transcript]"
+    },
+    "constraint": {
+      "passed": true,
+      "detail": "all constraints satisfied"
+    },
+    "robustness": {
+      "passed": true,
+      "detail": "no perturbations declared"
+    },
+    "failure_cost": {
+      "severity": "high",
+      "customer_visible": false,
+      "reversible": true,
+      "side_effect_performed": false
+    }
+  },
+  "scenario": {
+    "name": "import-and-author",
+    "prompt": "Import it with wt import into ./imported, then edit the generated scenario so it expresses the correct outcome fact for this incident (replace the TODO placeholder), and verify your work runs.",
+    "target_facts": [],
+    "requires_tool_use": false,
+    "tags": [
+      "dim:skill_eval",
+      "slow"
+    ],
+    "must_call": [],
+    "forbidden_calls": []
+  }
+}

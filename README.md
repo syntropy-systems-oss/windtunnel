@@ -233,6 +233,13 @@ Wind Tunnel is extracted from a production bench used to gate agent deploys
 on a live multi-agent platform (local models, MCP tools, a chat gateway).
 The API is young — expect breaking changes before 1.0.
 
+Wind Tunnel also ships version-matched agent instructions (`wt skill
+install`) — and benches them: [`examples/skill-eval/`](examples/skill-eval/)
+runs a terminal agent against tasks from these docs with and without them
+in the workspace, scored by Wind Tunnel itself. First live results are in
+that directory's README; the short version is that documentation bought
+*knowing when to stop* more than knowing what to type.
+
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE).
