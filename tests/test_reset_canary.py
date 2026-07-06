@@ -246,3 +246,147 @@ class TestCustomProbeTexts:
             runtime, AgentConfig(), probe_texts=["Custom probe question?"]
         )
         assert result.leaked is True
+
+
+# ─── Hermetic (recall-free) mode ────────────────────────────────────────────
+
+class _SeedRecordingHandle:
+    """Minimal handle for hermetic-mode tests: records the seed prompt text
+    so a state_probe fake can "echo" it back (modeling a store that still
+    holds the nonce post-reset), and never needs a coherent recall reply
+    since hermetic mode never sends a probe turn.
+    """
+
+    def __init__(self) -> None:
+        self.last_seed_text = ""
+        self.teardown_count = 0
+
+    def send(self, messages: list[dict[str, Any]], session_id: str) -> dict[str, Any]:
+        self.last_seed_text = messages[-1]["content"]
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    def reset_state(self) -> None:
+        pass
+
+    def teardown(self) -> None:
+        self.teardown_count += 1
+
+
+class _EchoingHermeticProbe:
+    """capture() either echoes the seed text (leaking store) or returns an
+    unrelated snapshot (clean store), depending on construction.
+    """
+
+    def __init__(self, handle: _SeedRecordingHandle, *, leaking: bool) -> None:
+        self._handle = handle
+        self._leaking = leaking
+        self.capture_count = 0
+
+    def capture(self) -> dict[str, Any]:
+        self.capture_count += 1
+        if self._leaking:
+            return {"store": {"cached": self._handle.last_seed_text}}
+        return {"store": {"cached": "nothing interesting"}}
+
+    def reset(self) -> None:
+        pass
+
+
+class _OrderRecordingHandle:
+    """Records send()/reset_state() calls IN ORDER, so a test can prove
+    hermetic mode issues no send() after reset_state() — the invariant
+    that distinguishes hermetic mode from recall mode.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.teardown_count = 0
+
+    def send(self, messages: list[dict[str, Any]], session_id: str) -> dict[str, Any]:
+        self.events.append(f"send:{session_id}")
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    def reset_state(self) -> None:
+        self.events.append("reset")
+
+    def teardown(self) -> None:
+        self.teardown_count += 1
+
+
+class _StaticProbe:
+    """A state_probe whose capture() always returns the same snapshot."""
+
+    def __init__(self, snapshot: dict[str, Any]) -> None:
+        self._snapshot = snapshot
+        self.capture_count = 0
+
+    def capture(self) -> dict[str, Any]:
+        self.capture_count += 1
+        return self._snapshot
+
+    def reset(self) -> None:
+        pass
+
+
+class TestHermeticMode:
+    def test_clean_stores_pass_with_hermetic_wording(self) -> None:
+        handle = _SeedRecordingHandle()
+        runtime = _FakeRuntime(handle)
+        probe = _EchoingHermeticProbe(handle, leaking=False)
+
+        result = run_reset_canary(
+            runtime, AgentConfig(), probe_recall=False, state_probe=probe
+        )
+
+        assert result.passed is True
+        assert result.leaked is False
+        assert result.evidence == []
+        assert "hermetic mode" in result.detail.lower()
+        assert "recall not probed" in result.detail.lower()
+        assert probe.capture_count == 1
+
+    def test_nonce_in_probe_snapshot_is_proven_leak(self) -> None:
+        handle = _SeedRecordingHandle()
+        runtime = _FakeRuntime(handle)
+        probe = _EchoingHermeticProbe(handle, leaking=True)
+
+        result = run_reset_canary(
+            runtime, AgentConfig(), probe_recall=False, state_probe=probe
+        )
+
+        assert result.leaked is True
+        assert result.passed is False
+        assert "leak proven" in result.detail.lower()
+        assert "hermetic mode" in result.detail.lower()
+        assert any(result.nonce in ev for ev in result.evidence)
+
+    def test_probe_recall_false_without_state_probe_raises_value_error(self) -> None:
+        handle = _CleanHandle()
+        runtime = _FakeRuntime(handle)
+
+        with pytest.raises(ValueError, match="state_probe"):
+            run_reset_canary(runtime, AgentConfig(), probe_recall=False)
+
+    def test_hermetic_mode_never_sends_after_reset(self) -> None:
+        handle = _OrderRecordingHandle()
+        runtime = _FakeRuntime(handle)
+        probe = _StaticProbe({"store": "clean"})
+
+        result = run_reset_canary(
+            runtime, AgentConfig(), probe_recall=False, state_probe=probe
+        )
+
+        assert result.passed is True
+        # Exactly one send() (the seeding turn), followed by reset — nothing
+        # after it. This is the hermetic-mode invariant: no probe turns, no
+        # session B, no send() calls once reset_state() has run.
+        assert handle.events[-1] == "reset"
+        assert handle.events.count("reset") == 1
+        assert sum(1 for e in handle.events if e.startswith("send:")) == 1
+
+    def test_hermetic_mode_teardown_still_called(self) -> None:
+        handle = _SeedRecordingHandle()
+        runtime = _FakeRuntime(handle)
+        probe = _StaticProbe({"store": "clean"})
+        run_reset_canary(runtime, AgentConfig(), probe_recall=False, state_probe=probe)
+        assert handle.teardown_count == 1

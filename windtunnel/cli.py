@@ -7,6 +7,7 @@ Subcommands:
     wt report   [--runs DIR] [--out FILE] [--format html|markdown|json]
     wt compare  --labels L1 L2 ...
     wt replay   --trace PATH --runtime RUNTIME
+    wt doctor   --runtime RUNTIME [--soul PATH] [--label LABEL]
 
 Design: argparse (stdlib) — no click dependency. Each subcommand is a
 function; main() is the dispatch entry point. Exit code 0 = all pass,
@@ -1243,6 +1244,64 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     return 0
 
 
+# ─── doctor ──────────────────────────────────────────────────────────────────
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    """Handle the `wt doctor` subcommand.
+
+    `wt doctor` is the one-command "is this endpoint conformant" check an
+    operator runs after standing up a stack: resolve --runtime exactly the
+    way `wt run` does, then run the reset-isolation canary
+    (windtunnel.api.canary.run_reset_canary) against it in RECALL mode —
+    doctor is a bring-up tool for a box with a live model, and there is no
+    portable way for the CLI to conjure a StateProbe for an arbitrary
+    runtime. Hermetic (recall-free) canary runs stay library/pytest-only:
+    importing run_reset_canary(..., probe_recall=False, state_probe=...)
+    directly is what belongs in a driver repo's CI, where no live model is
+    available. See docs/writing-a-runtime.md for both.
+    """
+    from windtunnel.api.canary import run_reset_canary  # noqa: PLC0415
+    from windtunnel.spi.agent_runtime import AgentConfig  # noqa: PLC0415
+
+    runtime_name: str = args.runtime
+    label: str = args.label or "wt_doctor"
+
+    # Mirrors wt run's --soul handling: the flag is a PATH, the file content
+    # is threaded into AgentConfig.system_prompt (not passed to build()).
+    system_prompt: str | None = None
+    if args.soul:
+        soul_path = Path(args.soul)
+        if not soul_path.is_file():
+            print(f"wt doctor: --soul file not found: {args.soul}", file=sys.stderr)
+            return 2
+        system_prompt = soul_path.read_text()
+
+    # _build_runtime resolves the plugin via _resolve_runtime_plugin exactly
+    # like `wt run` (same built-in/entry-point/dotted-path order, same exit-2
+    # behavior on an unresolvable name — see _resolve_runtime_plugin).
+    runtime = _build_runtime(runtime_name, label, soul_path=args.soul)
+    config = AgentConfig(
+        agent_id="wt-doctor", variant_id=label, system_prompt=system_prompt,
+    )
+
+    print(
+        f"wt doctor: probing runtime {runtime_name!r} for reset-isolation "
+        "leaks (recall mode — requires a live model)..."
+    )
+    try:
+        result = run_reset_canary(runtime, config)
+    except RuntimeError as exc:
+        print(f"wt doctor: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"  nonce:  {result.nonce}")
+    print(f"  {result.detail}")
+    if result.leaked:
+        print(f"  evidence: {len(result.evidence)} response(s) contained the nonce")
+        return 1
+    return 0
+
+
 # ─── import ──────────────────────────────────────────────────────────────────
 
 def _cmd_import(args: argparse.Namespace) -> int:
@@ -1366,6 +1425,30 @@ def main(argv: list[str] | None = None) -> int:
     replay_p.add_argument("--runs-dir", default="runs", metavar="DIR",
                           help="Directory to write replayed traces (default: ./runs).")
 
+    # ── doctor ───────────────────────────────────────────────────────────────
+    doctor_p = sub.add_parser(
+        "doctor",
+        help="Bring-up check: run the reset-isolation canary against a live runtime.",
+    )
+    doctor_p.add_argument("--runtime", default="in_memory", metavar="RUNTIME",
+                          help="Runtime to check (default: in_memory). Resolved "
+                               "exactly like `wt run --runtime`: built-in "
+                               "'in_memory', an installed plugin name (entry-"
+                               "point group 'windtunnel.runtimes'), or a "
+                               "'module:attr' dotted path to a RuntimePlugin. "
+                               "Runs the canary in RECALL mode, which requires "
+                               "a live model behind the runtime — doctor is a "
+                               "bring-up tool, not a CI check. For CI runners "
+                               "without a live model, call "
+                               "run_reset_canary(..., probe_recall=False, "
+                               "state_probe=...) directly from pytest instead.")
+    doctor_p.add_argument("--soul", default=None, metavar="PATH",
+                          help="Path to SOUL.md / persona doc to inject "
+                               "(mirrors `wt run --soul`).")
+    doctor_p.add_argument("--label", default=None, metavar="LABEL",
+                          help="Variant label recorded for this check "
+                               "(default: wt_doctor).")
+
     # ── import ───────────────────────────────────────────────────────────────
     import_p = sub.add_parser(
         "import",
@@ -1406,6 +1489,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_run(args)
     if args.command == "replay":
         return _cmd_replay(args)
+    if args.command == "doctor":
+        return _cmd_doctor(args)
     if args.command == "import":
         return _cmd_import(args)
     if args.command == "triage":

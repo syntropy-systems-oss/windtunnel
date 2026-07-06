@@ -185,6 +185,27 @@ class HttpRuntime:
       clean run is evidence, not proof, of isolation — pair it with a
       `StateProbe` for stateful backends (see the reset canary section of
       the inject-protocol design doc for the full asymmetry rationale).
+
+      Two ways to run it:
+
+      - `wt doctor --runtime <name>` — the bring-up command. Run it once
+        against a freshly stood-up stack; it needs a live model behind the
+        runtime (recall mode: seed, reset, ask a fresh session to recall).
+      - From pytest, in CI without a live model, pass `probe_recall=False`
+        and a `StateProbe` — this is the hermetic path: seeding still uses
+        `send()` (a stub model is fine, it only needs to ingest), but the
+        check is reset → scan the probe's post-reset snapshot for the
+        nonce. No probe turns, no `send()` after reset.
+
+        ```python
+        from windtunnel.api import run_reset_canary
+
+        def test_reset_canary_hermetic():
+            result = run_reset_canary(
+                runtime, config, probe_recall=False, state_probe=my_state_probe,
+            )
+            assert not result.leaked, result.detail
+        ```
 - [ ] `sampling.temperature=0` twice produces (near-)identical traces —
       proves the sampling config actually reaches the model.
 - [ ] Kill the bench mid-run; rerun — proves `teardown()`/`provision()`
