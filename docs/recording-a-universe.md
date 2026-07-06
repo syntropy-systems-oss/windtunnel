@@ -170,3 +170,21 @@ The importer is a *skeleton generator*, deliberately: a trace shows what the
 agent did, not what it should have done. The generated scenario **fails
 until you author its gate** — its placeholder `target_facts` can never
 match, because a green unauthored import would be a lie.
+
+Producing the envelope itself is the producer's responsibility — Wind
+Tunnel only reads it. Before handing a `*.wtin.json` file to `wt import`
+(or wiring up an exporter that emits one), check its shape with:
+
+```bash
+wt validate incident.wtin.json
+```
+
+`wt validate` runs the same parser `wt import` uses, so a clean bill of
+health there means the file will import too. The golden fixtures under
+[`tests/fixtures/interchange/`](../tests/fixtures/interchange/) are the
+conformance corpus for the format: `valid/` covers the shapes an envelope
+is allowed to take (minimal, with `witnessed_calls`, reconstructable
+tool-call/response pairs, `tool_definitions`, and forward-tolerant unknown
+fields), and `invalid/` pairs one broken envelope per rule with the error
+`wt validate` should raise. `windtunnel.api.build_envelope` is a minimal
+reference emitter for producers writing their own in another language.

@@ -1,0 +1,29 @@
+{
+  "windtunnel_interchange": 1,
+  "otel_genai_mapping": "semantic-conventions-genai@development-2026-06",
+  "future_top_level_field": "producers may add fields; importers must ignore them",
+  "session": {
+    "model": "gpt-example-1",
+    "provider": "openai",
+    "future_session_field": 42
+  },
+  "messages": [
+    {
+      "role": "user",
+      "future_message_field": true,
+      "parts": [
+        {
+          "type": "text",
+          "content": "Email on file for Bluewing?",
+          "future_part_field": ["ignored"]
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {"type": "text", "content": "ops@bluewing.example"}
+      ]
+    }
+  ]
+}

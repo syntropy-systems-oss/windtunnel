@@ -264,6 +264,69 @@ def _parse_witnessed_calls(d: dict[str, Any]) -> list[InterchangeWitnessedCall] 
     return calls
 
 
+def build_envelope(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    provider: str | None = None,
+    otel_genai_mapping: str = "",
+    source: dict[str, Any] | None = None,
+    tool_definitions: list[dict[str, Any]] | None = None,
+    witnessed_calls: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Reference emitter for a version-1 Contract A ``*.wtin.json`` envelope.
+
+    This is documentation in code form, not a general-purpose builder. Its
+    job is to show, in the host language producers are most likely to also
+    be reading (Python), exactly which keys a valid envelope needs and where
+    they go. A producer writing an emitter in another language should treat
+    this function's body as the spec and the golden fixtures under
+    ``tests/fixtures/interchange/`` plus ``wt validate`` as the conformance
+    corpus to check their own output against — not this function itself,
+    which they cannot call from Go, TypeScript, etc.
+
+    ``messages`` is a list of already-shaped OTel GenAI message dicts, e.g.::
+
+        {
+            "role": "assistant",
+            "parts": [
+                {"type": "text", "content": "..."},
+                {"type": "tool_call", "id": "call_1", "name": "client_lookup",
+                 "arguments": {"query": "Bluewing"}},
+                {"type": "tool_call_response", "id": "call_1",
+                 "response": {"email": "ops@bluewing.example"}},
+            ],
+        }
+
+    ``tool_definitions`` and ``witnessed_calls``, when given, are lists of
+    already-shaped dicts matching the corresponding sections of the Contract
+    A schema (see the module docstring and ``parse_interchange``). This
+    function does not validate its inputs — call ``parse_interchange`` on
+    the result if you want that, which is exactly what ``wt validate`` does.
+
+    Deliberately minimal: no builder class, no options explosion. Producers
+    with more complex needs should construct the envelope dict directly and
+    validate it with ``wt validate`` or ``parse_interchange``.
+    """
+    session: dict[str, Any] = {"model": model}
+    if provider is not None:
+        session["provider"] = provider
+
+    envelope: dict[str, Any] = {
+        "windtunnel_interchange": INTERCHANGE_VERSION,
+        "otel_genai_mapping": otel_genai_mapping,
+        "session": session,
+        "messages": messages,
+    }
+    if source is not None:
+        envelope["source"] = source
+    if tool_definitions is not None:
+        envelope["tool_definitions"] = tool_definitions
+    if witnessed_calls is not None:
+        envelope["witnessed_calls"] = witnessed_calls
+    return envelope
+
+
 def _require_mapping(value: Any, label: str) -> dict[str, Any]:
     """Return ``value`` as a plain dict or raise an envelope-focused error."""
     if not isinstance(value, dict):
@@ -289,6 +352,7 @@ __all__ = [
     "TextPart",
     "ToolCallPart",
     "ToolCallResponsePart",
+    "build_envelope",
     "load_interchange",
     "parse_interchange",
 ]

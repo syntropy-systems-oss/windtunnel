@@ -1,0 +1,8 @@
+{
+  "missing_version.wtin.json": "windtunnel_interchange must be a positive integer",
+  "version_wrong_type.wtin.json": "windtunnel_interchange must be a positive integer",
+  "session_model_empty.wtin.json": "session.model must be a non-empty string",
+  "unknown_message_part_type.wtin.json": "must be one of ['text', 'tool_call', 'tool_call_response']",
+  "malformed_witnessed_call.wtin.json": "witnessed_calls[0].args must be an object",
+  "malformed_tool_definition.wtin.json": "tool_definitions[0].input_schema must be an object"
+}

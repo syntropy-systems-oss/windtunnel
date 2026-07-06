@@ -1,0 +1,36 @@
+{
+  "windtunnel_interchange": 1,
+  "otel_genai_mapping": "semantic-conventions-genai@development-2026-06",
+  "session": {
+    "model": "gpt-example-1",
+    "provider": "openai"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "parts": [
+        {"type": "text", "content": "Email on file for Bluewing?"}
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {"type": "text", "content": "ops@bluewing.example"}
+      ]
+    }
+  ],
+  "tool_definitions": [
+    {
+      "name": "client_lookup",
+      "description": "Look up a client by name or account id.",
+      "input_schema": {
+        "type": "object",
+        "properties": {"query": {"type": "string"}}
+      },
+      "result_schema": {
+        "type": "object",
+        "properties": {"email": {"type": "string"}}
+      }
+    }
+  ]
+}

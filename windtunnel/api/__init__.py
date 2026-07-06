@@ -26,6 +26,7 @@ from windtunnel.api.interchange import (
     TextPart,
     ToolCallPart,
     ToolCallResponsePart,
+    build_envelope,
     load_interchange,
     parse_interchange,
 )
@@ -122,6 +123,6 @@ __all__ = [
     # interchange/import
     "InterchangeFormatError", "InterchangeMessage", "InterchangePart",
     "InterchangeToolDefinition", "InterchangeTrace", "InterchangeWitnessedCall",
-    "TextPart", "ToolCallPart", "ToolCallResponsePart", "load_interchange",
-    "parse_interchange", "ImportResult", "write_imported_scenario",
+    "TextPart", "ToolCallPart", "ToolCallResponsePart", "build_envelope",
+    "load_interchange", "parse_interchange", "ImportResult", "write_imported_scenario",
 ]

@@ -1284,6 +1284,38 @@ def _cmd_import(args: argparse.Namespace) -> int:
     return 0
 
 
+# ─── validate ────────────────────────────────────────────────────────────────
+
+def _cmd_validate(args: argparse.Namespace) -> int:
+    """Handle the `wt validate` subcommand.
+
+    A thin wrapper over `load_interchange` — it does not duplicate any
+    parsing or validation logic. For each path, prints one line: `OK <path>`
+    or `INVALID <path>: <error>`. A missing file is a usage error (exit 2),
+    matching `wt import`'s conventions; a well-formed-but-invalid envelope is
+    a validation failure (exit 1), not a usage error.
+    """
+    from windtunnel.api.interchange import InterchangeFormatError, load_interchange  # noqa: PLC0415
+
+    paths = [Path(p) for p in args.paths]
+    missing = [p for p in paths if not p.is_file()]
+    if missing:
+        for p in missing:
+            print(f"wt validate: file not found: {p}", file=sys.stderr)
+        return 2
+
+    all_valid = True
+    for path in paths:
+        try:
+            load_interchange(path)
+        except InterchangeFormatError as exc:
+            print(f"INVALID {path}: {exc}")
+            all_valid = False
+        else:
+            print(f"OK {path}")
+    return 0 if all_valid else 1
+
+
 # ─── main ────────────────────────────────────────────────────────────────────
 
 def main(argv: list[str] | None = None) -> int:
@@ -1379,6 +1411,14 @@ def main(argv: list[str] | None = None) -> int:
     import_p.add_argument("--force", action="store_true",
                           help="Allow writing into an existing non-empty directory.")
 
+    # ── validate ─────────────────────────────────────────────────────────────
+    validate_p = sub.add_parser(
+        "validate",
+        help="Validate Contract A *.wtin.json interchange envelope(s).",
+    )
+    validate_p.add_argument("paths", nargs="+", metavar="PATH",
+                            help="Path(s) to *.wtin.json envelope file(s) to validate.")
+
     # ── triage ───────────────────────────────────────────────────────────────
     triage_p = sub.add_parser(
         "triage",
@@ -1408,6 +1448,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_replay(args)
     if args.command == "import":
         return _cmd_import(args)
+    if args.command == "validate":
+        return _cmd_validate(args)
     if args.command == "triage":
         return _cmd_triage(args)
 
