@@ -17,6 +17,7 @@ class _EndpointState:
     def __init__(self) -> None:
         self.inject_responses: list[tuple[int, Any]] = []
         self.reset_responses: list[tuple[int, Any]] = []
+        self.surface_responses: list[tuple[int, Any]] = []
         self.requests: list[dict[str, Any]] = []
         self.lock = threading.Lock()
 
@@ -35,6 +36,14 @@ class _EndpointState:
             if self.reset_responses:
                 return self.reset_responses.pop(0)
         return 200, {"wt_inject": 1}
+
+    def pop_surface(self) -> tuple[int, Any]:
+        # Default 404: an endpoint that doesn't implement the optional
+        # route — the driver must record an honest "unavailable".
+        with self.lock:
+            if self.surface_responses:
+                return self.surface_responses.pop(0)
+        return 404, {"error": "not found"}
 
     def requests_for(self, path: str) -> list[dict[str, Any]]:
         with self.lock:
@@ -69,6 +78,8 @@ class _Handler(BaseHTTPRequestHandler):
             status, body = state.pop_inject()
         elif self.path == "/wt/reset":
             status, body = state.pop_reset()
+        elif self.path == "/wt/surface":
+            status, body = state.pop_surface()
         else:
             status, body = 404, {"error": "not found"}
 
@@ -100,6 +111,9 @@ class _FakeEndpoint:
 
     def add_reset(self, body: Any, *, status: int = 200) -> None:
         self.state.reset_responses.append((status, body))
+
+    def add_surface(self, body: Any, *, status: int = 200) -> None:
+        self.state.surface_responses.append((status, body))
 
     def requests_for(self, path: str) -> list[dict[str, Any]]:
         return self.state.requests_for(path)
@@ -314,3 +328,133 @@ def test_reset_canary_composes_with_http_inject(endpoint: _FakeEndpoint) -> None
 
     assert result.passed
     assert not result.leaked
+
+
+# ─── Surface introspection (optional /wt/surface route) ──────────────────────
+
+_VALID_SURFACE = {
+    "system_instructions": [
+        {"type": "text", "content": "You are the operations assistant for Bluewing Logistics."}
+    ],
+    "tool_definitions": [
+        {
+            "name": "client_lookup",
+            "description": "Look up a client record.",
+            "input_schema": {"type": "object"},
+        }
+    ],
+    "extra_segments": [
+        {"name": "narration:tool_started", "content": "Checking {tool_name} for you…"}
+    ],
+}
+
+
+def test_surface_route_absent_is_honest_unavailable(endpoint: _FakeEndpoint) -> None:
+    # Default endpoint serves no /wt/surface — 404 is a conforming absence.
+    assert _handle(endpoint).describe_surface() == {"status": "unavailable"}
+
+
+def test_surface_route_501_is_unavailable(endpoint: _FakeEndpoint) -> None:
+    endpoint.add_surface({"error": "not implemented"}, status=501)
+    assert _handle(endpoint).describe_surface() == {"status": "unavailable"}
+
+
+def test_surface_reported_happy_path(endpoint: _FakeEndpoint) -> None:
+    endpoint.add_surface({"wt_inject": 1, "surface": _VALID_SURFACE})
+
+    block = _handle(endpoint).describe_surface()
+
+    assert block["status"] == "reported"
+    assert block["system_instructions"] == _VALID_SURFACE["system_instructions"]
+    assert block["tool_definitions"] == _VALID_SURFACE["tool_definitions"]
+    assert block["extra_segments"] == _VALID_SURFACE["extra_segments"]
+    assert endpoint.requests_for("/wt/surface")[0]["payload"] == {"wt_inject": 1}
+
+
+def test_surface_missing_segment_key_is_invalid_not_fatal(endpoint: _FakeEndpoint) -> None:
+    incomplete = {k: v for k, v in _VALID_SURFACE.items() if k != "extra_segments"}
+    endpoint.add_surface({"wt_inject": 1, "surface": incomplete})
+
+    block = _handle(endpoint).describe_surface()
+
+    assert block["status"] == "invalid"
+    assert "extra_segments" in block["detail"]
+    # The malformed payload is never stored.
+    assert "system_instructions" not in block
+
+
+def test_surface_version_echo_mismatch_is_invalid(endpoint: _FakeEndpoint) -> None:
+    endpoint.add_surface({"wt_inject": 99, "surface": _VALID_SURFACE})
+
+    block = _handle(endpoint).describe_surface()
+
+    assert block["status"] == "invalid"
+    assert "wt_inject" in block["detail"]
+
+
+def test_surface_http_500_is_invalid_not_unavailable(endpoint: _FakeEndpoint) -> None:
+    endpoint.add_surface({"error": "boom"}, status=500)
+
+    block = _handle(endpoint).describe_surface()
+
+    assert block["status"] == "invalid"
+    assert "500" in block["detail"]
+
+
+def test_surface_empty_segments_conform(endpoint: _FakeEndpoint) -> None:
+    # [] is a conforming "there is nothing of this kind" (the tool_calls rule).
+    endpoint.add_surface({
+        "wt_inject": 1,
+        "surface": {
+            "system_instructions": [],
+            "tool_definitions": [],
+            "extra_segments": [],
+        },
+    })
+
+    block = _handle(endpoint).describe_surface()
+
+    assert block["status"] == "reported"
+    assert block["system_instructions"] == []
+
+
+def test_run_scenario_freezes_reported_surface_into_trace(endpoint: _FakeEndpoint) -> None:
+    endpoint.add_reset({"wt_inject": 1})
+    endpoint.add_surface({"wt_inject": 1, "surface": _VALID_SURFACE})
+    endpoint.add_inject({"wt_inject": 1, "reply": "Bluewing Logistics", "tool_calls": []})
+    runtime = HttpInjectRuntime(base_url=endpoint.url, timeout_s=3.0)
+    scenario = Scenario(
+        name="http_inject_surface_capture",
+        prompt="Which client ordered the pallet?",
+        target_facts=[["Bluewing Logistics"]],
+    )
+
+    result = run_scenario(scenario, runtime)
+
+    trace = result.runs[0].trace
+    assert trace.surface is not None
+    assert trace.surface["status"] == "reported"
+    assert trace.surface["tool_definitions"][0]["name"] == "client_lookup"
+    # Probe order: after reset, before the first inject.
+    paths = [r["path"] for r in endpoint.state.requests]
+    assert paths.index("/wt/reset") < paths.index("/wt/surface") < paths.index("/wt/inject")
+
+
+def test_run_scenario_records_invalid_surface_and_proceeds(endpoint: _FakeEndpoint) -> None:
+    endpoint.add_reset({"wt_inject": 1})
+    endpoint.add_surface({"wt_inject": 1, "surface": {"system_instructions": []}})
+    endpoint.add_inject({"wt_inject": 1, "reply": "Bluewing Logistics", "tool_calls": []})
+    runtime = HttpInjectRuntime(base_url=endpoint.url, timeout_s=3.0)
+    scenario = Scenario(
+        name="http_inject_surface_invalid",
+        prompt="Which client ordered the pallet?",
+        target_facts=[["Bluewing Logistics"]],
+    )
+
+    result = run_scenario(scenario, runtime)
+
+    trace = result.runs[0].trace
+    # Strict gate, resilient run: the probe failed, the run did not.
+    assert trace.surface["status"] == "invalid"
+    assert any(w.startswith("surface_invalid:") for w in trace.worker_warnings)
+    assert result.aggregate.verdict == "PASS"

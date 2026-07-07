@@ -134,6 +134,19 @@ class Trace:
         the agent left behind. Policy predicates read it like any other
         trace field, so verdicts that depend on world state survive
         offline re-scoring. Empty when no probe was wired.
+
+    surface: the agent's prompt surface as captured once per run — after
+        reset, before the first send — from a handle implementing
+        describe_surface() (spi/agent_runtime.py). A dict with "status":
+        "reported" (endpoint's account of its configured surface — a
+        driver cannot verify what the model saw through an inject
+        boundary, so never treat as ground truth), "rendered" (worker-side
+        truth), "unavailable" (honest absence), or "invalid" (failed
+        validation; the malformed payload is never stored). None when the
+        handle has no surface introspection at all — absent capability,
+        distinct from a probed "unavailable". A captured surface IS the
+        system prompt: treat trace files embedding one as sensitively as
+        the prompt itself.
     """
     scenario_id: str
     agent_id: str
@@ -148,6 +161,7 @@ class Trace:
     worker_warnings: list[str] = field(default_factory=list)
     mcp_calls: list[dict[str, Any]] = field(default_factory=list)
     observations: dict[str, Any] = field(default_factory=dict)
+    surface: dict[str, Any] | None = None
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     def _to_dict(self) -> dict[str, Any]:
@@ -166,6 +180,7 @@ class Trace:
             "worker_warnings": self.worker_warnings,
             "mcp_calls": self.mcp_calls,
             "observations": self.observations,
+            "surface": self.surface,
         }
 
     @classmethod
@@ -188,6 +203,7 @@ class Trace:
             # the evidence they do carry).
             mcp_calls=d.get("mcp_calls") or [],
             observations=d.get("observations") or {},
+            surface=d.get("surface"),
         )
 
 
