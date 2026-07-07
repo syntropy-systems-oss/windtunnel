@@ -116,6 +116,15 @@ class Trace:
         mcp_calls is what actually reached the tool server. Empty when no
         logging MCP server was in play (e.g. the in_memory runtime).
 
+    tool_schema_hash: identity of the tool surface the run's MCP servers
+        offered the agent. Computed from served_tool_definitions() where a
+        handle provides it (full name/description/schema entries), falling
+        back to served_tools() names; order-sensitive by design — a
+        reordered manifest is a changed surface. compute_hash("[]") means
+        "no tool servers, truthfully"; None means the manifest was UNKNOWN
+        (some handle exposed no tool metadata) — honest absence, never a
+        fabricated identity.
+
     observations: end-of-run snapshots of EXTERNAL (non-MCP) world state,
         captured by a StateProbe (spi/state_probe.py) after the final turn
         and before scoring. Keyed by evidence source, e.g.
@@ -135,7 +144,7 @@ class Trace:
     started_at: datetime
     finished_at: datetime
     turns: list[Turn]
-    tool_schema_hash: Hash
+    tool_schema_hash: Hash | None
     worker_warnings: list[str] = field(default_factory=list)
     mcp_calls: list[dict[str, Any]] = field(default_factory=list)
     observations: dict[str, Any] = field(default_factory=dict)
@@ -172,7 +181,7 @@ class Trace:
             started_at=datetime.fromisoformat(d["started_at"]),
             finished_at=datetime.fromisoformat(d["finished_at"]),
             turns=[Turn._from_dict(t) for t in d.get("turns", [])],
-            tool_schema_hash=d["tool_schema_hash"],
+            tool_schema_hash=d.get("tool_schema_hash"),
             worker_warnings=d.get("worker_warnings") or [],
             # Fields added post-1st-schema: old traces don't carry them.
             # Default to empty so historical runs still load (and score via

@@ -92,6 +92,25 @@ class RecordedMCPHandle:
         """Return canonical tool names from the recorded universe."""
         return [tool.name for tool in self._universe.tools]
 
+    def served_tool_definitions(self) -> list[dict[str, Any]]:
+        """Return full tool definitions from the recorded universe.
+
+        Manifest order, surface-visible fields only: ``mode`` is replay
+        configuration, not part of what the agent sees, so it is excluded
+        (a mode flip must not change Trace.tool_schema_hash).
+        """
+        definitions: list[dict[str, Any]] = []
+        for tool in self._universe.tools:
+            entry: dict[str, Any] = {
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.input_schema,
+            }
+            if tool.result_schema is not None:
+                entry["result_schema"] = tool.result_schema
+            definitions.append(entry)
+        return definitions
+
     def call_tool(self, tool_name: str, args: dict[str, Any] | None = None) -> Any:
         """Resolve one tool call against the universe and record the result."""
         normalized_args = normalize_tool_args(args or {})

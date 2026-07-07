@@ -64,7 +64,7 @@ from windtunnel.api.preconditions import (
 )
 from windtunnel.api.scenario import PreSendPerturbation, Scenario
 from windtunnel.api.score import LayerResult, Score
-from windtunnel.api.trace import Trace, Turn, compute_hash
+from windtunnel.api.trace import Hash, Trace, Turn, compute_hash
 from windtunnel.spi.agent_runtime import AgentConfig, AgentHandle, AgentRuntime, SamplingConfig
 from windtunnel.spi.mcp_server import MCPHandle, MCPServer
 from windtunnel.spi.state_probe import StateProbe
@@ -222,6 +222,41 @@ def _capture_observations(
 
 
 # ─── Response-shape tolerance ─────────────────────────────────────────────────
+
+def _tool_schema_hash(mcp_handles: list[MCPHandle]) -> Hash | None:
+    """Hash the tool surface the run's MCP servers actually offered.
+
+    Per handle, prefers served_tool_definitions() (full name/description/
+    schema entries) and falls back to served_tools() (name-only entries).
+    Entries keep manifest order and handle order — order-sensitive by
+    design, a reordered manifest is a changed surface. Key order within an
+    entry is canonicalized (sort_keys) so semantically identical manifests
+    hash identically.
+
+    Returns None when the manifest is unknown: a handle that exposes no
+    tool metadata (or whose introspection raises) makes the WHOLE surface
+    unknown, because hashing a partial manifest would claim identity over
+    tools we never saw — the placeholder sin this helper replaces. With no
+    handles at all the result is compute_hash("[]"): truthfully no tools.
+    """
+    entries: list[dict[str, Any]] = []
+    try:
+        for mcp in mcp_handles:
+            definitions = getattr(mcp, "served_tool_definitions", None)
+            if callable(definitions):
+                entries.extend(definitions())
+                continue
+            names = getattr(mcp, "served_tools", None)
+            if callable(names):
+                entries.extend({"name": name} for name in names())
+                continue
+            return None  # opaque handle — the whole manifest is unknown
+        return compute_hash(json.dumps(entries, sort_keys=True, ensure_ascii=False))
+    except Exception:
+        # Total by design: this also runs inside the failed-run except
+        # path, where a raise here would mask the original runner error.
+        return None
+
 
 def _extract_reply(response: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     """Extract (content, tool_calls) from an AgentHandle.send() response.
@@ -454,7 +489,7 @@ def _run_once(
         started_at=started_at,
         finished_at=finished_at,
         turns=turns,
-        tool_schema_hash=compute_hash(scenario.name),
+        tool_schema_hash=_tool_schema_hash(mcp_handles),
         worker_warnings=runtime_warnings + probe_warnings + mcp_warnings,
         mcp_calls=mcp_calls,
         observations=observations,
@@ -588,7 +623,7 @@ def run_scenario(
                     started_at=now,
                     finished_at=now,
                     turns=[],
-                    tool_schema_hash=compute_hash(scenario.name),
+                    tool_schema_hash=_tool_schema_hash(mcp_handles),
                     worker_warnings=[f"runner_error: {exc}"],
                 )
                 score = Score(
