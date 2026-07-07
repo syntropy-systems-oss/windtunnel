@@ -66,12 +66,17 @@ def _decode_json_body(body: bytes, operation: str) -> str:
         ) from exc
 
 
+class _SurfaceRouteAbsent(Exception):
+    """The optional route is not implemented on this endpoint (HTTP 404/501)."""
+
+
 def _post_json(
     url: str,
     payload: dict[str, Any],
     *,
     timeout_s: float,
     operation: str,
+    absent_statuses: tuple[int, ...] = (),
 ) -> dict[str, Any]:
     body = json.dumps(payload).encode("utf-8")
     request = Request(
@@ -89,6 +94,8 @@ def _post_json(
             status = int(getattr(response, "status", response.getcode()))
             response_body = response.read()
     except HTTPError as exc:
+        if exc.code in absent_statuses:
+            raise _SurfaceRouteAbsent(f"HTTP {exc.code}") from exc
         error_body = _decode_http_error_body(exc.read())
         raise RuntimeError(
             f"http_inject {operation}: expected HTTP 200, got {exc.code}: {error_body}"
@@ -201,6 +208,68 @@ def _validate_reset_envelope(envelope: dict[str, Any]) -> None:
     _require_version_echo(envelope, "reset")
 
 
+_SURFACE_SEGMENT_KEYS = ("system_instructions", "tool_definitions", "extra_segments")
+
+
+def _validate_surface_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
+    """Validate a /wt/surface response; return the surface object.
+
+    All three segment lists are required even when empty — `[]` is a
+    conforming "there is nothing of this kind"; a missing key is a
+    contract violation (the tool_calls rule again). Raises RuntimeError
+    with a specific message on any violation; the caller converts that
+    into an "invalid" block rather than failing the run.
+    """
+    _require_version_echo(envelope, "surface")
+
+    surface = envelope.get("surface")
+    if not isinstance(surface, dict):
+        raise RuntimeError(
+            "http_inject surface: response missing required object field 'surface'"
+        )
+    for key in _SURFACE_SEGMENT_KEYS:
+        if key not in surface:
+            raise RuntimeError(
+                f"http_inject surface: surface missing required field {key!r} "
+                "(required even when empty)"
+            )
+        if not isinstance(surface[key], list):
+            raise RuntimeError(
+                f"http_inject surface: surface.{key} must be a list, "
+                f"got {type(surface[key]).__name__}"
+            )
+
+    for idx, part in enumerate(surface["system_instructions"]):
+        if not isinstance(part, dict) or not isinstance(part.get("content"), str):
+            raise RuntimeError(
+                f"http_inject surface: system_instructions[{idx}] must be an object "
+                "with string 'content'"
+            )
+    for idx, definition in enumerate(surface["tool_definitions"]):
+        if not isinstance(definition, dict):
+            raise RuntimeError(
+                f"http_inject surface: tool_definitions[{idx}] must be an object"
+            )
+        name = definition.get("name")
+        if not isinstance(name, str) or not name:
+            raise RuntimeError(
+                f"http_inject surface: tool_definitions[{idx}].name must be a "
+                "non-empty string"
+            )
+    for idx, segment in enumerate(surface["extra_segments"]):
+        if (
+            not isinstance(segment, dict)
+            or not isinstance(segment.get("name"), str)
+            or not segment.get("name")
+            or not isinstance(segment.get("content"), str)
+        ):
+            raise RuntimeError(
+                f"http_inject surface: extra_segments[{idx}] must be an object with "
+                "non-empty string 'name' and string 'content'"
+            )
+    return surface
+
+
 def _newest_user_text(messages: list[Message]) -> str:
     for message in reversed(messages):
         if message.get("role") == "user":
@@ -279,6 +348,40 @@ class _HttpInjectHandle:
             operation="reset",
         )
         _validate_reset_envelope(envelope)
+
+    def describe_surface(self) -> dict[str, Any]:
+        """Probe the optional /wt/surface route (Contract C, design 0002).
+
+        404/501 = the endpoint doesn't implement the optional route —
+        honest {"status": "unavailable"}, fully conforming. Anything else
+        that fails (transport error, non-200, malformed envelope) becomes
+        {"status": "invalid", "detail": ...}: the probe fails, never the
+        run, and the malformed payload is never stored. A valid envelope
+        is labeled "reported" — the endpoint's account of its configured
+        surface, which a driver cannot verify through the inject boundary.
+        """
+        try:
+            envelope = _post_json(
+                f"{self._base_url}/wt/surface",
+                {"wt_inject": PROTOCOL_VERSION},
+                timeout_s=self._timeout_s + GRACE_TIMEOUT_S,
+                operation="surface",
+                absent_statuses=(404, 501),
+            )
+        except _SurfaceRouteAbsent:
+            return {"status": "unavailable"}
+        except Exception as exc:
+            return {"status": "invalid", "detail": str(exc)}
+        try:
+            surface = _validate_surface_envelope(envelope)
+        except Exception as exc:
+            return {"status": "invalid", "detail": str(exc)}
+        return {
+            "status": "reported",
+            "system_instructions": surface["system_instructions"],
+            "tool_definitions": surface["tool_definitions"],
+            "extra_segments": surface["extra_segments"],
+        }
 
     def teardown(self) -> None:
         # urllib opens per-request connections; there is no client to close.

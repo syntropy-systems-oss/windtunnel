@@ -50,14 +50,31 @@ def _entry_to_message(entry: ScriptedEntry) -> tuple[dict[str, Any], str]:
 class _InMemoryHandle:
     """AgentHandle that records calls and returns scripted responses."""
 
-    def __init__(self, responses: list[ScriptedEntry]) -> None:
+    def __init__(
+        self,
+        responses: list[ScriptedEntry],
+        surface: dict[str, Any] | None = None,
+    ) -> None:
         # responses: list of scripted entries, one per send() call.
         # When exhausted, repeats the last response.
         self._responses = list(responses) if responses else ["ok"]
+        self._surface = surface
         self._call_count = 0
         self.calls: list[tuple[list[Message], str]] = []  # (messages, session_id)
         self.reset_count = 0
         self.teardown_count = 0
+
+    def describe_surface(self) -> dict[str, Any]:
+        """Return the scripted surface block, or an honest absence.
+
+        A scripted runtime composes no prompt, so with no scripted surface
+        the truthful answer is {"status": "unavailable"} — there is no
+        surface to report, and fabricating one from AgentConfig would
+        label configuration as evidence.
+        """
+        if self._surface is not None:
+            return dict(self._surface)
+        return {"status": "unavailable"}
 
     def send(self, messages: list[Message], session_id: str) -> Response:
         self.calls.append((list(messages), session_id))
@@ -113,13 +130,23 @@ class InMemoryRuntime:
         ])
     """
 
-    def __init__(self, scripted_responses: list[ScriptedEntry] | None = None) -> None:
+    def __init__(
+        self,
+        scripted_responses: list[ScriptedEntry] | None = None,
+        surface: dict[str, Any] | None = None,
+    ) -> None:
+        # surface: optional scripted surface block (see AgentHandle
+        # describe_surface() in spi/agent_runtime.py for the shape) —
+        # passed through verbatim so scenario/CLI tests can exercise
+        # surface capture without a live endpoint. None = handles report
+        # {"status": "unavailable"}.
         self._responses = scripted_responses or ["ok"]
+        self._surface = surface
         self.provisions: list[tuple[AgentConfig, _InMemoryHandle]] = []
 
     def provision(self, config: AgentConfig, mcps: list | None = None) -> AgentHandle:  # type: ignore[override]
         # mcps: ignored — InMemoryRuntime is network-free; the MCP handles are
         # not needed because send() returns scripted responses.
-        handle = _InMemoryHandle(self._responses)
+        handle = _InMemoryHandle(self._responses, surface=self._surface)
         self.provisions.append((config, handle))
         return handle  # type: ignore[return-value]
