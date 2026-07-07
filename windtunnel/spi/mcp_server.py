@@ -27,6 +27,10 @@ MCPHandle
     served_tools() -> list[str] (optional)
         Best-effort metadata: canonical tool names this handle serves.
         Used by world preconditions when available.
+    served_tool_definitions() -> list[dict] (optional)
+        Richer metadata: full tool definitions ({name, description,
+        input_schema, result_schema?}) as offered to the agent. Used to
+        compute Trace.tool_schema_hash when available.
     call_log() -> list[MCPCall]
         Every tool call routed through this server since last reset.
     reset_call_log() -> None
@@ -153,6 +157,31 @@ class ToolIntrospectableMCPHandle(Protocol):
 
     def served_tools(self) -> list[str]:
         """Return canonical tool names served by this handle."""
+        ...
+
+
+@runtime_checkable
+class ToolDefinitionIntrospectableMCPHandle(Protocol):
+    """Optional MCPHandle extension for full tool-definition metadata.
+
+    Separate from ToolIntrospectableMCPHandle for the same reason that one
+    is separate from MCPHandle: existing handles remain conformant.
+    Implement it when the server knows the complete definitions it offers
+    the agent — name, description, and schemas — not just the names.
+    Trace.tool_schema_hash prefers this over served_tools() because a
+    changed tool description is a changed tool surface even when every
+    name is identical.
+    """
+
+    def served_tool_definitions(self) -> list[dict[str, Any]]:
+        """Return tool definitions as offered to the agent, in manifest order.
+
+        Entries are plain dicts: {"name": str, "description": str,
+        "input_schema": dict, "result_schema": dict (optional)}. Only
+        surface-visible fields belong here — server-side replay/matching
+        configuration does not change what the agent sees and must be
+        excluded.
+        """
         ...
 
 
