@@ -1683,7 +1683,7 @@ def _cmd_surface(args: argparse.Namespace) -> int:
         mode = "hashes + full text (SENSITIVE)" if args.store_text else "hashes only"
         print(f"wt surface: golden recorded ({mode}): {golden_path}")
         print(
-            f"  system instructions: 1 segment · tools: {len(golden['tool_order'])} "
+            f"  tools: {len(golden['tool_order'])} "
             f"· extra segments: {len(golden['extra_segments'])}"
         )
         return 0
