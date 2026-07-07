@@ -2,10 +2,10 @@
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at 6f7ac3dcd63e — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at 33ccc7bebcf9 — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
-The `wt` command ships 10 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
+The `wt` command ships 11 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
 
 | Command | Purpose |
 |---|---|
@@ -15,6 +15,7 @@ The `wt` command ships 10 subcommands. This page is generated from `windtunnel.c
 | `wt rescore` | Re-score saved traces against current scenario definitions. |
 | `wt replay` | Replay a captured trace against a runtime. |
 | `wt doctor` | Bring-up check: run the reset-isolation canary against a live runtime. |
+| `wt surface` | Record or compare the agent's prompt-surface golden (surface diff ⇒ bench run before merge). |
 | `wt import` | Generate a scenario skeleton from a Contract A *.wtin.json trace. |
 | `wt validate` | Validate Contract A *.wtin.json interchange envelope(s). |
 | `wt triage` | Classify failed runs and emit a markdown report grouped by failure category. |
@@ -143,6 +144,88 @@ Arguments and options:
 | `--runtime` | no | in_memory | Runtime to check (default: in_memory). Resolved exactly like `wt run --runtime`: built-in 'in_memory', an installed plugin name (entry-point group 'windtunnel.runtimes'), or a 'module:attr' dotted path to a RuntimePlugin. Runs the canary in RECALL mode, which requires a live model behind the runtime — doctor is a bring-up tool, not a CI check. For CI runners without a live model, call run_reset_canary(..., probe_recall=False, state_probe=...) directly from pytest instead. |
 | `--soul` | no |  | Path to SOUL.md / persona doc to inject (mirrors `wt run --soul`). |
 | `--label` | no |  | Variant label recorded for this check (default: wt_doctor). |
+
+## `wt surface`
+
+Record or compare the agent's prompt-surface golden (surface diff ⇒ bench run before merge).
+
+Usage:
+
+```bash
+wt surface [-h] {record,diff,check} ...
+```
+
+Subcommands:
+
+| Command | Purpose |
+|---|---|
+| `wt surface record` | Probe the runtime's surface and write the golden (per-segment hashes; no prompt text unless --store-text). |
+| `wt surface diff` | Show per-segment changes vs the golden. Informative: exits 0 even when the surface changed. |
+| `wt surface check` | CI gate: exit 1 on ANY surface change (or an invalid/absent surface where the golden promises one). A change means: bench before merge. An unchanged surface proves nothing — never use a passing check to skip runs. |
+
+Arguments and options:
+
+| Name | Required | Default | Help |
+|---|---:|---|---|
+| _(none)_ | no |  |  |
+
+### `wt surface record`
+
+Probe the runtime's surface and write the golden (per-segment hashes; no prompt text unless --store-text).
+
+Usage:
+
+```bash
+wt surface record [-h] [--runtime RUNTIME] [--soul PATH] [--label LABEL] [--golden PATH] [--store-text]
+```
+
+Arguments and options:
+
+| Name | Required | Default | Help |
+|---|---:|---|---|
+| `--runtime` | no | in_memory | Runtime to probe (default: in_memory). Resolved exactly like `wt run --runtime`. The probe provisions, resets, asks describe_surface(), and tears down — no scenarios run, no model calls. |
+| `--soul` | no |  | Path to SOUL.md / persona doc to inject (mirrors `wt run --soul`). |
+| `--label` | no |  | Variant label for the probe (default: wt_surface). |
+| `--golden` | no | surface.golden.json | Golden file path (default: surface.golden.json). |
+| `--store-text` | no | false | ALSO store the full segment text in the golden. The text is a human-facing sidecar — comparison only ever reads hashes — and it embeds the complete prompt surface: treat the file as sensitively as the system prompt itself. |
+
+### `wt surface diff`
+
+Show per-segment changes vs the golden. Informative: exits 0 even when the surface changed.
+
+Usage:
+
+```bash
+wt surface diff [-h] [--runtime RUNTIME] [--soul PATH] [--label LABEL] [--golden PATH]
+```
+
+Arguments and options:
+
+| Name | Required | Default | Help |
+|---|---:|---|---|
+| `--runtime` | no | in_memory | Runtime to probe (default: in_memory). Resolved exactly like `wt run --runtime`. The probe provisions, resets, asks describe_surface(), and tears down — no scenarios run, no model calls. |
+| `--soul` | no |  | Path to SOUL.md / persona doc to inject (mirrors `wt run --soul`). |
+| `--label` | no |  | Variant label for the probe (default: wt_surface). |
+| `--golden` | no | surface.golden.json | Golden file path (default: surface.golden.json). |
+
+### `wt surface check`
+
+CI gate: exit 1 on ANY surface change (or an invalid/absent surface where the golden promises one). A change means: bench before merge. An unchanged surface proves nothing — never use a passing check to skip runs.
+
+Usage:
+
+```bash
+wt surface check [-h] [--runtime RUNTIME] [--soul PATH] [--label LABEL] [--golden PATH]
+```
+
+Arguments and options:
+
+| Name | Required | Default | Help |
+|---|---:|---|---|
+| `--runtime` | no | in_memory | Runtime to probe (default: in_memory). Resolved exactly like `wt run --runtime`. The probe provisions, resets, asks describe_surface(), and tears down — no scenarios run, no model calls. |
+| `--soul` | no |  | Path to SOUL.md / persona doc to inject (mirrors `wt run --soul`). |
+| `--label` | no |  | Variant label for the probe (default: wt_surface). |
+| `--golden` | no | surface.golden.json | Golden file path (default: surface.golden.json). |
 
 ## `wt import`
 
