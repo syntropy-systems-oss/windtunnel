@@ -1,12 +1,13 @@
-<!-- GENERATED from docs/design/0002-inject-protocol.md at 6f877b96c3c5 — do not edit; edit docs/design/0002-inject-protocol.md. -->
+<!-- GENERATED from docs/design/0002-inject-protocol.md at 381548f85d0f — do not edit; edit docs/design/0002-inject-protocol.md. -->
 ---
-description: "Design specification for Contract C inject protocol, its reset route, error handling, built-in runtime, and canary."
+description: "Design specification for Contract C inject protocol, its reset route, optional surface-introspection route, error handling, built-in runtime, and canary."
 ---
 # Design 0002: the inject protocol
 
-**Status:** draft · **Scope:** one wire contract (Contract C), the built-in
-runtime that speaks it, and the conformance canary that ratifies an
-implementation.
+**Status:** draft — amended while draft (2026-07-07) to add the optional
+surface-introspection route · **Scope:** one wire contract (Contract C),
+the built-in runtime that speaks it, and the conformance canary that
+ratifies an implementation.
 
 This document specifies **Contract C — the Wind Tunnel inject protocol**: a
 fixed HTTP wire contract between a Wind Tunnel driver and an agent process.
@@ -55,12 +56,13 @@ Consequences, all normative:
 
 ### Transport
 
-HTTP/1.1, JSON bodies, UTF-8. Two routes:
+HTTP/1.1, JSON bodies, UTF-8. Two required routes and one optional:
 
 | Route | Method | Purpose |
 |---|---|---|
 | `/wt/inject` | POST | Deliver one user turn, get the agent's reply |
 | `/wt/reset`  | POST | Destroy all bench-visible state, synchronously |
+| `/wt/surface` | POST | *(Optional)* Report the configured prompt surface (§ Surface introspection) |
 
 The spec'd default port is **8647**. Runtimes must allow overriding the
 base URL, but a conforming endpoint that binds its default to 8647 works
@@ -198,6 +200,91 @@ gone.**
 A failed reset (non-200) must be fatal to the bench run: a bench that
 continues past a failed wipe is scoring contamination.
 
+### Surface introspection (optional)
+
+```json
+POST /wt/surface
+{ "wt_inject": 1 }
+```
+
+→
+
+```json
+{
+  "wt_inject": 1,
+  "surface": {
+    "system_instructions": [
+      { "type": "text",
+        "content": "You are the operations assistant for Bluewing Logistics. Answer only from tool evidence." }
+    ],
+    "tool_definitions": [
+      { "name": "client_lookup",
+        "description": "Look up a client record by free-text query.",
+        "input_schema": { "type": "object",
+                          "properties": { "query": { "type": "string" } } } }
+    ],
+    "extra_segments": [
+      { "name": "narration:tool_started",
+        "content": "Checking {tool_name} for you…" }
+    ]
+  }
+}
+```
+
+The route is **optional — a MAY, not a MUST.** An endpoint that does not
+implement it returns 404 (or 501); the driver records the surface as
+*unavailable* — never fabricated, never reused from an earlier probe —
+and the endpoint's conformance status is unchanged. This is the reset
+canary's posture again: optional-but-encouraged, with an honest absent
+case.
+
+What it reports is the **prompt surface**: every piece of steering text
+the endpoint composes into the model's context beyond the conversation
+itself. The payload reuses Contract A vocabulary rather than inventing a
+new shape, and it is segment-structured on purpose: a surface diff should
+read as "tool `client_lookup` description changed", not "bytes differ".
+
+- `surface.system_instructions` — the system prompt as OTel GenAI text
+  parts (`{type, content}`), in source order. Required, even when empty.
+- `surface.tool_definitions` — the tool manifest as exposed to the model,
+  in manifest order; entries are Contract A tool definitions (`name`
+  required; `description`, `input_schema`, `result_schema` as available).
+  Required, even when empty.
+- `surface.extra_segments` — framework-injected text that is neither
+  system instructions nor a tool definition (tool-use narration
+  templates, response scaffolding), as `{name, content}` pairs with
+  endpoint-chosen, **stable** names. Required, even when empty.
+
+The required-even-empty rule is the `tool_calls` rule again: `[]` is a
+conforming "there is nothing of this kind"; a missing key is a contract
+violation. Implementing the route still means conforming to its shape —
+but a malformed surface response fails the *probe*, not the run. The
+driver records the surface as **invalid** (a third state, distinct from
+*reported* and *unavailable*), warns loudly, and must never store the
+malformed payload as if it validated — a plausible-but-partial surface is
+worse evidence than an honest 404. The bench run proceeds: the surface is
+evidence *about* the run, not the behavior under test, and a broken
+reporting route must not torch the run it exists to document. Gate
+tooling that compares surfaces (driver and CLI territory) must treat
+*invalid* as a hard failure, so the cheap check in front of a human stays
+strict while the expensive run is never collateral.
+
+**Reported, not rendered.** A driver cannot verify what the model
+actually saw through an inject boundary: this route returns the
+endpoint's *report* of its configured surface — what a fresh session's
+next turn would be composed from — and trace artifacts must label it as
+reported, never as ground truth. The end state for external runtimes is
+stronger: the runtime emitting its own surface into the trace per turn
+via the Contract A emitter, worker-side truth. This route is the
+version-1 stepping stone, not the destination.
+
+A reported surface **is the system prompt.** Traces, goldens, and any
+artifact embedding one carry whatever is private about the endpoint's
+steering, and should be handled as sensitively as the prompt itself;
+published examples must be synthetic. Downstream tooling that diffs
+surfaces against goldens is driver and CLI territory, out of scope for
+the wire.
+
 ## Layering: the wire is not the SPI
 
 The contract's knowledge boundary is deliberate: **an endpoint implementer
@@ -225,7 +312,11 @@ overridden with `WT_INJECT_TIMEOUT_S`, and the driver adds the specified
 five-second transport grace. It is implemented on the standard library
 (`urllib.request`), keeping Wind Tunnel's runtime dependency count where it
 is. Selection follows the existing resolution order in `wt run --runtime`
-(built-ins → entry points → dotted path).
+(built-ins → entry points → dotted path). When the endpoint implements
+`/wt/surface`, the driver probes it once per run — after reset, before the
+first inject — and records the reported surface into the trace, or its
+honest absence, or *invalid* on a malformed response (§ Surface
+introspection).
 
 ## The reset canary
 
@@ -259,7 +350,10 @@ An implementation **conforms** when:
   passes;
 - the [runtime checklist](../writing-a-runtime.md) items hold (a
   `must_call` scenario passes; two back-to-back stateful scenarios stay
-  isolated).
+  isolated);
+- *(only if implemented)* surface responses validate against § Surface
+  introspection. The route itself never moves the bar: not implementing
+  it is fully conforming; implementing it badly is not.
 
 **Ratification bar:** this contract does not freeze at version 1 until
 **two independent driver-side implementations** conform *and* pass the
@@ -279,6 +373,10 @@ review.
   which remains the preferred evidence source.
 - **Concurrent injects per session** — the driver serializes (§ The
   session model).
+- **Per-turn rendered surfaces on the wire** — `/wt/surface` reports the
+  endpoint's configured surface, once per run; capturing what each turn
+  actually rendered is the Contract A emitter's job, worker-side, in a
+  later version (§ Surface introspection).
 - **Authentication** — trusted network assumed; transport-layer concern.
 
 ## Appendix (non-normative): notes for endpoint authors
