@@ -1601,6 +1601,124 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 0
 
 
+# ─── surface ─────────────────────────────────────────────────────────────────
+
+def _probe_runtime_surface(args: argparse.Namespace) -> dict | None:
+    """Provision the runtime, probe its surface with the run-time timing
+    (reset first, then probe), tear down. Returns the surface block, or
+    None when the handle has no surface introspection at all."""
+    from windtunnel.api.runner import _capture_surface  # noqa: PLC0415
+    from windtunnel.spi.agent_runtime import AgentConfig  # noqa: PLC0415
+
+    label: str = args.label or "wt_surface"
+    system_prompt: str | None = None
+    if args.soul:
+        soul_path = Path(args.soul)
+        if not soul_path.is_file():
+            print(f"wt surface: --soul file not found: {args.soul}", file=sys.stderr)
+            sys.exit(2)
+        system_prompt = soul_path.read_text()
+
+    runtime = _build_runtime(args.runtime, label, soul_path=args.soul)
+    config = AgentConfig(
+        agent_id="wt-surface", variant_id=label, system_prompt=system_prompt,
+    )
+    handle = runtime.provision(config)
+    try:
+        handle.reset_state()
+        block, _warnings = _capture_surface(handle)
+    finally:
+        try:
+            handle.teardown()
+        except Exception:
+            pass
+    return block
+
+
+def _describe_absent_surface(block: dict | None) -> str:
+    if block is None:
+        return "runtime has no surface introspection (describe_surface not implemented)"
+    if block.get("status") == "unavailable":
+        return "endpoint reports no surface (status: unavailable)"
+    detail = block.get("detail") or "unspecified"
+    return f"surface INVALID: {detail}"
+
+
+def _cmd_surface(args: argparse.Namespace) -> int:
+    """Handle the `wt surface` subcommand.
+
+    Two intents, two invocations — strictness is never a config knob:
+    `diff` informs and always exits 0 on a successful comparison; `check`
+    is the CI gate and exits 1 on ANY change (or an invalid/absent surface
+    where the golden promises one). The golden stores per-segment hashes
+    only, unless the operator opts into the text sidecar with
+    --store-text. The hash is a tripwire, never a skip-token: a surface
+    change forces a bench run; an unchanged surface proves nothing.
+    """
+    from windtunnel.api.surface import (  # noqa: PLC0415
+        SurfaceGoldenError,
+        build_surface_golden,
+        diff_surface_goldens,
+        parse_surface_golden,
+    )
+
+    action = args.surface_action
+    if action is None:
+        print("wt surface: an action is required: record | diff | check", file=sys.stderr)
+        return 2
+
+    golden_path = Path(args.golden)
+    block = _probe_runtime_surface(args)
+
+    if action == "record":
+        try:
+            golden = build_surface_golden(block or {}, store_text=args.store_text)
+        except SurfaceGoldenError:
+            print(f"wt surface record: {_describe_absent_surface(block)}", file=sys.stderr)
+            return 1
+        golden_path.parent.mkdir(parents=True, exist_ok=True)
+        golden_path.write_text(
+            json.dumps(golden, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
+        )
+        mode = "hashes + full text (SENSITIVE)" if args.store_text else "hashes only"
+        print(f"wt surface: golden recorded ({mode}): {golden_path}")
+        print(
+            f"  system instructions: 1 segment · tools: {len(golden['tool_order'])} "
+            f"· extra segments: {len(golden['extra_segments'])}"
+        )
+        return 0
+
+    # diff / check share everything except the exit code.
+    if not golden_path.is_file():
+        print(
+            f"wt surface {action}: golden not found: {golden_path} "
+            "(run `wt surface record` first)",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        golden = parse_surface_golden(json.loads(golden_path.read_text(encoding="utf-8")))
+    except (json.JSONDecodeError, SurfaceGoldenError) as exc:
+        print(f"wt surface {action}: unusable golden {golden_path}: {exc}", file=sys.stderr)
+        return 2
+
+    failing = action == "check"
+    if block is None or block.get("status") not in ("reported", "rendered"):
+        print(f"wt surface {action}: {_describe_absent_surface(block)}")
+        print("  golden promises a surface — treat as a change requiring attention.")
+        return 1 if failing else 0
+
+    changes = diff_surface_goldens(golden, build_surface_golden(block))
+    if not changes:
+        print(f"wt surface {action}: surface matches golden ({golden_path})")
+        return 0
+    print(f"wt surface {action}: {len(changes)} change(s) vs {golden_path}:")
+    for change in changes:
+        print(f"  - {change}")
+    print("  surface diff ⇒ bench run before merge (then re-record the golden).")
+    return 1 if failing else 0
+
+
 # ─── import ──────────────────────────────────────────────────────────────────
 
 def _cmd_import(args: argparse.Namespace) -> int:
@@ -1903,6 +2021,57 @@ def _build_parser() -> argparse.ArgumentParser:
                           help="Variant label recorded for this check "
                                "(default: wt_doctor).")
 
+    # ── surface ──────────────────────────────────────────────────────────────
+    surface_p = sub.add_parser(
+        "surface",
+        help="Record or compare the agent's prompt-surface golden "
+             "(surface diff ⇒ bench run before merge).",
+    )
+    surface_sub = surface_p.add_subparsers(dest="surface_action")
+
+    def _add_surface_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--runtime", default="in_memory", metavar="RUNTIME",
+                       help="Runtime to probe (default: in_memory). Resolved "
+                            "exactly like `wt run --runtime`. The probe "
+                            "provisions, resets, asks describe_surface(), and "
+                            "tears down — no scenarios run, no model calls.")
+        p.add_argument("--soul", default=None, metavar="PATH",
+                       help="Path to SOUL.md / persona doc to inject "
+                            "(mirrors `wt run --soul`).")
+        p.add_argument("--label", default=None, metavar="LABEL",
+                       help="Variant label for the probe (default: wt_surface).")
+        p.add_argument("--golden", default="surface.golden.json", metavar="PATH",
+                       help="Golden file path (default: surface.golden.json).")
+
+    surface_record_p = surface_sub.add_parser(
+        "record",
+        help="Probe the runtime's surface and write the golden "
+             "(per-segment hashes; no prompt text unless --store-text).",
+    )
+    _add_surface_args(surface_record_p)
+    surface_record_p.add_argument(
+        "--store-text", action="store_true",
+        help="ALSO store the full segment text in the golden. The text is a "
+             "human-facing sidecar — comparison only ever reads hashes — and "
+             "it embeds the complete prompt surface: treat the file as "
+             "sensitively as the system prompt itself.")
+
+    surface_diff_p = surface_sub.add_parser(
+        "diff",
+        help="Show per-segment changes vs the golden. Informative: exits 0 "
+             "even when the surface changed.",
+    )
+    _add_surface_args(surface_diff_p)
+
+    surface_check_p = surface_sub.add_parser(
+        "check",
+        help="CI gate: exit 1 on ANY surface change (or an invalid/absent "
+             "surface where the golden promises one). A change means: bench "
+             "before merge. An unchanged surface proves nothing — never use "
+             "a passing check to skip runs.",
+    )
+    _add_surface_args(surface_check_p)
+
     # ── import ───────────────────────────────────────────────────────────────
     import_p = sub.add_parser(
         "import",
@@ -1989,6 +2158,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_rescore(args)
     if args.command == "replay":
         return _cmd_replay(args)
+    if args.command == "surface":
+        return _cmd_surface(args)
     if args.command == "doctor":
         return _cmd_doctor(args)
     if args.command == "import":

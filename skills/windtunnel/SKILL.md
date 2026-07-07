@@ -3,7 +3,7 @@ name: windtunnel
 description: Bench tool-using LLM agents with the wt CLI, scenario packs, trace import/interchange,
   Contract C inject endpoints, reset isolation, and recorded tool universes.
 ---
-<!-- GENERATED from agents/skill-template.md + docs/ at f3f853776c81 — do not edit; edit docs/ or agents/skill-template.md. -->
+<!-- GENERATED from agents/skill-template.md + docs/ at 1ffa8dbb0e19 — do not edit; edit docs/ or agents/skill-template.md. -->
 # Wind Tunnel
 
 Wind Tunnel is unittest for agents: a reliability bench for tool-using LLM
@@ -36,7 +36,7 @@ serving recorded tool universes, or bringing up Contract C inject endpoints.
 - `references/architecture.md` - Architecture overview of Wind Tunnel's API/SPI split, runner data path, scoring layers, perturbations, and CLI surfaces.
 - `references/cli-reference.md` - Generated reference for wt CLI subcommands, usage, options, and exit-code semantics.
 - `references/design/0001-trace-reseeding.md` - Design spine for trace re-seeding, Contract A interchange, Contract B universes, import, scorer, ledger, and CI ergonomics.
-- `references/design/0002-inject-protocol.md` - Design specification for Contract C inject protocol, its reset route, optional surface-introspection route, error handling, built-in runtime, and canary.
+- `references/design/0002-inject-protocol.md` - Design specification for Contract C inject protocol, its reset route, error handling, built-in runtime, and canary.
 - `references/driving-terminus.md` - Guide to driving Harbor Terminus-2 from Wind Tunnel as a terminal-agent runtime.
 - `references/evaluating-skills.md` - How to evaluate whether generated agent skills improve Wind Tunnel task performance.
 - `references/failure-taxonomy.md` - Catalog of Wind Tunnel failure categories, distinguishing signals, and fix vectors for triage.
