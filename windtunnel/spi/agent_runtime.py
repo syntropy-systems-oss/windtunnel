@@ -213,6 +213,58 @@ class AgentHandle(Protocol):
 
 
 @runtime_checkable
+class SurfaceIntrospectableAgentHandle(Protocol):
+    """Optional AgentHandle extension: report the agent's prompt surface.
+
+    Separate from AgentHandle so existing handles remain conformant.
+    Implement it when the handle can account for the steering text the
+    agent composes into the model's context beyond the conversation
+    itself — system instructions, the tool manifest, framework-injected
+    narration templates. The runner probes once per run, after
+    reset_state() and before the first send(), and freezes the block into
+    Trace.surface.
+
+    A driver cannot verify what the model actually saw through an inject
+    boundary: a block from an external endpoint is the endpoint's REPORT
+    of its configured surface, and must be labeled as such — never as
+    ground truth. Worker-side runtimes that render the actual prompt may
+    label their block "rendered" instead.
+
+    A captured surface IS the system prompt. Trace artifacts embedding
+    one are as sensitive as the prompt itself.
+    """
+
+    def describe_surface(self) -> dict[str, Any]:
+        """Return the surface block to freeze into Trace.surface.
+
+        The block always carries a "status" key:
+
+        - {"status": "reported", "system_instructions": [...],
+           "tool_definitions": [...], "extra_segments": [...]}
+          — the endpoint's report of its configured surface. All three
+          segment lists required, even when empty. Segments follow the
+          Contract C surface shape (design 0002): system_instructions are
+          {type, content} text parts in source order; tool_definitions
+          are {name, description?, input_schema?, result_schema?} in
+          manifest order; extra_segments are {name, content} pairs with
+          stable names.
+        - {"status": "rendered", ...same segments...} — worker-side truth:
+          the handle rendered the prompt itself.
+        - {"status": "unavailable"} — the handle/endpoint cannot report a
+          surface. Honest absence; never fabricate or reuse a stale probe.
+        - {"status": "invalid", "detail": "..."} — the endpoint offered a
+          surface that failed validation. Record the failure, never the
+          malformed payload: a plausible-but-partial surface is worse
+          evidence than an honest absence.
+
+        Must not raise for expected conditions (missing route, malformed
+        response) — convert them to "unavailable"/"invalid" blocks. The
+        runner treats a raise as "invalid" defensively.
+        """
+        ...
+
+
+@runtime_checkable
 class AgentRuntime(Protocol):
     """Factory that provisions an AgentHandle for one test batch.
 

@@ -258,6 +258,33 @@ def _tool_schema_hash(mcp_handles: list[MCPHandle]) -> Hash | None:
         return None
 
 
+def _capture_surface(handle: AgentHandle) -> tuple[dict[str, Any] | None, list[str]]:
+    """Probe the handle's prompt surface, totally and honestly.
+
+    Returns (surface_block, warnings). None when the handle has no
+    describe_surface() capability at all — distinct from a probed
+    {"status": "unavailable"}. A raising or non-conforming probe becomes
+    {"status": "invalid"} with a worker warning; the malformed value is
+    never stored (a plausible-but-partial surface is worse evidence than
+    an honest absence). Total by design — a broken reporting capability
+    must not torch the run it exists to document.
+    """
+    describe = getattr(handle, "describe_surface", None)
+    if not callable(describe):
+        return None, []
+    try:
+        block = describe()
+    except Exception as exc:
+        detail = f"describe_surface raised: {exc}"
+        return {"status": "invalid", "detail": detail}, [f"surface_invalid: {detail}"]
+    if not isinstance(block, dict) or not isinstance(block.get("status"), str):
+        detail = "describe_surface returned a non-conforming block"
+        return {"status": "invalid", "detail": detail}, [f"surface_invalid: {detail}"]
+    if block["status"] == "invalid":
+        return block, [f"surface_invalid: {block.get('detail') or 'unspecified'}"]
+    return block, []
+
+
 def _extract_reply(response: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     """Extract (content, tool_calls) from an AgentHandle.send() response.
 
@@ -420,10 +447,16 @@ def _run_once(
     if state_probe is not None:
         state_probe.reset()
 
+    # Probe the prompt surface AFTER reset and BEFORE the first send, per
+    # the Contract C surface-introspection timing: what a fresh session's
+    # next turn would be composed from. Frozen into the trace like every
+    # other evidence field.
+    surface, surface_warnings = _capture_surface(handle)
+
     # Multi-turn when user_turns is non-empty; else single-turn [prompt]
     user_turns: list[str] = scenario.user_turns or [scenario.prompt]
     responses: list[str] = []
-    runtime_warnings: list[str] = []
+    runtime_warnings: list[str] = list(surface_warnings)
 
     for turn_idx, user_text in enumerate(user_turns):
         # Record user turn
@@ -493,6 +526,7 @@ def _run_once(
         worker_warnings=runtime_warnings + probe_warnings + mcp_warnings,
         mcp_calls=mcp_calls,
         observations=observations,
+        surface=surface,
     )
 
     # Apply perturbations to the trace before scoring (robustness layer).
