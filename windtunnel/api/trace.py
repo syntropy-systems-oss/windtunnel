@@ -228,6 +228,16 @@ def load_trace(path: Path) -> Trace:
     return Trace._from_dict(data)
 
 
+def is_trace_json_path(path: Path) -> bool:
+    """Return True when a JSON path is a trace, not a sidecar.
+
+    Sidecar rule: any ``*.json`` whose stem contains a dot is never a trace
+    (for example ``run.score.json`` or ``run.debrief.json``).
+    """
+    path = Path(path)
+    return path.suffix == ".json" and "." not in path.stem
+
+
 def storage_path(trace: Trace, base_dir: Path | None = None) -> Path:
     """Compute a versioned storage path for a trace.
 

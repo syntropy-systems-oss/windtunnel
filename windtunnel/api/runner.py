@@ -44,6 +44,8 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -66,6 +68,7 @@ from windtunnel.api.scenario import PreSendPerturbation, Scenario
 from windtunnel.api.score import LayerResult, Score
 from windtunnel.api.trace import Hash, Trace, Turn, compute_hash
 from windtunnel.spi.agent_runtime import AgentConfig, AgentHandle, AgentRuntime, SamplingConfig
+from windtunnel.spi.hooks import Hook, HookArtifact, HookContext
 from windtunnel.spi.mcp_server import MCPHandle, MCPServer
 from windtunnel.spi.state_probe import StateProbe
 
@@ -81,9 +84,13 @@ class ScenarioResult:
         self,
         aggregate: AggregateResult,
         runs: list[ScenarioRunResult],
+        worker_warnings: list[str] | None = None,
+        hook_artifacts: list[HookArtifact] | None = None,
     ) -> None:
         self.aggregate = aggregate
         self.runs = runs
+        self.worker_warnings = worker_warnings or []
+        self.hook_artifacts = hook_artifacts or []
 
     def __repr__(self) -> str:
         return (
@@ -91,6 +98,82 @@ class ScenarioResult:
             f"pass_rate={self.aggregate.pass_rate:.0%}, "
             f"runs={self.aggregate.total})"
         )
+
+
+@dataclass
+class _RunHookState:
+    """Mutable hook side-channel for a single run."""
+
+    run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    artifacts: list[HookArtifact] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def _hook_name(hook: object) -> str:
+    return str(getattr(hook, "name", hook.__class__.__name__))
+
+
+def _hook_method(hook: object, point: str):
+    method = getattr(hook, point, None)
+    if not callable(method):
+        return None
+    if isinstance(hook, Hook) and getattr(type(hook), point, None) is getattr(Hook, point, None):
+        return None
+    return method
+
+
+def _append_hook_warning(sink: list[str], hook: object, exc: BaseException) -> None:
+    sink.append(f"hook:{_hook_name(hook)}: {exc}")
+
+
+def _normalize_hook_reply(response: dict[str, Any]) -> str:
+    reply, _tool_calls = _extract_reply(response)
+    return reply
+
+
+def _dispatch_hooks(
+    hooks: Sequence[object],
+    point: str,
+    *,
+    warning_sink: list[str],
+    artifact_sink: list[HookArtifact],
+    scenario: Scenario | None = None,
+    agent: AgentConfig | None = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    trace: Trace | None = None,
+    score: Score | None = None,
+    aggregate: Any = None,
+    handle: AgentHandle | None = None,
+) -> None:
+    if not hooks:
+        return
+    for hook in hooks:
+        ctx: HookContext | None = None
+        try:
+            method = _hook_method(hook, point)
+            if method is None:
+                continue
+            ctx = HookContext(
+                hook_name=_hook_name(hook),
+                phase=point,
+                scenario=scenario,
+                agent=agent,
+                run_id=run_id,
+                session_id=session_id,
+                trace=trace,
+                score=score,
+                aggregate=aggregate,
+                handle=handle if point == "on_run_scored" else None,
+                reply_normalizer=_normalize_hook_reply,
+                warning_sink=warning_sink,
+            )
+            method(ctx)
+        except Exception as exc:  # noqa: BLE001 - hook failures never gate runs
+            _append_hook_warning(warning_sink, hook, exc)
+        if ctx is not None:
+            artifact_sink.extend(ctx.artifacts)
 
 
 # ─── Turn-building helper ─────────────────────────────────────────────────────
@@ -419,6 +502,9 @@ def _run_once(
     quant: str,
     sampler: dict[str, Any],
     state_probe: StateProbe | None = None,
+    hooks: Sequence[object] = (),
+    hook_state: _RunHookState | None = None,
+    config: AgentConfig | None = None,
 ) -> tuple[Trace, Score]:
     """Drive one scenario through a live AgentHandle. Return (Trace, Score).
 
@@ -434,7 +520,9 @@ def _run_once(
     trace.observations, with the same per-run reset + freeze-before-score
     lifecycle as the call logs (see spi/state_probe.py).
     """
-    session_id = str(uuid.uuid4())
+    if hooks and hook_state is None:
+        hook_state = _RunHookState()
+    session_id = hook_state.session_id if hook_state is not None else str(uuid.uuid4())
     started_at = datetime.now(UTC)
     turns: list[Turn] = []
 
@@ -453,10 +541,25 @@ def _run_once(
     # other evidence field.
     surface, surface_warnings = _capture_surface(handle)
 
+    if hook_state is not None:
+        _dispatch_hooks(
+            hooks,
+            "on_run_start",
+            warning_sink=hook_state.warnings,
+            artifact_sink=hook_state.artifacts,
+            scenario=scenario,
+            agent=config,
+            run_id=hook_state.run_id,
+            session_id=session_id,
+            handle=handle,
+        )
+
     # Multi-turn when user_turns is non-empty; else single-turn [prompt]
     user_turns: list[str] = scenario.user_turns or [scenario.prompt]
     responses: list[str] = []
     runtime_warnings: list[str] = list(surface_warnings)
+    if hook_state is not None:
+        runtime_warnings.extend(hook_state.warnings)
 
     for turn_idx, user_text in enumerate(user_turns):
         # Record user turn
@@ -512,22 +615,25 @@ def _run_once(
     # later offline re-score must see identical evidence.
     observations, probe_warnings = _capture_observations(state_probe)
 
-    trace = Trace(
-        scenario_id=scenario.name,
-        agent_id=agent_id,
-        variant_id=variant_id,
-        model=model,
-        quant=quant,
-        sampler=sampler,
-        started_at=started_at,
-        finished_at=finished_at,
-        turns=turns,
-        tool_schema_hash=_tool_schema_hash(mcp_handles),
-        worker_warnings=runtime_warnings + probe_warnings + mcp_warnings,
-        mcp_calls=mcp_calls,
-        observations=observations,
-        surface=surface,
-    )
+    trace_kwargs: dict[str, Any] = {
+        "scenario_id": scenario.name,
+        "agent_id": agent_id,
+        "variant_id": variant_id,
+        "model": model,
+        "quant": quant,
+        "sampler": sampler,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "turns": turns,
+        "tool_schema_hash": _tool_schema_hash(mcp_handles),
+        "worker_warnings": runtime_warnings + probe_warnings + mcp_warnings,
+        "mcp_calls": mcp_calls,
+        "observations": observations,
+        "surface": surface,
+    }
+    if hook_state is not None:
+        trace_kwargs["run_id"] = hook_state.run_id
+    trace = Trace(**trace_kwargs)
 
     # Apply perturbations to the trace before scoring (robustness layer).
     # Pre-send perturbations were ALREADY injected into the live messages above —
@@ -553,6 +659,34 @@ def _run_once(
         failure_cost=scenario.failure_cost,
     )
 
+    if hook_state is not None:
+        _dispatch_hooks(
+            hooks,
+            "on_run_scored",
+            warning_sink=trace.worker_warnings,
+            artifact_sink=hook_state.artifacts,
+            scenario=scenario,
+            agent=config,
+            run_id=hook_state.run_id,
+            session_id=session_id,
+            trace=trace,
+            score=score,
+            handle=handle,
+        )
+        _dispatch_hooks(
+            hooks,
+            "on_run_end",
+            warning_sink=trace.worker_warnings,
+            artifact_sink=hook_state.artifacts,
+            scenario=scenario,
+            agent=config,
+            run_id=hook_state.run_id,
+            session_id=session_id,
+            trace=trace,
+            score=score,
+            handle=handle,
+        )
+
     return trace, score
 
 
@@ -567,6 +701,7 @@ def run_scenario(
     runs_per_scenario: int = 1,
     skip_reset: bool = False,
     state_probe: StateProbe | None = None,
+    hooks: Sequence[object] = (),
 ) -> ScenarioResult:
     """Run one Scenario N times against the given runtime + mcp set.
 
@@ -591,6 +726,7 @@ def run_scenario(
                             before each run, captured before scoring). The
                             caller owns the probe's fixture lifecycle; the
                             runner never starts/stops it.
+        hooks:              explicit lifecycle hooks, fired in activation order.
 
     Returns ScenarioResult with aggregate verdict + per-run details.
     """
@@ -601,6 +737,8 @@ def run_scenario(
 
     mcp_handles: list[MCPHandle] = []
     handle: AgentHandle | None = None
+    scenario_warnings: list[str] = []
+    scenario_artifacts: list[HookArtifact] = []
 
     try:
         # Start MCP servers
@@ -614,6 +752,16 @@ def run_scenario(
 
         _bind_state_probe_workspace(state_probe, handle)
         _check_world_preconditions(scenario, mcp_handles, config, state_probe, handle)
+
+        _dispatch_hooks(
+            hooks,
+            "on_provisioned",
+            warning_sink=scenario_warnings,
+            artifact_sink=scenario_artifacts,
+            scenario=scenario,
+            agent=config,
+            handle=handle,
+        )
 
         model = config.model.name if config.model else "unknown"
         quant = config.model.quant if config.model else "unknown"
@@ -632,6 +780,7 @@ def run_scenario(
             if not skip_reset:
                 handle.reset_state()
 
+            hook_state = _RunHookState() if hooks else None
             try:
                 trace, score = _run_once(
                     scenario,
@@ -643,23 +792,32 @@ def run_scenario(
                     quant=quant,
                     sampler=sampler,
                     state_probe=state_probe,
+                    hooks=hooks,
+                    hook_state=hook_state,
+                    config=config,
                 )
             except Exception as exc:
                 # Create a minimal failed trace so aggregate still works
                 now = datetime.now(UTC)
-                trace = Trace(
-                    scenario_id=scenario.name,
-                    agent_id=config.agent_id,
-                    variant_id=config.variant_id,
-                    model=model,
-                    quant=quant,
-                    sampler=sampler,
-                    started_at=now,
-                    finished_at=now,
-                    turns=[],
-                    tool_schema_hash=_tool_schema_hash(mcp_handles),
-                    worker_warnings=[f"runner_error: {exc}"],
-                )
+                warnings = [f"runner_error: {exc}"]
+                if hook_state is not None:
+                    warnings.extend(hook_state.warnings)
+                trace_kwargs = {
+                    "scenario_id": scenario.name,
+                    "agent_id": config.agent_id,
+                    "variant_id": config.variant_id,
+                    "model": model,
+                    "quant": quant,
+                    "sampler": sampler,
+                    "started_at": now,
+                    "finished_at": now,
+                    "turns": [],
+                    "tool_schema_hash": _tool_schema_hash(mcp_handles),
+                    "worker_warnings": warnings,
+                }
+                if hook_state is not None:
+                    trace_kwargs["run_id"] = hook_state.run_id
+                trace = Trace(**trace_kwargs)
                 score = Score(
                     outcome=LayerResult(passed=False, detail=f"run error: {exc}"),
                     trajectory=LayerResult(passed=False, detail="run error"),
@@ -667,11 +825,59 @@ def run_scenario(
                     robustness=LayerResult(passed=True, detail="no perturbations checked"),
                     failure_cost=scenario.failure_cost,
                 )
+                if hook_state is not None:
+                    _dispatch_hooks(
+                        hooks,
+                        "on_run_scored",
+                        warning_sink=trace.worker_warnings,
+                        artifact_sink=hook_state.artifacts,
+                        scenario=scenario,
+                        agent=config,
+                        run_id=hook_state.run_id,
+                        session_id=hook_state.session_id,
+                        trace=trace,
+                        score=score,
+                        handle=handle,
+                    )
+                    _dispatch_hooks(
+                        hooks,
+                        "on_run_end",
+                        warning_sink=trace.worker_warnings,
+                        artifact_sink=hook_state.artifacts,
+                        scenario=scenario,
+                        agent=config,
+                        run_id=hook_state.run_id,
+                        session_id=hook_state.session_id,
+                        trace=trace,
+                        score=score,
+                        handle=handle,
+                    )
 
-            run_results.append(ScenarioRunResult(score=score, trace=trace))
+            run_results.append(
+                ScenarioRunResult(
+                    score=score,
+                    trace=trace,
+                    hook_artifacts=list(hook_state.artifacts) if hook_state is not None else [],
+                )
+            )
 
         agg = aggregate_runs(run_results, variance_allowed=scenario.variance_allowed)
-        return ScenarioResult(aggregate=agg, runs=run_results)
+        _dispatch_hooks(
+            hooks,
+            "on_scenario_end",
+            warning_sink=scenario_warnings,
+            artifact_sink=scenario_artifacts,
+            scenario=scenario,
+            agent=config,
+            aggregate=agg,
+            handle=handle,
+        )
+        return ScenarioResult(
+            aggregate=agg,
+            runs=run_results,
+            worker_warnings=scenario_warnings,
+            hook_artifacts=scenario_artifacts,
+        )
 
     finally:
         if handle is not None:

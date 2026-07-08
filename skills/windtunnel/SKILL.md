@@ -3,7 +3,7 @@ name: windtunnel
 description: Bench tool-using LLM agents with the wt CLI, scenario packs, trace import/interchange,
   Contract C inject endpoints, reset isolation, and recorded tool universes.
 ---
-<!-- GENERATED from agents/skill-template.md + docs/ at d5e9679f5e1d — do not edit; edit docs/ or agents/skill-template.md. -->
+<!-- GENERATED from agents/skill-template.md + docs/ at ba0af1d1678d — do not edit; edit docs/ or agents/skill-template.md. -->
 # Wind Tunnel
 
 Wind Tunnel is unittest for agents: a reliability bench for tool-using LLM
@@ -37,6 +37,7 @@ serving recorded tool universes, or bringing up Contract C inject endpoints.
 - `references/cli-reference.md` - Generated reference for wt CLI subcommands, usage, options, and exit-code semantics.
 - `references/design/0001-trace-reseeding.md` - Design spine for trace re-seeding, Contract A interchange, Contract B universes, import, scorer, ledger, and CI ergonomics.
 - `references/design/0002-inject-protocol.md` - Design specification for Contract C inject protocol, its reset route, optional surface-introspection route, error handling, built-in runtime, and canary.
+- `references/design/0003-hook-system.md` - Design specification for lifecycle hooks: the windtunnel.hooks plugin SPI, per-point ordering contracts, the scoped hook context, sidecar artifacts, and the debrief reference hook.
 - `references/driving-terminus.md` - Guide to driving Harbor Terminus-2 from Wind Tunnel as a terminal-agent runtime.
 - `references/evaluating-skills.md` - How to evaluate whether generated agent skills improve Wind Tunnel task performance.
 - `references/failure-taxonomy.md` - Catalog of Wind Tunnel failure categories, distinguishing signals, and fix vectors for triage.
@@ -44,6 +45,8 @@ serving recorded tool universes, or bringing up Contract C inject endpoints.
 - `references/importing-a-trace.md` - Workflow for validating a Contract A trace, importing a failing scenario skeleton, and authoring the regression gate.
 - `references/index.md` - Overview of Wind Tunnel's four-layer agent reliability bench, import workflow, CLI, and starting points.
 - `references/recording-a-universe.md` - Reference for recorded tool-universe fixtures, matching rules, divergence policies, and RecordedMCPServer usage.
+- `references/surface-goldens.md` - Task guide for capturing prompt-surface goldens and gating steering changes with wt surface.
+- `references/using-hooks.md` - Task guide for enabling Wind Tunnel lifecycle hooks, reading debrief artifacts, and registering custom hooks.
 - `references/writing-a-classifier.md` - Guide to implementing failure classifiers and testing them against Wind Tunnel's taxonomy fixtures.
 - `references/writing-a-runtime.md` - Guide to implementing Wind Tunnel runtime protocols or Contract C endpoints with reset isolation and tool-call evidence.
 - `references/writing-a-scenario.md` - Reference for authoring backend-agnostic Scenario objects, scoring fields, perturbations, dimensions, and scenario packs.
