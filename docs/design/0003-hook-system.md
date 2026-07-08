@@ -92,7 +92,7 @@ third leg beside `windtunnel.runtimes` and `windtunnel.scenario_packs`:
 
 ```toml
 [project.entry-points."windtunnel.hooks"]
-pi_state_probe = "windtunnel_syntropy.hooks:PiStateProbeHook"
+acme_state_probe = "acme_bench.hooks:AcmeStateProbeHook"
 ```
 
 The registered object may be a `Hook` instance or a class; a class is

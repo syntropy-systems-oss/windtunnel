@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/design/0003-hook-system.md at ba99e62db389 — do not edit; edit docs/design/0003-hook-system.md. -->
+<!-- GENERATED from docs/design/0003-hook-system.md at 5762955380b2 — do not edit; edit docs/design/0003-hook-system.md. -->
 ---
 description: "Design specification for lifecycle hooks: the windtunnel.hooks plugin SPI, per-point ordering contracts, the scoped hook context, sidecar artifacts, and the debrief reference hook."
 ---
@@ -93,7 +93,7 @@ third leg beside `windtunnel.runtimes` and `windtunnel.scenario_packs`:
 
 ```toml
 [project.entry-points."windtunnel.hooks"]
-pi_state_probe = "windtunnel_syntropy.hooks:PiStateProbeHook"
+acme_state_probe = "acme_bench.hooks:AcmeStateProbeHook"
 ```
 
 The registered object may be a `Hook` instance or a class; a class is
