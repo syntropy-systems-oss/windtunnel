@@ -143,6 +143,32 @@ class TestScenariosLayerInvariants:
         )
 
 
+class TestSpiLayerInvariants:
+    """windtunnel/spi/ must not import inward from api/ or platform layers."""
+
+    def test_spi_does_not_import_api_runtimes_or_mcp(self) -> None:
+        spi_dir = _WINDTUNNEL_ROOT / "spi"
+        if not spi_dir.exists():
+            pytest.skip("windtunnel/spi/ not found")
+
+        py_files = _py_files_under(spi_dir)
+        violations = _check_no_forbidden(
+            py_files,
+            (
+                "windtunnel.api",
+                "windtunnel.runtimes",
+                "windtunnel.mcp",
+            ),
+            (),
+            "spi/",
+        )
+        assert violations == [], (
+            "spi/ layer imports inward or platform-specific modules — "
+            "SPI modules must stay below api/, runtimes/, and mcp/:\n"
+            + "\n".join(f"  {v}" for v in violations)
+        )
+
+
 class TestInvariantEnforcement:
     """Prove the invariant check actually catches violations (self-test)."""
 

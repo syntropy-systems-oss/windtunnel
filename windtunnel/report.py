@@ -26,6 +26,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
 
+from windtunnel.api.trace import is_trace_json_path
+
 # ─── Run loader ───────────────────────────────────────────────────────────────
 
 def load_runs(runs_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
@@ -50,8 +52,7 @@ def load_runs(runs_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
     candidates: dict[tuple[str, str], tuple[Path, Path]] = {}
 
     for trace_path in sorted(runs_dir.rglob("*.json")):
-        # Skip score sidecars
-        if trace_path.name.endswith(".score.json"):
+        if not is_trace_json_path(trace_path):
             continue
         score_path = trace_path.with_suffix(".score.json")
         if not score_path.exists():

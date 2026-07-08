@@ -211,6 +211,90 @@ def _write_score_sidecar(trace_path: Path, score, scenario, *, origin: dict | No
     return score_path
 
 
+def _write_hook_artifact_sidecar(trace_path: Path, artifact) -> Path:
+    """Write one run-scoped hook artifact beside its trace."""
+    suffix = f".{_artifact_component(artifact.hook_name)}"
+    if artifact.label:
+        suffix += f".{_artifact_component(artifact.label)}"
+    suffix += ".json"
+    artifact_path = trace_path.with_suffix(suffix)
+    artifact_path.write_text(
+        json.dumps(artifact.payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return artifact_path
+
+
+def _write_pack_hook_artifact(runs_dir: Path, sweep_timestamp: str, artifact) -> Path:
+    """Write one pack-scoped hook artifact at the runs directory root."""
+    return _write_sweep_hook_artifact(runs_dir, sweep_timestamp, artifact)
+
+
+def _write_scenario_hook_artifact(
+    runs_dir: Path,
+    sweep_timestamp: str,
+    artifact,
+    scenario_id: str,
+) -> Path:
+    """Write one scenario-scoped hook artifact at the runs directory root."""
+    return _write_sweep_hook_artifact(
+        runs_dir,
+        sweep_timestamp,
+        artifact,
+        scenario_id=scenario_id,
+    )
+
+
+def _write_sweep_hook_artifact(
+    runs_dir: Path,
+    sweep_timestamp: str,
+    artifact,
+    *,
+    scenario_id: str | None = None,
+) -> Path:
+    """Write one scenario- or pack-scoped hook artifact without overwriting."""
+    filename = f"{sweep_timestamp}.{_artifact_component(artifact.hook_name)}"
+    if scenario_id:
+        filename += f".{_artifact_component(scenario_id)}"
+    if artifact.label:
+        filename += f".{_artifact_component(artifact.label)}"
+    filename += ".pack.json"
+    artifact_path = _collision_safe_artifact_path(Path(runs_dir) / filename)
+    artifact_path.write_text(
+        json.dumps(artifact.payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return artifact_path
+
+
+def _collision_safe_artifact_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+
+    suffix = ".pack.json"
+    name = path.name
+    stem = name[: -len(suffix)] if name.endswith(suffix) else path.stem
+    for counter in range(2, 10000):
+        candidate = path.with_name(f"{stem}-{counter}{suffix}")
+        if not candidate.exists():
+            print(
+                f"wt run: warning: hook artifact target exists: {path}; "
+                f"writing {candidate.name} instead",
+                file=sys.stderr,
+            )
+            return candidate
+    raise OSError(f"could not find non-colliding hook artifact path for {path}")
+
+
+def _artifact_component(value: str) -> str:
+    component = "".join(ch if ch.isalnum() or ch in "_-" else "_" for ch in str(value))
+    return component or "artifact"
+
+
+def _sweep_artifact_timestamp() -> str:
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+
+
 def _ledger_timestamp() -> str:
     """Return the UTC timestamp format used in append-only ledger rows."""
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -365,6 +449,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     tag_filters: list[str] = args.tag or []
     pack_filters: list[str] = args.pack or []
     owner_filters: list[str] = args.owner or []
+    hooks = _resolve_hooks(getattr(args, "hook", None))
+    sweep_timestamp = _sweep_artifact_timestamp()
 
     # Build runtime
     runtime = _build_runtime(runtime_name, label, soul_path=args.soul)
@@ -482,6 +568,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
             for c in completed
         ]
         _append_ledger_records(runs_dir, records)
+        for artifact in _dispatch_pack_end_hooks(hooks, config=config, completed=completed):
+            _write_pack_hook_artifact(runs_dir, sweep_timestamp, artifact)
         if output_format is None or output_path is None:
             return rc
         try:
@@ -536,7 +624,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         try:
             result = run_scenario(
                 scenario, runtime, mcps=scenario_mcps, config=config,
-                runs_per_scenario=n_runs, state_probe=scenario_probe,
+                runs_per_scenario=n_runs, state_probe=scenario_probe, hooks=hooks,
             )
         except WorldMismatchError as exc:
             any_fail = True
@@ -564,6 +652,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
         consecutive_errors = 0  # a successful scenario resets the breaker
         agg = result.aggregate
+        for warning in getattr(result, "worker_warnings", []) or []:
+            print(f"wt run: warning: {warning}", file=sys.stderr)
 
         # Save traces + score sidecars (so `wt report/compare/triage` can
         # consume the run output directly, without a re-scoring pass).
@@ -571,6 +661,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
             path = storage_path(run_result.trace, base_dir=runs_dir)
             save_trace(run_result.trace, path)
             _write_score_sidecar(path, run_result.score, scenario)
+            for artifact in getattr(run_result, "hook_artifacts", []) or []:
+                _write_hook_artifact_sidecar(path, artifact)
+        for artifact in getattr(result, "hook_artifacts", []) or []:
+            _write_scenario_hook_artifact(
+                runs_dir,
+                sweep_timestamp,
+                artifact,
+                scenario.name,
+            )
 
         # Note: run_scenario catches a send-time/runtime error INTERNALLY and
         # returns a failed aggregate carrying a `runner_error: …` worker_warning
@@ -791,6 +890,76 @@ def _as_plugin_instance(obj: object) -> object:
     if isinstance(obj, type):
         return obj()
     return obj
+
+
+def _resolve_hooks(hook_names: list[str] | None) -> list[object]:
+    """Resolve repeatable --hook names to hook instances."""
+    if not hook_names:
+        return []
+
+    from importlib.metadata import entry_points  # noqa: PLC0415
+
+    from windtunnel.hooks import BUILTIN_HOOKS  # noqa: PLC0415
+
+    eps = entry_points(group="windtunnel.hooks")
+    hooks: list[object] = []
+    for hook_name in hook_names:
+        if hook_name in BUILTIN_HOOKS:
+            hooks.append(_as_hook_instance(BUILTIN_HOOKS[hook_name]))
+            continue
+        for ep in eps:
+            if ep.name == hook_name:
+                hooks.append(_as_hook_instance(ep.load()))
+                break
+        else:
+            available = sorted({*BUILTIN_HOOKS, *(ep.name for ep in eps)})
+            print(
+                f"wt run: unknown hook {hook_name!r}. Available: "
+                f"{', '.join(available) if available else '(none)'}.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+    return hooks
+
+
+def _as_hook_instance(obj: object) -> object:
+    if isinstance(obj, type):
+        return obj()
+    return obj
+
+
+def _dispatch_pack_end_hooks(hooks: list[object], *, config: object, completed: list[_CompletedAggregate]) -> list:
+    """Fire CLI-scope on_pack_end hooks and return buffered artifacts."""
+    if not hooks:
+        return []
+
+    from windtunnel.spi.hooks import Hook, HookContext  # noqa: PLC0415
+
+    artifacts = []
+    aggregates = [item.result.aggregate for item in completed]
+    for hook in hooks:
+        method = getattr(hook, "on_pack_end", None)
+        if not callable(method):
+            continue
+        if isinstance(hook, Hook) and getattr(type(hook), "on_pack_end", None) is Hook.on_pack_end:
+            continue
+        ctx = None
+        try:
+            ctx = HookContext(
+                hook_name=str(getattr(hook, "name", hook.__class__.__name__)),
+                phase="on_pack_end",
+                agent=config,
+                aggregate=aggregates,
+            )
+            method(ctx)
+        except Exception as exc:  # noqa: BLE001 - pack hooks are diagnostic only
+            print(
+                f"wt run: warning: hook:{getattr(hook, 'name', hook.__class__.__name__)}: {exc}",
+                file=sys.stderr,
+            )
+        if ctx is not None:
+            artifacts.extend(ctx.artifacts)
+    return artifacts
 
 
 def _build_runtime(runtime_name: str, label: str, soul_path: str | None) -> object:
@@ -1233,6 +1402,8 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
 
 def _rescore_trace_paths(args: argparse.Namespace) -> list[Path] | None:
     """Resolve --runs/--trace into trace JSON paths, excluding sidecars."""
+    from windtunnel.api.trace import is_trace_json_path  # noqa: PLC0415
+
     explicit = [Path(p) for p in (args.trace or [])]
     if explicit:
         missing = [path for path in explicit if not path.is_file()]
@@ -1248,7 +1419,7 @@ def _rescore_trace_paths(args: argparse.Namespace) -> list[Path] | None:
         return None
     trace_paths = sorted(
         path for path in runs_dir.rglob("*.json")
-        if not path.name.endswith(".score.json")
+        if is_trace_json_path(path)
     )
     if not trace_paths:
         print(f"wt rescore: no trace files found under {runs_dir}", file=sys.stderr)
@@ -1356,7 +1527,7 @@ def _cmd_triage(args: argparse.Namespace) -> int:
 
     from windtunnel.api.scenario import Scenario  # noqa: PLC0415
     from windtunnel.api.score import LayerResult, Score  # noqa: PLC0415
-    from windtunnel.api.trace import load_trace  # noqa: PLC0415
+    from windtunnel.api.trace import is_trace_json_path, load_trace  # noqa: PLC0415
 
     runs_dir = Path(args.runs)
     classifier_name: str = args.classifier
@@ -1377,9 +1548,7 @@ def _cmd_triage(args: argparse.Namespace) -> int:
         return 2
 
     # Walk runs/ for trace JSON files
-    trace_files = sorted(runs_dir.rglob("*.json"))
-    # Exclude sibling score files (end in .score.json)
-    trace_files = [f for f in trace_files if not f.name.endswith(".score.json")]
+    trace_files = sorted(f for f in runs_dir.rglob("*.json") if is_trace_json_path(f))
 
     if not trace_files:
         print("# Wind Tunnel Triage Report\n\nNo runs found.")
@@ -1941,6 +2110,9 @@ def _build_parser() -> argparse.ArgumentParser:
                             "point group — e.g. 'acme' from a platform driver "
                             "package), or a 'module:attr' "
                             "dotted path to a RuntimePlugin instance or class.")
+    run_p.add_argument("--hook", action="append", metavar="HOOK", default=None,
+                       help="Lifecycle hook to activate for this run. Repeat for "
+                            "multiple hooks; built-ins include 'debrief'.")
     run_p.add_argument("--label", default=None, metavar="LABEL",
                        help="Variant label for this run (recorded in traces).")
     run_p.add_argument("--runs", dest="n_runs", type=int, default=1, metavar="N",

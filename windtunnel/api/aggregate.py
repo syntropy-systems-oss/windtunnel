@@ -23,7 +23,7 @@ is the full set of runs we actually ran.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from windtunnel.api.score import Score
 from windtunnel.api.trace import Trace
@@ -34,6 +34,7 @@ class ScenarioRunResult:
     """The outcome of one scenario run: its Score and the Trace it scored."""
     score: Score
     trace: Trace
+    hook_artifacts: list[object] = field(default_factory=list, repr=False, compare=False)
 
 
 @dataclass

@@ -14,6 +14,7 @@ from windtunnel.spi.agent_runtime import (
     Response,
     SamplingConfig,
 )
+from windtunnel.spi.hooks import Hook, HookArtifact, HookContext
 from windtunnel.spi.mcp_server import (
     MCPCall,
     MCPHandle,
@@ -27,6 +28,7 @@ from windtunnel.spi.state_probe import StateProbe
 __all__ = [
     "AgentConfig", "AgentHandle", "AgentRuntime", "Message", "ModelSpec",
     "Response", "SamplingConfig",
+    "Hook", "HookArtifact", "HookContext",
     "MCPCall", "MCPHandle", "MCPServer", "MCPSpec",
     "ToolIntrospectableMCPHandle",
     "RuntimePlugin",
