@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.7.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.6.0...v0.7.0) (2026-07-08)
+
+
+### Features
+
+* **cli:** wt surface — record/diff/check prompt-surface goldens ([#35](https://github.com/syntropy-systems-oss/windtunnel/issues/35)) ([b469343](https://github.com/syntropy-systems-oss/windtunnel/commit/b4693430ee8ea594ec17af50f7bb6f5fa32633e7))
+* **hooks:** lifecycle hooks — scoped context, sidecar artifacts, debrief reference hook ([#37](https://github.com/syntropy-systems-oss/windtunnel/issues/37)) ([429bf65](https://github.com/syntropy-systems-oss/windtunnel/commit/429bf65675a10c55d4dba9fa813c9bfa0539aef9))
+* **trace:** capture the prompt surface into run artifacts ([#36](https://github.com/syntropy-systems-oss/windtunnel/issues/36)) ([6b706b5](https://github.com/syntropy-systems-oss/windtunnel/commit/6b706b5c57fab14a6d7d82692efa44f68f01f857))
+
+
+### Bug Fixes
+
+* **trace:** tool_schema_hash hashes the real tool manifest, not scenario.name ([#33](https://github.com/syntropy-systems-oss/windtunnel/issues/33)) ([115b756](https://github.com/syntropy-systems-oss/windtunnel/commit/115b756feded49848a8cf16c0b13a7548c5e000a))
+
+
+### Documentation
+
+* **design:** 0002 — optional surface-introspection route, amended while draft ([#32](https://github.com/syntropy-systems-oss/windtunnel/issues/32)) ([15b66b2](https://github.com/syntropy-systems-oss/windtunnel/commit/15b66b2b06e46c1a5b062165d0989b43e96d1652))
+* **skill-eval:** first live results — the matrix run on release day ([#29](https://github.com/syntropy-systems-oss/windtunnel/issues/29)) ([9b3c0bd](https://github.com/syntropy-systems-oss/windtunnel/commit/9b3c0bde688f3a1b6ee77b9f9276e078df132592))
+
 ## [0.6.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.5.0...v0.6.0) (2026-07-06)
 
 
