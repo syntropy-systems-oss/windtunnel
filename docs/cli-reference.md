@@ -2,7 +2,7 @@
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at 33ccc7bebcf9 — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at 58a4a68146bd — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
 The `wt` command ships 11 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
@@ -65,7 +65,7 @@ Run scenarios against a runtime.
 Usage:
 
 ```bash
-wt run [-h] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--owner OWNER] [--soul PATH] [--agents PATH] [--runtime RUNTIME] [--label LABEL] [--runs N] [--runs-dir DIR] [--format {junit,json}] [--out FILE]
+wt run [-h] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--owner OWNER] [--soul PATH] [--agents PATH] [--runtime RUNTIME] [--hook HOOK] [--label LABEL] [--runs N] [--runs-dir DIR] [--format {junit,json}] [--out FILE]
 ```
 
 Arguments and options:
@@ -80,6 +80,7 @@ Arguments and options:
 | `--soul` | no |  | Path to SOUL.md / persona doc to inject. |
 | `--agents` | no |  | Path to an AGENTS.md operating-notes doc to inject (routed to set-docs --agents; does not touch agent code). |
 | `--runtime` | no | in_memory | Runtime to use (default: in_memory). Either the built-in 'in_memory' (zero-infrastructure scripted runtime — no network; useful for learning the scoring model and testing scenario definitions in CI), the name of an installed runtime plugin (discovered via the 'windtunnel.runtimes' entry-point group — e.g. 'acme' from a platform driver package), or a 'module:attr' dotted path to a RuntimePlugin instance or class. |
+| `--hook` | no |  | Lifecycle hook to activate for this run. Repeat for multiple hooks; built-ins include 'debrief'. |
 | `--label` | no |  | Variant label for this run (recorded in traces). |
 | `--runs` | no | 1 | Number of runs per scenario (default: 1). |
 | `--runs-dir` | no | runs | Directory to write trace files (default: ./runs). |
