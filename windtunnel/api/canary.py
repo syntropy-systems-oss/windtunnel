@@ -121,6 +121,11 @@ def run_reset_canary(
     is narrower still: only store-visible state was scanned, recall was
     never probed, and the result wording says so.
 
+    For continuous in-pack isolation assertions, use
+    ``windtunnel.hooks.state_probe.StateProbeHook``; this ``state_probe``
+    parameter remains the doctor/seeded-nonce canary path and is not
+    deprecated.
+
     Raises whatever `handle.send()` raises during probing (wrapped with
     context) rather than silently reporting a pass: a broken probe must
     never look like a clean canary. `handle.teardown()` is always called,

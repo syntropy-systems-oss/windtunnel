@@ -545,7 +545,7 @@ def test_cli_surfaces_scenario_and_pack_hook_warnings(
         name = "pack_warn"
 
         def on_pack_end(self, ctx: HookContext) -> None:
-            raise RuntimeError("pack note")
+            ctx.warn("pack note")
 
     monkeypatch.setattr(
         cli,

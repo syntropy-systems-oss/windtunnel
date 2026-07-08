@@ -5,11 +5,12 @@ description: "Design specification for lifecycle hooks: the windtunnel.hooks plu
 
 **Status:** draft · **Scope:** the hook plugin SPI, the dispatch and
 ordering contracts at each lifecycle point, the scoped context handed to
-hooks, hook sidecar artifacts, and the `debrief` reference hook that ships
-with the framework. **Non-goals:** migrating the reset canary's
-`state_probe` onto hooks (slated for a follow-up release), per-hook config
-plumbing beyond environment variables, and anything that lets a hook's
-output gate a verdict or modify steering.
+hooks, hook sidecar artifacts, the `debrief` reference hook that ships
+with the framework, and the abstract `StateProbeHook` base for continuous
+isolation checks. **Non-goals:** removing or deprecating the reset
+canary's `state_probe` kwarg, per-hook config plumbing beyond environment
+variables, and anything that lets a hook's output gate a verdict or
+modify steering.
 
 Wind Tunnel runs have a fixed skeleton: provision, reset, inject, score,
 repeat. This document adds named observation points to that skeleton so
@@ -219,6 +220,12 @@ Capabilities:
   the trace and score files it already writes. Hooks never receive
   filesystem access.
 
+- **`ctx.warn(message)`** — append a non-fatal diagnostic to the same
+  hook-warning channel used for contained hook exceptions. Run-scoped
+  warnings land in `trace.worker_warnings` as `hook:<name>: <message>`;
+  scenario- and pack-scoped warnings are surfaced by the CLI. A warning
+  is evidence, not a gate.
+
 ## Artifacts
 
 A run's whole story lives in one directory. The trace is
@@ -337,11 +344,16 @@ ladder, not verdicts.
 ## Rollout
 
 Ships additive in **0.7.0**: no `--hook` flag means byte-identical
-behavior to 0.6, nothing is deprecated, and the only new surface is the
-SPI, the CLI flag, and the built-in `debrief`.
+behavior to 0.6, nothing is deprecated, and the new surface is the SPI,
+the CLI flag, the built-in `debrief`, and the abstract `StateProbeHook`.
 
-Slated follow-up (0.8): migrate the reset canary's `state_probe` kwarg
-onto `on_run_start`/`on_run_end` hooks, so isolation is asserted on every
-run of a real pack rather than only in `wt doctor`. The
-`run_reset_canary(..., state_probe=...)` parameter gains a docstring note
-that it is destined to become a hook; it is not touched in 0.7.0.
+`StateProbeHook` also ships in **0.7.0** as an additive base class for
+consumer #2. The canary kwarg is retained and not deprecated — the doctor
+seeded-nonce flow still needs `run_reset_canary(..., state_probe=...)`,
+so there was no breaking change to defer. A state-probe hook establishes
+the first run's post-reset state as the clean baseline and reports later
+post-reset mismatches through the ordinary hook warning channel
+(`trace.worker_warnings` entries like `hook:<name>: ...`) plus a bounded
+violation artifact. `wt doctor` remains the hard gate. If those warnings
+prove too quiet in practice, the candidate escalation is an evidence-
+quality or taint state on the run; deliberately not built here.

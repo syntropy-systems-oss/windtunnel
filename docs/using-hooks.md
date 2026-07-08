@@ -114,12 +114,13 @@ filename discriminator.
 objects as immutable. The framework passes live objects for cost reasons, but
 mutation is undefined behavior.
 
-The two capabilities are:
+The hook capabilities are:
 
 | API | Where it works | Meaning |
 |---|---|---|
 | `ctx.converse(text) -> str` | Only in `on_run_scored` | Sends one diagnostic user turn into the same run session and returns normalized assistant text. The turn is never appended to `trace.turns`. |
 | `ctx.emit_artifact(payload, label=None)` | Any hook point | Buffers JSON-serializable payloads for the CLI to persist. Run artifacts are written beside the trace; scenario and pack artifacts are written at the runs-directory root. |
+| `ctx.warn(message)` | Any hook point | Records a non-fatal hook warning through the same `hook:<name>: ...` channel used for contained hook exceptions. |
 
 Hooks never receive filesystem paths. `emit_artifact()` is buffered because only
 the CLI knows where the trace and score sidecars are being written.
@@ -151,6 +152,60 @@ uv run wt run --runtime <your-runtime> --hook run_notes
 Installing a hook package never changes bench behavior by itself. That rule is
 not ceremony: gating benches need comparable artifacts across installs and CI
 images. No `--hook` flag means no hooks run, even if hook packages are installed.
+
+## Continuous state probes
+
+Subclass `StateProbeHook` when `reset_state()` should return a fixture to the
+same external state before every run. The first post-reset snapshot becomes the
+baseline; later post-reset mismatches report that the previous run may have
+leaked state past reset.
+
+```python
+from pathlib import Path
+
+from windtunnel.hooks.state_probe import StateProbeHook
+
+
+class TempStateDirHook(StateProbeHook):
+    name = "tmp_state"
+
+    def __init__(self, root: Path) -> None:
+        super().__init__()
+        self.root = root
+
+    def capture_state(self) -> dict:
+        return {
+            "files": sorted(
+                str(path.relative_to(self.root))
+                for path in self.root.rglob("*")
+                if path.is_file()
+            )
+        }
+```
+
+A violation on run 2 appears on that run's trace warning channel:
+
+```text
+hook:tmp_state: post-reset state differs from the first-run baseline; the previous run may have leaked past reset_state(): changed keys files
+```
+
+It also emits a bounded sidecar, for example
+`<stem>.tmp_state.violation.json`:
+
+```json
+{
+  "schema_version": 1,
+  "run_id": "...",
+  "baseline_run_id": "...",
+  "violation": "post_reset_state_mismatch",
+  "difference": {"summary": "changed keys files"}
+}
+```
+
+`StateProbeHook` reuses the same `StateProbe.capture()` snapshot shape used by
+`run_reset_canary(..., state_probe=...)`, but it does not replace the canary.
+The canary remains the `wt doctor` hard gate; continuous probes report through
+warnings and artifacts only, never through scores or exit codes.
 
 For the complete contracts, ordering guarantees, artifact naming rules, and the
 debrief schema, see [Design 0003: lifecycle hooks](design/0003-hook-system.md).

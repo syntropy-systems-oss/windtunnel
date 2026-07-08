@@ -77,6 +77,7 @@ class HookContext:
         aggregate: Any = None,
         handle: AgentHandle | None = None,
         reply_normalizer: Callable[[dict[str, Any]], str] | None = None,
+        warning_sink: list[str] | None = None,
     ) -> None:
         if not _HOOK_NAME_RE.fullmatch(hook_name):
             raise ValueError(
@@ -93,6 +94,7 @@ class HookContext:
         self._aggregate = aggregate
         self._handle = handle
         self._reply_normalizer = reply_normalizer or _default_reply_normalizer
+        self._warning_sink = warning_sink
         self._artifacts: list[HookArtifact] = []
         self._converse_used = False
         self._converse_calls: list[dict[str, Any]] = []
@@ -156,6 +158,13 @@ class HookContext:
     @property
     def converse_calls(self) -> tuple[dict[str, Any], ...]:
         return tuple(dict(call) for call in self._converse_calls)
+
+    def warn(self, message: str) -> None:
+        """Append a non-fatal hook warning to the normal worker warning channel."""
+
+        if self._warning_sink is None:
+            return
+        self._warning_sink.append(f"hook:{self._hook_name}: {message}")
 
     def converse(self, text: str) -> str:
         """Send one post-score text turn into the current run's session."""

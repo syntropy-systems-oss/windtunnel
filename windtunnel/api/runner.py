@@ -167,6 +167,7 @@ def _dispatch_hooks(
                 aggregate=aggregate,
                 handle=handle if point == "on_run_scored" else None,
                 reply_normalizer=_normalize_hook_reply,
+                warning_sink=warning_sink,
             )
             method(ctx)
         except Exception as exc:  # noqa: BLE001 - hook failures never gate runs
