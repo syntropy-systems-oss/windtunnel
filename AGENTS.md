@@ -1,4 +1,4 @@
-<!-- GENERATED from agents/skill-template.md + docs/ at 634f1369217f — do not edit; edit docs/ or agents/skill-template.md. -->
+<!-- GENERATED from agents/skill-template.md + docs/ at cfdf1ee79759 — do not edit; edit docs/ or agents/skill-template.md. -->
 # Wind Tunnel Agent Index
 
 Wind Tunnel is unittest for tool-using LLM agents: scenarios score outcome,
