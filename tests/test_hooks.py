@@ -289,6 +289,7 @@ def test_hook_unknown_name_errors_and_lists_available(capsys: pytest.CaptureFixt
 
 def test_hook_entry_point_resolution_instantiates_class(monkeypatch: pytest.MonkeyPatch) -> None:
     import importlib.metadata
+
     import windtunnel.cli as cli
 
     class ExternalHook(Hook):

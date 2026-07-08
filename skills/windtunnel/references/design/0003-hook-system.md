@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/design/0003-hook-system.md at 006503125ae3 — do not edit; edit docs/design/0003-hook-system.md. -->
+<!-- GENERATED from docs/design/0003-hook-system.md at e3c5b63c3705 — do not edit; edit docs/design/0003-hook-system.md. -->
 ---
 description: "Design specification for lifecycle hooks: the windtunnel.hooks plugin SPI, per-point ordering contracts, the scoped hook context, sidecar artifacts, and the debrief reference hook."
 ---
@@ -152,7 +152,7 @@ teardown handle
 framework machinery. Note the asymmetry with the original sketch of
 "post-score, pre-reset": in the current runner there is **no post-run
 reset** — the next `reset_state()` happens at the top of the next loop
-iteration ([runner.py](../../windtunnel/api/runner.py), `run_scenario`).
+iteration (`run_scenario` in `windtunnel/api/runner.py`).
 The guarantee is therefore stated as *the next reset has not happened*,
 which is the property a debrief actually needs, rather than a claim about
 where reset code sits.

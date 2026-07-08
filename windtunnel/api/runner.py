@@ -44,10 +44,11 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from windtunnel.api.aggregate import AggregateResult, ScenarioRunResult, aggregate_runs
 from windtunnel.api.evaluators import (

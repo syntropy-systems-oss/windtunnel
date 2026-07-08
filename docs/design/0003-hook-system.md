@@ -151,7 +151,7 @@ teardown handle
 framework machinery. Note the asymmetry with the original sketch of
 "post-score, pre-reset": in the current runner there is **no post-run
 reset** — the next `reset_state()` happens at the top of the next loop
-iteration ([runner.py](../../windtunnel/api/runner.py), `run_scenario`).
+iteration (`run_scenario` in `windtunnel/api/runner.py`).
 The guarantee is therefore stated as *the next reset has not happened*,
 which is the property a debrief actually needs, rather than a claim about
 where reset code sits.
