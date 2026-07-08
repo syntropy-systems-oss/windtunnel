@@ -191,13 +191,16 @@ of paid for.)
 
 Capabilities:
 
-- **`ctx.converse(text) -> str`** — send one text turn into the run's
+- **`ctx.converse(text) -> str`** — send a text turn into the run's
   session and return the normalized reply. Valid **only** during
   `on_run_scored`; any other point raises. Mechanically this is
   `handle.send()` with the run's own `session_id`, so the agent answers
   with the run in context. The turn is **never appended to
   `trace.turns`** — the trace is already frozen — so trajectory scorers,
-  latency stats, and replay are untouched.
+  latency stats, and replay are untouched. Hooks may call `converse()`
+  more than once during `on_run_scored`; the framework records metadata
+  per call, and artifact stamping accumulates timeout/error state across
+  those calls (`timed_out: true` if any converse call timed out).
 
   Tools cannot currently be disabled per-turn: the SPI's `send()` has no
   such parameter and `SamplingConfig.tool_choice` is provision-time
@@ -233,7 +236,10 @@ sidecar pattern with the hook name as the discriminator:
 
 Scenario- and pack-scoped emissions (from `on_scenario_end` /
 `on_pack_end`) have no single run to sit beside; they are written at the
-runs-directory root as `<sweep_timestamp>.<hook_name>.pack.json`.
+runs-directory root. Scenario-scoped emissions include the scenario id:
+`<sweep_timestamp>.<hook_name>.<scenario_id>[.<label>].pack.json`.
+Pack-scoped emissions stay
+`<sweep_timestamp>.<hook_name>[.<label>].pack.json`.
 
 **The sidecar rule.** A `*.json` file whose stem contains a dot is a
 sidecar, never a trace. Every walker of `runs/` — `wt report`,
@@ -257,7 +263,8 @@ Hook failures are never run failures. The framework wraps every dispatch:
   a PASS into an ERROR.
 - `ctx.converse()` runs under a framework-owned deadline (default 30s,
   `WT_HOOK_CONVERSE_TIMEOUT_S` to override). On expiry the call is
-  abandoned, the artifact records `timed_out: true`, and dispatch
+  abandoned, any later reply for that call is discarded, the artifact
+  records `timed_out: true` if any converse call timed out, and dispatch
   returns.
 - **The orphan-turn caveat, stated honestly:** an abandoned converse is
   an in-flight request the framework cannot always cancel (an HTTP
@@ -276,10 +283,10 @@ consumer with a real payoff, and it exercises the hardest contract in
 the system (post-score, session-alive, converse, artifact emission). A
 hook system shipped with zero consumers is an unproven abstraction.
 
-Behavior: at `on_run_scored`, if the verdict warrants it (default: FAIL
-only; `WT_DEBRIEF_ON=all` to include passes), send the agent one turn
-carrying its verdict and the scorers' concrete failure reasons (each
-layer's `LayerResult.detail`), and record the reply.
+Behavior: at `on_run_scored`, if any score layer failed by default
+(`WT_DEBRIEF_ON=all` to include fully passing runs), send the agent one
+turn carrying the run-level outcome verdict and the scorers' concrete
+layer reasons (each layer's `LayerResult.detail`), and record the reply.
 
 **Prompt discipline.** The prompt asks in this order:
 
@@ -306,6 +313,7 @@ cluster across runs and schema evolution stays honest:
   "agent": "...",
   "model": "...",
   "verdict": "FAIL",
+  "failed_layers": ["outcome"],
   "reasons": {"outcome": "...", "trajectory": "...", "constraint": "...",
                "robustness": "..."},
   "prompt": "...",
