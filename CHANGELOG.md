@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.8.0...v0.8.1) (2026-07-10)
+
+
+### Bug Fixes
+
+* harden runtime and CLI contracts ([#42](https://github.com/syntropy-systems-oss/windtunnel/issues/42)) ([db4ff35](https://github.com/syntropy-systems-oss/windtunnel/commit/db4ff35e23cb64bc28f5d33ece457b069685c8c5))
+
 ## [0.8.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.7.1...v0.8.0) (2026-07-10)
 
 
