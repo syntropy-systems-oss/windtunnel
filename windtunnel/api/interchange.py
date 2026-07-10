@@ -9,7 +9,8 @@ This module is deliberately only parsing and validation.  It does not interpret
 the pinned OTel mapping string, it does not decide scenario correctness, and it
 does not import any runtime or MCP transport code.  Forward tolerance follows
 ``Trace._from_dict`` discipline: required v1 fields are validated, optional
-fields get stable defaults, and unknown future fields are ignored.
+fields get stable defaults, and unknown additive fields are ignored within the
+supported version. Unknown versions fail closed instead of being guessed at.
 """
 from __future__ import annotations
 
@@ -122,15 +123,19 @@ def load_interchange(path: str | Path) -> InterchangeTrace:
 def parse_interchange(raw: Any) -> InterchangeTrace:
     """Validate ``raw`` and return an ``InterchangeTrace``.
 
-    Unknown fields are ignored.  The version is accepted for any positive
-    integer so older importers can read newer envelopes whose required v1
-    surface is still present.
+    Unknown fields are ignored within v1. Unknown versions are rejected so an
+    importer never silently interprets an incompatible future contract.
     """
     d = _require_mapping(raw, "interchange")
 
     version = d.get("windtunnel_interchange")
-    if type(version) is not int or version < 1:
+    if type(version) is not int:
         raise InterchangeFormatError("windtunnel_interchange must be a positive integer")
+    if version != INTERCHANGE_VERSION:
+        raise InterchangeFormatError(
+            f"unsupported windtunnel_interchange version {version}; "
+            f"expected {INTERCHANGE_VERSION}"
+        )
 
     mapping = d.get("otel_genai_mapping", "")
     if not isinstance(mapping, str):

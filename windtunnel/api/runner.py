@@ -15,13 +15,12 @@ Single-turn scenarios:
     to AgentHandle.send() once and scores the response.
 
 Multi-turn scenarios:
-    When Scenario.user_turns (a first-class Scenario field) is non-empty,
+    When Scenario.user_turns is non-empty,
     it IS the full ordered user-turn list: the runner sends each entry
     sequentially, threads the SAME session_id across all turns, and
-    accumulates the message history. Scenario.prompt is ignored on this
-    path (convention: authors set it to a copy of the final turn so
-    prompt-reading surfaces still show the scored question). Empty
-    user_turns = single-turn path.
+    accumulates the message history. Scenario.scored_prompt exposes the final
+    user turn to reporting surfaces, so authors no longer duplicate it into
+    Scenario.prompt. Empty user_turns = single-turn path.
 
 Session threading contract:
     turn 1: [user_1]
@@ -31,8 +30,9 @@ Session threading contract:
 
 Perturbations:
     If scenario.perturbations is non-empty, each perturbation is applied
-    to the SEED trace before scoring (see perturbations.py). The robustness
-    evaluator then verifies the perturbation markers are present.
+    to the SEED trace before scoring (see perturbations.py). The integrity
+    evaluator verifies the perturbation markers are present. Agent robustness
+    is the gate pass rate of scenarios run under these perturbations.
 
 Matrix dispatch:
     run_matrix() runs the same scenario across a list of SamplingConfig
@@ -86,8 +86,8 @@ from windtunnel.api._runner.world import (
 from windtunnel.api.aggregate import AggregateResult, ScenarioRunResult, aggregate_runs
 from windtunnel.api.evaluators import (
     evaluate_constraint,
+    evaluate_integrity,
     evaluate_outcome,
-    evaluate_robustness,
     evaluate_trajectory,
 )
 from windtunnel.api.scenario import PreSendPerturbation, Scenario
@@ -152,7 +152,7 @@ def _run_once(
     """Drive one scenario through a live AgentHandle. Return (Trace, Score).
 
     Handles both single-turn (Scenario.prompt) and multi-turn
-    (Scenario.user_turns non-empty — prompt is ignored on that path).
+    (Scenario.user_turns non-empty).
 
     mcp_handles are passed so the runner can reset their call logs
     before each run and store the server-witnessed call log on the
@@ -212,7 +212,7 @@ def _run_once(
         )
 
     # Multi-turn when user_turns is non-empty; else single-turn [prompt]
-    user_turns: list[str] = scenario.user_turns or [scenario.prompt]
+    user_turns: list[str] = scenario.user_turns or [scenario.scored_prompt]
     responses: list[str] = []
     runtime_warnings: list[str] = list(surface_warnings)
     if hook_state is not None:
@@ -292,14 +292,14 @@ def _run_once(
         trace_kwargs["run_id"] = hook_state.run_id
     trace = Trace(**trace_kwargs)
 
-    # Apply perturbations to the trace before scoring (robustness layer).
+    # Apply perturbations to the trace before scoring (robustness condition).
     # Pre-send perturbations were ALREADY injected into the live messages above —
     # skip their post-hoc apply() so we don't double-apply (and so the recorded
     # trace reflects what the model actually saw + did, not a re-mutation).
     for perturbation in scenario.perturbations:
         if isinstance(perturbation, PreSendPerturbation):
             # Already injected into the live messages — DON'T re-mutate the turns,
-            # but record the marker so evaluate_robustness still sees it applied.
+            # but record the marker so evaluate_integrity still sees it applied.
             object.__setattr__(
                 trace,
                 "worker_warnings",
@@ -312,7 +312,7 @@ def _run_once(
         outcome=evaluate_outcome(trace, scenario),
         trajectory=evaluate_trajectory(trace, scenario),
         constraint=evaluate_constraint(trace, scenario),
-        robustness=evaluate_robustness(trace, scenario),
+        integrity=evaluate_integrity(trace, scenario),
         failure_cost=scenario.failure_cost,
     )
 
@@ -479,7 +479,7 @@ def run_scenario(
                     outcome=LayerResult(passed=False, detail=f"run error: {exc}"),
                     trajectory=LayerResult(passed=False, detail="run error"),
                     constraint=LayerResult(passed=False, detail="not evaluated due run error"),
-                    robustness=LayerResult(passed=False, detail="not evaluated due run error"),
+                    integrity=LayerResult(passed=False, detail="not evaluated due run error"),
                     failure_cost=scenario.failure_cost,
                 )
                 if hook_state is not None:
@@ -518,7 +518,11 @@ def run_scenario(
                 )
             )
 
-        agg = aggregate_runs(run_results, variance_allowed=scenario.variance_allowed)
+        agg = aggregate_runs(
+            run_results,
+            variance_allowed=scenario.variance_allowed,
+            gate_layers=scenario.resolved_gate_layers(),
+        )
         _dispatch_hooks(
             hooks,
             "on_scenario_end",

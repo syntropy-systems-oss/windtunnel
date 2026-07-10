@@ -11,9 +11,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from windtunnel.api.runner import _run_once
 from windtunnel.api.scenario import Scenario
 from windtunnel.api.universe import (
+    UniverseFormatError,
     UniverseMatching,
     UniverseTool,
     freeze_universe,
@@ -79,12 +82,12 @@ def _server(
 
 
 class TestUniverseFormat:
-    def test_load_forward_tolerates_unknown_fields_and_newer_version(self, tmp_path: Path) -> None:
+    def test_load_tolerates_unknown_additive_fields_within_v1(self, tmp_path: Path) -> None:
         path = tmp_path / "fixture.universe.json"
         path.write_text(
             json.dumps(
                 {
-                    "windtunnel_universe": 2,
+                    "windtunnel_universe": 1,
                     "producer": {"ignored": True},
                     "tools": [
                         {
@@ -116,10 +119,19 @@ class TestUniverseFormat:
 
         universe = load_universe(path)
 
-        assert universe.windtunnel_universe == 2
+        assert universe.windtunnel_universe == 1
         assert universe.tools[0].name == "client_lookup"
         assert universe.recordings[0].args == {"query": "Bluewing Logistics"}
         assert universe.matching.arg_keys == {"client_lookup": ["query"]}
+
+    def test_load_rejects_unknown_future_version(self, tmp_path: Path) -> None:
+        path = tmp_path / "future.universe.json"
+        path.write_text(
+            json.dumps({"windtunnel_universe": 2, "tools": [], "recordings": []}),
+            encoding="utf-8",
+        )
+        with pytest.raises(UniverseFormatError, match="unsupported"):
+            load_universe(path)
 
     def test_freeze_normalizes_openai_wire_args_and_round_trips(self, tmp_path: Path) -> None:
         path = tmp_path / "fixture.universe.json"

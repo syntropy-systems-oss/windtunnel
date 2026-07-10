@@ -69,13 +69,14 @@ optimizer-agnostic by design.
 Input format for the judge
 --------------------------
 The judge sees:
-  - scenario.name, scenario.prompt, scenario.tags
+  - scenario.name, scenario.scored_prompt, scenario.tags
   - scenario.must_call, scenario.forbidden_calls, scenario.requires_tool_use
   - trace.turns (as a formatted conversation)
   - trace.worker_warnings
   - score.outcome.passed, score.outcome.detail
   - score.trajectory.passed, score.trajectory.detail
   - score.constraint.passed, score.constraint.detail
+  - score.integrity.passed, score.integrity.detail
 
 Output contract
 ---------------

@@ -1,14 +1,14 @@
-"""Migrated prototype scenarios — regression baseline for the new framework.
+"""Migrated prototype scenarios — regression baseline for the framework.
 
 These 11 scenarios are migrated from the original single-file prototype into
-the new four-layer Scenario shape. Migration rules applied:
+the structured Scenario shape. Migration rules applied:
 
   - target_facts: carried over as-is (AND-of-OR shape preserved)
   - target_numbers: empty for now (no numeric facts were explicitly
     typed in the prototype — the target_facts already embed numbers as
     strings; upgrading to NumberFact is future per-dim work)
   - must_call / forbidden_calls / policies / perturbations: empty
-    (trajectory/constraint/robustness layers start unpopulated; the
+    (trajectory/constraint expectations and perturbations start unpopulated; the
     per-dimension scenario sets add these per scenario)
   - failure_cost: defaults to low/internal/reversible for all 11
     (the prototype did not annotate failure cost)

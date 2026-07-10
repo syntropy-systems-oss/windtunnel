@@ -19,7 +19,7 @@ import pytest
 
 from windtunnel.api.preconditions import Check, FileExists, WorldMismatchError
 from windtunnel.api.runner import ScenarioResult, run_matrix, run_scenario
-from windtunnel.api.scenario import Scenario
+from windtunnel.api.scenario import Policy, Scenario
 from windtunnel.runtimes.in_memory import InMemoryRuntime
 from windtunnel.spi.agent_runtime import AgentConfig, AgentHandle, SamplingConfig
 from windtunnel.spi.mcp_server import MCPCall
@@ -73,6 +73,43 @@ class TestRunScenario:
         result = run_scenario(_scenario(facts=[["ok"]]), runtime)
         assert result.aggregate.verdict == "FAIL"
         assert result.runs[0].score.outcome.passed is False
+
+    def test_declared_trajectory_failure_gates_scenario(self) -> None:
+        scenario = Scenario(
+            name="trajectory_gate",
+            prompt="hello",
+            target_facts=[["ok"]],
+            must_call=["lookup"],
+        )
+        result = run_scenario(scenario, InMemoryRuntime(scripted_responses=["ok"]))
+        assert result.runs[0].score.outcome.passed is True
+        assert result.runs[0].score.trajectory.passed is False
+        assert result.aggregate.gate_layers == ("outcome", "trajectory")
+        assert result.aggregate.verdict == "FAIL"
+
+    def test_explicit_outcome_only_gate_preserves_diagnostic_trajectory(self) -> None:
+        scenario = Scenario(
+            name="diagnostic_trajectory",
+            prompt="hello",
+            target_facts=[["ok"]],
+            must_call=["lookup"],
+            gate_layers=["outcome"],
+        )
+        result = run_scenario(scenario, InMemoryRuntime(scripted_responses=["ok"]))
+        assert result.runs[0].score.trajectory.passed is False
+        assert result.aggregate.verdict == "PASS"
+
+    def test_declared_constraint_failure_gates_scenario(self) -> None:
+        scenario = Scenario(
+            name="constraint_gate",
+            prompt="hello",
+            target_facts=[["ok"]],
+            policies=[Policy(name="deny", predicate=lambda _trace: False)],
+        )
+        result = run_scenario(scenario, InMemoryRuntime(scripted_responses=["ok"]))
+        assert result.runs[0].score.outcome.passed is True
+        assert result.runs[0].score.constraint.passed is False
+        assert result.aggregate.verdict == "FAIL"
 
     def test_trace_has_user_and_assistant_turns(self) -> None:
         runtime = InMemoryRuntime(scripted_responses=["ok"])

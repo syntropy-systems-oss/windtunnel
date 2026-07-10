@@ -125,9 +125,10 @@ scenario = Scenario(
 )
 ```
 
-The robustness layer verifies each perturbation actually applied (every one
-leaves a marker in the trace), so a broken injection can't masquerade as a
-pass.
+The integrity check verifies each perturbation actually applied (every one
+leaves a marker in the trace), so a broken injection yields `INVALID` instead
+of masquerading as a pass or blaming the agent. The gate performance of valid
+perturbation scenarios is the suite's robustness result.
 
 ## 5. Run a batch and read the report
 
@@ -136,9 +137,10 @@ wt run --scenario lookup_before_answer --runtime in_memory --runs 5 --label base
 wt report --runs runs/ --format html --out report.html
 ```
 
-The report groups by scenario × variant, shows the aggregate verdict,
-per-layer pass rates, and links each cell to its full trace — every turn,
-every tool call, every latency, exactly as the model saw it.
+The report groups by scenario × variant, shows the aggregate verdict, declared
+gate, per-layer pass rates, experiment integrity, robustness for perturbed
+cases, and operational failure risk. Each cell links to its full trace — every
+turn, every tool call, every latency, exactly as the model saw it.
 
 To compare two configurations (a model swap, a prompt change, a temperature
 pin):

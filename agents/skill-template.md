@@ -5,8 +5,8 @@ description: "Bench tool-using LLM agents with the wt CLI, scenario packs, trace
 # Wind Tunnel
 
 Wind Tunnel is unittest for agents: a reliability bench for tool-using LLM
-agents that scores outcomes, trajectories, constraints, and robustness from
-diffable traces.
+agents that gates outcomes, trajectories, and constraints, verifies experiment
+integrity, and measures robustness under perturbation from diffable traces.
 
 Use this skill when adding or debugging Wind Tunnel in a repo, authoring
 scenarios, wiring runtimes, importing traces, validating interchange envelopes,
@@ -34,8 +34,8 @@ serving recorded tool universes, or bringing up Contract C inject endpoints.
 <!-- BEGIN AGENTS_MD_TEMPLATE -->
 # Wind Tunnel Agent Index
 
-Wind Tunnel is unittest for tool-using LLM agents: scenarios score outcome,
-trajectory, constraint, and robustness layers from reproducible traces.
+Wind Tunnel is unittest for tool-using LLM agents: scenarios gate declared
+behavior expectations and verify experiment integrity from reproducible traces.
 
 Installed skill: `wt skill path`
 

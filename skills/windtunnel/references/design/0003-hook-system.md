@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/design/0003-hook-system.md at 5762955380b2 — do not edit; edit docs/design/0003-hook-system.md. -->
+<!-- GENERATED from docs/design/0003-hook-system.md at d046c0ffd29d — do not edit; edit docs/design/0003-hook-system.md. -->
 ---
 description: "Design specification for lifecycle hooks: the windtunnel.hooks plugin SPI, per-point ordering contracts, the scoped hook context, sidecar artifacts, and the debrief reference hook."
 ---
@@ -315,7 +315,7 @@ cluster across runs and schema evolution stays honest:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "run_id": "...",
   "scenario_id": "...",
   "agent": "...",
@@ -323,7 +323,7 @@ cluster across runs and schema evolution stays honest:
   "verdict": "FAIL",
   "failed_layers": ["outcome"],
   "reasons": {"outcome": "...", "trajectory": "...", "constraint": "...",
-               "robustness": "..."},
+               "integrity": "..."},
   "prompt": "...",
   "reply": "...",
   "tools_disabled": false,

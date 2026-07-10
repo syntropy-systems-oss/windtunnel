@@ -314,7 +314,7 @@ cluster across runs and schema evolution stays honest:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "run_id": "...",
   "scenario_id": "...",
   "agent": "...",
@@ -322,7 +322,7 @@ cluster across runs and schema evolution stays honest:
   "verdict": "FAIL",
   "failed_layers": ["outcome"],
   "reasons": {"outcome": "...", "trajectory": "...", "constraint": "...",
-               "robustness": "..."},
+               "integrity": "..."},
   "prompt": "...",
   "reply": "...",
   "tools_disabled": false,

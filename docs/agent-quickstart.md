@@ -68,7 +68,7 @@ if __name__ == "__main__":
         mcps=[FastMCPServer(mcp_instance=mcp)],  # runner starts/stops it
         runs_per_scenario=3,
     )
-    print(result.aggregate.verdict)   # PASS only if ALL runs pass the outcome layer
+    print(result.aggregate.verdict)   # PASS only if ALL runs satisfy the declared gate
 ```
 
 Rules you must not violate when authoring:
@@ -94,9 +94,9 @@ already `go test`-shaped), and select subsets with `--tag`, `--pack`,
 `--owner`, or globs in `--scenario`. Every sweep appends per-scenario records
 to `runs/ledger.ndjsonl` — the queryable pass-rate history.
 
-`wt run` writes a trace + `.score.json` sidecar per run; `wt compare
---labels baseline candidate` diffs two configurations; `wt triage` classifies
-failures. Note: under `in_memory` (a scripted stub) any
+`wt run` writes a versioned trace + `.score.json` sidecar per run; `wt compare
+--labels baseline candidate` diffs two configurations and ranks regressions by
+failure risk; `wt triage` classifies failures. Note: under `in_memory` (a scripted stub) any
 `requires_tool_use` scenario fails by design — it proves the gate works; real
 verdicts need a real runtime.
 

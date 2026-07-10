@@ -1,18 +1,18 @@
-"""Perturbation library — starter set for the robustness layer.
+"""Perturbation library — adversarial conditions with integrity evidence.
 
 Each perturbation is a dataclass that:
 1. Inherits from Perturbation — or PreSendPerturbation for the
    history-shaping subfamily (both abcs defined in scenario.py)
 2. Implements apply(trace) -> Trace — returns a NEW trace, never mutates
 3. Injects a 'perturbation_applied: <marker>' entry into worker_warnings
-   so evaluate_robustness can verify it was applied
+   so evaluate_integrity can verify it was applied
 
 Integration notes:
 - CorruptPriorAssistantTurn and InjectStaleMemory operate purely on the
   Trace object — they can run without any live agent container.
 - ToolTimeout and ToolReturnsMalformed are interface definitions for
   mock-MCP failure injection. They record the knob config in
-  worker_warnings so the robustness evaluator sees the marker, but the
+  worker_warnings so the integrity evaluator sees the marker, but the
   actual injection into the MCP call path is wired by the runner/driver.
   Currently they apply to trace metadata only.
 
@@ -153,7 +153,7 @@ class InjectStaleMemory(PreSendPerturbation):
     Simulates the memory-conflict dim: when durable memory
     says X but the current tool says Y. The actual memory injection into
     agent state is handled by the runner; this perturbation
-    records the intent and marks the trace so evaluate_robustness can
+    records the intent and marks the trace so evaluate_integrity can
     verify it was applied.
 
     key:   the memory key to inject (e.g. "user_pref", "client_id")
@@ -217,7 +217,7 @@ class ToolTimeout(Perturbation):
 
     Interface definition for mock-MCP failure injection (the mock-MCP
     layer wires the actual call intercept). This perturbation records the knob
-    config in worker_warnings so evaluate_robustness can verify it was
+    config in worker_warnings so evaluate_integrity can verify it was
     declared and applied by the runner.
 
     probability: float in [0.0, 1.0] — fraction of tool calls that
@@ -282,7 +282,7 @@ class BlankAssistantContent(PreSendPerturbation):
     demonstration — producing 'text-ending-in-colon' then stopping.
 
     turn_idx: 0-based index into trace.turns. If out of range, no-op on
-              turns (marker still injected so evaluate_robustness sees it).
+              turns (marker still injected so evaluate_integrity sees it).
 
     Note: only the text content is blanked — tool_calls are preserved.
     This matches the exact observed bug shape: tool_calls=[] but content="".
@@ -951,7 +951,7 @@ class InjectPaginationTruncation(PreSendPerturbation):
 #   - recovery:      REALISTIC-BUT-WRONG prior model choices
 #
 # These perturbations record the injection INTENT in worker_warnings so
-# evaluate_robustness can verify the marker is present. The actual MCP
+# evaluate_integrity can verify the marker is present. The actual MCP
 # failure injection happens via MOCK_MCP_FAILURE_MODE env var read by
 # synthetic_db.py in the dim_silent_failure mock MCP server.
 #
@@ -961,7 +961,7 @@ class InjectPaginationTruncation(PreSendPerturbation):
 #      mock MCP container (or sets synthetic_db.failure_mode directly)
 #   3. Mock MCP server reads failure_mode and injects the failure
 #   4. apply() is called on the seed trace → marker injected into
-#      worker_warnings → evaluate_robustness sees the marker and passes
+#      worker_warnings → evaluate_integrity sees the marker and passes
 #
 # Class naming: avoid collision with the knob-style ToolTimeout / ToolReturnsMalformed
 # (those have `probability` / `delay_ms` fields and no `tool_name`).

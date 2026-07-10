@@ -128,7 +128,7 @@ empty_prior_assistant_turn = Scenario(
             effect_class=None,
         ),
     ],
-    # Robustness: apply blank perturbation to turn_idx=1 (the first assistant turn)
+    # Perturbation: apply blank content to turn_idx=1 (the first assistant turn)
     perturbations=[
         BlankAssistantContent(turn_idx=1),
     ],
@@ -185,7 +185,7 @@ primitive_fallback_leak = Scenario(
             effect_class=None,
         ),
     ],
-    # Robustness: apply fallback-render perturbation to turn_idx=1
+    # Perturbation: apply fallback-render corruption to turn_idx=1
     perturbations=[
         FallbackRenderLeak(turn_idx=1),
     ],
@@ -226,7 +226,7 @@ bad_prior_call_pattern = Scenario(
     must_call=["client_lookup"],
     order_matters=False,
     policies=[],
-    # Robustness: corrupt the first client_lookup call's args
+    # Perturbation: corrupt the first client_lookup call's args
     perturbations=[
         MalformedToolCall(turn_idx=1, arg_corruption_mode="wrong_field_names"),
     ],

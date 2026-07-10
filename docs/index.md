@@ -1,5 +1,5 @@
 ---
-description: "Overview of Wind Tunnel's four-layer agent reliability bench, import workflow, CLI, and starting points."
+description: "Overview of Wind Tunnel's agent reliability gates, experiment integrity, import workflow, CLI, and starting points."
 ---
 # Wind Tunnel
 
@@ -19,14 +19,18 @@ wt --help
 ## What it does
 
 Conventional evals score the final answer. Wind Tunnel scores the **whole
-flight**, on four independent layers:
+flight** across three behavior layers and separately verifies the experiment:
 
 | Layer | Question |
 |---|---|
 | **outcome** | Was the user-visible answer right? |
 | **trajectory** | Were the right tools called, in the right order, none forbidden? |
 | **constraint** | Did named policy predicates over the trace hold? |
-| **robustness** | Were the declared perturbations actually applied? |
+| **integrity** | Were the declared perturbations actually applied? |
+
+Declared trajectory and constraint expectations join the scenario gate by
+default. Robustness is gate performance under valid perturbations; a failed
+integrity check is `INVALID`, not an agent failure.
 
 And it doesn't take the transcript's word for anything: when a logging mock
 is in play, tool traffic is recorded at the tool server itself, so trajectory
@@ -71,6 +75,7 @@ See the [CLI reference](cli-reference.md) for options and exit codes.
 - **[Importing a trace](importing-a-trace.md)** — turn a Contract A trace into an authored regression test.
 - **[Recording a universe](recording-a-universe.md)** — serve recorded tool calls as a hermetic mock upstream.
 - **[CLI reference](cli-reference.md)** — every shipped `wt` command and option.
-- **[Architecture](architecture.md)** — the API/SPI split and the four-layer scoring model.
+- **[Architecture](architecture.md)** — the API/SPI split, gates, integrity, and robustness model.
+- **[Migrating to 0.9](migrating-to-0.9.md)** — intentional scoring and artifact changes.
 - **[Failure taxonomy](failure-taxonomy.md)** — what the triage classifier can tell you.
 - **[Agent quickstart](agent-quickstart.md)** — using a coding agent? Point it at this one page.

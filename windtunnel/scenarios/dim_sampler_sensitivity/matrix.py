@@ -131,11 +131,23 @@ def run_matrix_aggregation(
 
     Each cell's run list is passed to aggregate_runs(variance_allowed=True)
     because all sampler-sensitivity scenarios opt in to variance tracking.
-    Empty cells produce a FAIL aggregate with pass_rate=0 and stddev=0.
+    Empty cells produce an INVALID aggregate with pass_rate=0 and stddev=0.
     """
+    from windtunnel.scenarios.dim_sampler_sensitivity.scenarios import (
+        SAMPLER_SENSITIVITY_SCENARIOS,
+    )
+
+    gates_by_scenario = {
+        scenario.name: scenario.resolved_gate_layers()
+        for scenario in SAMPLER_SENSITIVITY_SCENARIOS
+    }
     aggregated: dict[CellKey, AggregateResult] = {}
     for key, runs in cells.items():
-        aggregated[key] = aggregate_runs(runs, variance_allowed=True)
+        aggregated[key] = aggregate_runs(
+            runs,
+            variance_allowed=True,
+            gate_layers=gates_by_scenario.get(key.scenario, ("outcome",)),
+        )
 
     scenario_names = sorted({key.scenario for key in cells})
     return MatrixResult(cells=aggregated, scenario_names=scenario_names)

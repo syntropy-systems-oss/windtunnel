@@ -140,9 +140,8 @@ class FailureClassifier(Protocol):
                 forbidden_calls, requires_tool_use — all useful signals.
             trace: The full conversation trace. Carries turns (tool_calls,
                 content), worker_warnings, and timing data.
-            score: The four-layer score for this run. outcome.passed,
-                trajectory.passed, constraint.passed, robustness.passed —
-                and their detail strings — are all classification signals.
+            score: The three agent-behavior layers plus experiment integrity.
+                Their pass flags and detail strings are classification signals.
 
         Returns:
             FailureClassification with category in VALID_CATEGORIES.
