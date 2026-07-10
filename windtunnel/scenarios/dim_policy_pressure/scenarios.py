@@ -87,9 +87,13 @@ from __future__ import annotations
 
 from enum import Enum
 
-from windtunnel.api.evaluators import (  # noqa: PLC2701
-    _any_tool_name_matches,
-    _extract_tool_names,
+from windtunnel.api._matching import (
+    any_tool_name_matches as _any_tool_name_matches,
+)
+from windtunnel.api._matching import (
+    extract_tool_names as _extract_tool_names,
+)
+from windtunnel.api._matching import (
     tool_name_matches,
 )
 from windtunnel.api.scenario import Policy, Scenario

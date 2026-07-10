@@ -19,511 +19,58 @@ Design decisions:
     Trace-only directories without a ledger retain the historical latest-run
     fallback.
 """
+
 from __future__ import annotations
 
 import json
-import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, TextIO
-
-from windtunnel.api.trace import is_trace_json_path
-
-# ─── Run loader ───────────────────────────────────────────────────────────────
-
-def load_runs(runs_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
-    """Walk runs_dir and return one cell per (scenario_id, variant_id).
-
-    Layout: <runs>/<scenario_id>/<agent_id>/<variant_id>/<model>/<quant>/<ts>_<id>.json
-    Score sidecar: same path + ".score.json"
-
-    When multiple runs exist for the same (scenario_id, variant_id), the
-    lexicographically latest filename is used (= chronologically latest,
-    per storage_path() timestamp naming).
-
-    Returns:
-        dict keyed by (scenario_id, variant_id), values are:
-          {"trace": <trace dict>, "score": <score dict>}
-    """
-    runs_dir = Path(runs_dir)
-    if not runs_dir.exists():
-        return {}
-
-    # Load every complete trace/sidecar pair first. Grouping by the IDs stored
-    # inside the trace avoids path-sanitization aliases becoming report IDs.
-    candidates: dict[
-        tuple[str, str],
-        list[tuple[Path, dict[str, Any], dict[str, Any]]],
-    ] = {}
-
-    for trace_path in sorted(runs_dir.rglob("*.json")):
-        if not is_trace_json_path(trace_path):
-            continue
-        score_path = trace_path.with_suffix(".score.json")
-        if not score_path.exists():
-            continue
-
-        try:
-            trace_data = json.loads(trace_path.read_text(encoding="utf-8"))
-            score_data = json.loads(score_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        if not isinstance(trace_data, dict) or not isinstance(score_data, dict):
-            continue
-        scenario_id = trace_data.get("scenario_id")
-        variant_id = trace_data.get("variant_id")
-        if not isinstance(scenario_id, str) or not isinstance(variant_id, str):
-            continue
-        candidates.setdefault((scenario_id, variant_id), []).append(
-            (trace_path, trace_data, score_data)
-        )
-
-    result: dict[tuple[str, str], dict[str, Any]] = {}
-    aggregates = _load_latest_aggregates(runs_dir)
-    for key, grouped_runs in candidates.items():
-        aggregate = aggregates.get(key)
-        selected_runs = grouped_runs
-        if aggregate is not None:
-            aggregate_run_ids = {
-                str(run_id) for run_id in aggregate.get("run_ids", [])
-            }
-            matching = [
-                candidate
-                for candidate in grouped_runs
-                if str(candidate[1].get("run_id", "")) in aggregate_run_ids
-            ]
-            if matching:
-                selected_runs = matching
-            else:
-                # A ledger may outlive pruned/moved trace files. Never attach a
-                # stale aggregate to an unrelated older run merely because the
-                # scenario and label happen to match.
-                aggregate = None
-
-        _path, trace_data, score_data = max(
-            selected_runs,
-            key=lambda candidate: (
-                str(candidate[1].get("started_at", "")),
-                candidate[0].name,
-            ),
-        )
-        if aggregate is not None:
-            score_data = {**score_data, "_aggregate": aggregate}
-        result[key] = {"trace": trace_data, "score": score_data}
-
-    return result
-
-
-def _load_latest_aggregates(
-    runs_dir: Path,
-) -> dict[tuple[str, str], dict[str, Any]]:
-    """Load the last valid ledger aggregate for each scenario/variant pair."""
-    ledger_path = runs_dir / "ledger.ndjsonl"
-    if not ledger_path.is_file():
-        return {}
-
-    aggregates: dict[tuple[str, str], dict[str, Any]] = {}
-    try:
-        lines = ledger_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return {}
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(record, dict):
-            continue
-        scenario_id = record.get("scenario_id")
-        label = record.get("label")
-        if isinstance(scenario_id, str) and isinstance(label, str):
-            aggregates[(scenario_id, label)] = record
-    return aggregates
-
-
-# ─── Data model builders ──────────────────────────────────────────────────────
-
-def _tool_call_count(trace_data: dict[str, Any]) -> int:
-    """Count total tool calls across all turns in a trace dict."""
-    count = 0
-    for turn in trace_data.get("turns", []):
-        count += len(turn.get("tool_calls") or [])
-    return count
-
-
-def _cell_from_run(
-    trace_data: dict[str, Any],
-    score_data: dict[str, Any],
-) -> dict[str, Any]:
-    """Build a report cell dict from raw trace + score dicts."""
-    outcome = score_data.get("outcome", {})
-    trajectory = score_data.get("trajectory", {})
-    constraint = score_data.get("constraint", {})
-    robustness = score_data.get("robustness", {})
-    fc = score_data.get("failure_cost", {})
-
-    aggregate = score_data.get("_aggregate")
-    if not isinstance(aggregate, dict):
-        aggregate = None
-    layer_pass_rates = aggregate.get("layer_pass_rates", {}) if aggregate else {}
-
-    # Aggregate truth wins when available; trace-only corpora fall back to the
-    # historical per-run verdict.
-    verdict = (
-        str(aggregate.get("verdict"))
-        if aggregate is not None
-        else ("PASS" if outcome.get("passed", False) else "FAIL")
-    )
-
-    def _layer(name: str, raw: dict[str, Any]) -> dict[str, Any]:
-        aggregate_rate = layer_pass_rates.get(name)
-        rate = (
-            float(aggregate_rate)
-            if isinstance(aggregate_rate, int | float)
-            else (1.0 if raw.get("passed", False) else 0.0)
-        )
-        detail = str(raw.get("detail", ""))
-        if aggregate is not None:
-            detail = f"aggregate pass rate={rate:.0%}; latest run: {detail}"
-        return {"passed": rate == 1.0, "pass_rate": rate, "detail": detail}
-
-    return {
-        "verdict": verdict,
-        "tool_call_count": _tool_call_count(trace_data),
-        "layers": {
-            "outcome": _layer("outcome", outcome),
-            "trajectory": _layer("trajectory", trajectory),
-            "constraint": _layer("constraint", constraint),
-            "robustness": _layer("robustness", robustness),
-        },
-        "failure_cost": {
-            "severity": fc.get("severity", "low"),
-            "customer_visible": fc.get("customer_visible", False),
-            "reversible": fc.get("reversible", True),
-            "side_effect_performed": fc.get("side_effect_performed", False),
-        },
-        "trace": {
-            "run_id": trace_data.get("run_id", ""),
-            "started_at": trace_data.get("started_at", ""),
-            "finished_at": trace_data.get("finished_at", ""),
-            "model": trace_data.get("model", ""),
-            "quant": trace_data.get("quant", ""),
-            "turns": trace_data.get("turns", []),
-        },
-        "aggregate": aggregate,
-    }
-
-
-def _build_report_data(cells: dict[tuple[str, str], dict[str, Any]]) -> dict[str, Any]:
-    """Build the JSON-island data structure from loaded cells.
-
-    Structure:
-      {
-        "latest_run_ts": "<ISO>",
-        "scenario_count": N,
-        "variants": ["baseline", "variant_b", ...],
-        "scenarios": [
-          {
-            "scenario_id": "sc_alpha",
-            "cells": {
-              "baseline": { <cell> },
-              "variant_b": { <cell> },
-              ...
-            }
-          },
-          ...
-        ],
-        "summary": {
-          "outcome_pass_rate": 0.75,
-          "trajectory_pass_rate": 0.75,
-          "constraint_pass_rate": 0.75,
-          "robustness_pass_rate": 0.75,
-        }
-      }
-    """
-    if not cells:
-        return {
-            "latest_run_ts": "",
-            "scenario_count": 0,
-            "variants": [],
-            "scenarios": [],
-            "summary": {
-                "outcome_pass_rate": 0.0,
-                "trajectory_pass_rate": 0.0,
-                "constraint_pass_rate": 0.0,
-                "robustness_pass_rate": 0.0,
-            },
-        }
-
-    # Collect ordered scenario_ids and variant_ids
-    scenario_ids_seen: list[str] = []
-    variant_ids_seen: list[str] = []
-    for sc_id, var_id in sorted(cells.keys()):
-        if sc_id not in scenario_ids_seen:
-            scenario_ids_seen.append(sc_id)
-        if var_id not in variant_ids_seen:
-            variant_ids_seen.append(var_id)
-
-    # Latest run timestamp
-    latest_ts = ""
-    for _key, run in cells.items():
-        ts = run["trace"].get("started_at", "")
-        if ts > latest_ts:
-            latest_ts = ts
-
-    # Build per-scenario rows
-    scenarios_list: list[dict[str, Any]] = []
-    for sc_id in scenario_ids_seen:
-        row_cells: dict[str, Any] = {}
-        for var_id in variant_ids_seen:
-            key = (sc_id, var_id)
-            if key in cells:
-                run = cells[key]
-                row_cells[var_id] = _cell_from_run(run["trace"], run["score"])
-        scenarios_list.append({
-            "scenario_id": sc_id,
-            "cells": row_cells,
-        })
-
-    # Summary: per-layer pass rates across all cells
-    all_cells = [
-        _cell_from_run(run["trace"], run["score"])
-        for run in cells.values()
-    ]
-    n = len(all_cells)
-
-    def _layer_rate(layer: str) -> float:
-        if n == 0:
-            return 0.0
-        return sum(float(c["layers"][layer]["pass_rate"]) for c in all_cells) / n
-
-    summary = {
-        "outcome_pass_rate": _layer_rate("outcome"),
-        "trajectory_pass_rate": _layer_rate("trajectory"),
-        "constraint_pass_rate": _layer_rate("constraint"),
-        "robustness_pass_rate": _layer_rate("robustness"),
-    }
-
-    return {
-        "latest_run_ts": latest_ts,
-        "scenario_count": len(scenario_ids_seen),
-        "variants": variant_ids_seen,
-        "scenarios": scenarios_list,
-        "summary": summary,
-    }
-
-
-# ─── Diff computation ─────────────────────────────────────────────────────────
-
-def compute_diff(
-    runs_dir: Path,
-    label_a: str,
-    label_b: str,
-) -> list[dict[str, Any]]:
-    """Return scenarios that changed verdict between label_a and label_b.
-
-    A "label" here is a variant_id. Compares the verdict for each
-    scenario across the two variants and returns only the scenarios
-    where the verdict changed.
-
-    Returns list of dicts:
-      {
-        "scenario_id": str,
-        "direction": "regression" | "improvement",
-        "verdict_a": "PASS" | "FAIL",
-        "verdict_b": "PASS" | "FAIL",
-      }
-    """
-    cells = load_runs(runs_dir=runs_dir)
-
-    # Collect all scenario_ids
-    scenario_ids = sorted({sc_id for sc_id, _var in cells})
-
-    result: list[dict[str, Any]] = []
-    for sc_id in scenario_ids:
-        run_a = cells.get((sc_id, label_a))
-        run_b = cells.get((sc_id, label_b))
-
-        if run_a is None or run_b is None:
-            continue  # can't diff if one side is missing
-
-        cell_a = _cell_from_run(run_a["trace"], run_a["score"])
-        cell_b = _cell_from_run(run_b["trace"], run_b["score"])
-
-        verdict_a = cell_a["verdict"]
-        verdict_b = cell_b["verdict"]
-
-        if verdict_a == verdict_b:
-            continue  # no change — exclude from diff
-
-        direction = (
-            "improvement"
-            if _verdict_rank(verdict_b) > _verdict_rank(verdict_a)
-            else "regression"
-        )
-
-        result.append({
-            "scenario_id": sc_id,
-            "direction": direction,
-            "verdict_a": verdict_a,
-            "verdict_b": verdict_b,
-        })
-
-    return result
-
-
-def _verdict_rank(verdict: object) -> int:
-    """Order aggregate verdicts from hard failure to stable pass."""
-    if verdict == "PASS":
-        return 2
-    if isinstance(verdict, str) and "VARIANCE" in verdict:
-        return 1
-    return 0
-
-
-# ─── Markdown generator ───────────────────────────────────────────────────────
-
-def generate_markdown(
-    runs_dir: Path,
-    out: TextIO | None = None,
-) -> None:
-    """Generate a terminal-readable markdown summary of the bench results.
-
-    Writes to `out` (defaults to sys.stdout). No HTML tags — plain markdown
-    with pipe-tables.
-    """
-    if out is None:
-        out = sys.stdout
-
-    cells = load_runs(runs_dir=runs_dir)
-    data = _build_report_data(cells)
-
-    ts = data["latest_run_ts"] or "unknown"
-    scenario_count = data["scenario_count"]
-    variants = data["variants"]
-    scenarios = data["scenarios"]
-    summary = data["summary"]
-
-    lines: list[str] = []
-
-    # Header
-    lines.append(f"# Agent Bench Report — {ts}")
-    lines.append("")
-    lines.append(f"**Scenarios:** {scenario_count}  |  **Variants:** {len(variants)}")
-    lines.append("")
-
-    # Summary: per-layer pass rates
-    lines.append("## Pass Rates (all cells)")
-    lines.append("")
-    lines.append("| Layer | Pass Rate |")
-    lines.append("|-------|-----------|")
-    for layer in ("outcome", "trajectory", "constraint", "robustness"):
-        rate = summary[f"{layer}_pass_rate"]
-        pct = f"{rate * 100:.1f}%"
-        lines.append(f"| {layer.capitalize()} | {pct} |")
-    lines.append("")
-
-    # Scenario matrix
-    lines.append("## Scenario Matrix")
-    lines.append("")
-
-    if not variants:
-        lines.append("_No runs found._")
-        lines.append("")
-        print("\n".join(lines), file=out, end="")
-        return
-
-    # Table header
-    header = ["Scenario"] + variants
-    lines.append("| " + " | ".join(header) + " |")
-    lines.append("|" + "|".join(["---"] * len(header)) + "|")
-
-    # Pass counts per variant
-    pass_counts: dict[str, int] = {v: 0 for v in variants}
-    total = len(scenarios)
-
-    for sc in scenarios:
-        row = [f"`{sc['scenario_id']}`"]
-        for var in variants:
-            cell = sc["cells"].get(var)
-            if cell is None:
-                row.append("—")
-            else:
-                verdict = cell["verdict"]
-                tc = cell["tool_call_count"]
-                icon = "PASS" if verdict == "PASS" else ("VAR" if "VARIANCE" in verdict else "FAIL")
-                sev = cell["failure_cost"]["severity"]
-                sev_tag = f"[{sev}]" if sev != "low" else ""
-                row.append(f"{icon} n={tc}{(' ' + sev_tag) if sev_tag else ''}")
-                if verdict != "FAIL":
-                    pass_counts[var] += 1
-        lines.append("| " + " | ".join(row) + " |")
-
-    # Summary row
-    summary_row = ["**PASS**"]
-    for var in variants:
-        summary_row.append(f"**{pass_counts[var]}/{total}**")
-    lines.append("| " + " | ".join(summary_row) + " |")
-    lines.append("")
-
-    # Per-layer breakdown per variant
-    lines.append("## Per-Layer Breakdown")
-    lines.append("")
-
-    layer_labels = [
-        ("outcome", "Outcome"),
-        ("trajectory", "Trajectory"),
-        ("constraint", "Constraint"),
-        ("robustness", "Robustness"),
-    ]
-
-    layer_header = ["Layer"] + variants
-    lines.append("| " + " | ".join(layer_header) + " |")
-    lines.append("|" + "|".join(["---"] * len(layer_header)) + "|")
-
-    for layer_key, layer_label in layer_labels:
-        row = [layer_label]
-        for var in variants:
-            # Average aggregate pass rates for this layer across scenarios.
-            rates: list[float] = []
-            for sc in scenarios:
-                cell = sc["cells"].get(var)
-                if cell is not None:
-                    rates.append(float(cell["layers"][layer_key]["pass_rate"]))
-            if not rates:
-                row.append("—")
-            else:
-                pct = f"{sum(rates) / len(rates):.0%}"
-                row.append(pct)
-        lines.append("| " + " | ".join(row) + " |")
-
-    lines.append("")
-    print("\n".join(lines), file=out, end="")
-
-
-# ─── JSON generator ───────────────────────────────────────────────────────────
-
-def generate_json(
-    runs_dir: Path,
-    out: TextIO | None = None,
-) -> None:
-    """Generate the JSON-island report data as a standalone JSON document.
-
-    The HTML report already embeds this exact structure in
-    ``<script id="bench-data">``. The JSON format deliberately reuses that
-    data model rather than creating a second report schema.
-    """
-    if out is None:
-        out = sys.stdout
-
-    cells = load_runs(runs_dir=runs_dir)
-    data = _build_report_data(cells)
-    print(json.dumps(data, indent=2, ensure_ascii=False), file=out)
-
+from typing import Any
+
+from windtunnel._report.load import (
+    _load_latest_aggregates as _load_latest_aggregates_impl,
+)
+from windtunnel._report.load import (
+    load_runs as _load_runs_impl,
+)
+from windtunnel._report.model import (
+    _build_report_data as _build_report_data_impl,
+)
+from windtunnel._report.model import (
+    _cell_from_run as _cell_from_run_impl,
+)
+from windtunnel._report.model import (
+    _tool_call_count as _tool_call_count_impl,
+)
+from windtunnel._report.model import (
+    _verdict_rank as _verdict_rank_impl,
+)
+from windtunnel._report.model import (
+    compute_diff as _compute_diff_impl,
+)
+from windtunnel._report.text import (
+    generate_json as _generate_json_impl,
+)
+from windtunnel._report.text import (
+    generate_markdown as _generate_markdown_impl,
+)
+
+# Compatibility facade: report consumers keep the same imports while loading,
+# modeling, and text rendering evolve independently behind this module.
+load_runs = _load_runs_impl
+_load_latest_aggregates = _load_latest_aggregates_impl
+_tool_call_count = _tool_call_count_impl
+_cell_from_run = _cell_from_run_impl
+_build_report_data = _build_report_data_impl
+compute_diff = _compute_diff_impl
+_verdict_rank = _verdict_rank_impl
+generate_markdown = _generate_markdown_impl
+generate_json = _generate_json_impl
+
+# ─── HTML renderer ────────────────────────────────────────────────────────────
 
 # ─── HTML generator ───────────────────────────────────────────────────────────
+
 
 def generate_html(
     runs_dir: Path,

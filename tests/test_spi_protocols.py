@@ -108,6 +108,12 @@ class TestMCPSpec:
         assert spec.name == "acme"
         assert spec.url == "http://localhost:8080/mcp"
 
+    def test_all_spi_import_paths_share_one_class(self) -> None:
+        from windtunnel.spi.agent_runtime import MCPSpec as AgentMCPSpec
+        from windtunnel.spi.mcp_server import MCPSpec as ServerMCPSpec
+
+        assert MCPSpec is AgentMCPSpec is ServerMCPSpec
+
 
 # ─── AgentRuntime / AgentHandle Protocol ──────────────────────────────────────
 

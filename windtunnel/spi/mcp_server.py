@@ -47,6 +47,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from windtunnel.spi.agent_runtime import MCPSpec as MCPSpec
+
 # ─── MCPCall ─────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -67,21 +69,6 @@ class MCPCall:
     timestamp_ms: float
     # Extra metadata (optional, runtime-specific)
     extra: dict[str, Any] = field(default_factory=dict)
-
-
-# ─── MCPSpec re-exported for convenience (defined in agent_runtime) ──────────
-# Circular-import-free: scenarios import MCPSpec from windtunnel.spi.mcp_server
-# or windtunnel.spi.agent_runtime — same definition either way.
-
-@dataclass
-class MCPSpec:
-    """Reference to one MCP server that the agent should use.
-
-    name: the server alias the agent config knows (e.g. "acme").
-    url:  the HTTP URL the agent runtime should point the agent at.
-    """
-    name: str
-    url: str
 
 
 # ─── Protocols ───────────────────────────────────────────────────────────────

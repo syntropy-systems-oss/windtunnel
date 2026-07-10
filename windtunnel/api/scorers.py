@@ -29,7 +29,15 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from windtunnel.api._evidence import mcp_evidence_state
-from windtunnel.api.evaluators import _last_assistant_turn, _match_fact_group, _match_number_fact
+from windtunnel.api._matching import (
+    last_assistant_turn as _last_assistant_turn,
+)
+from windtunnel.api._matching import (
+    match_fact_group as _match_fact_group,
+)
+from windtunnel.api._matching import (
+    match_number_fact as _match_number_fact,
+)
 from windtunnel.api.replay import GenerateFn
 from windtunnel.api.scenario import NumberFact, Policy
 from windtunnel.api.score import LayerResult
