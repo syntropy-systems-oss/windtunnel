@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.8.1...v0.9.0) (2026-07-10)
+
+
+### Features
+
+* define declared gates and integrity semantics ([#44](https://github.com/syntropy-systems-oss/windtunnel/issues/44)) ([5ddec09](https://github.com/syntropy-systems-oss/windtunnel/commit/5ddec09505d8bc345dd4892cf45ea891c82c86fb))
+
 ## [0.8.1](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.8.0...v0.8.1) (2026-07-10)
 
 
