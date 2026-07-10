@@ -84,7 +84,19 @@ def _as_plugin_instance(obj: object) -> RuntimePlugin:
     return cast(RuntimePlugin, obj)
 
 
-def _build_runtime(runtime_name: str, label: str, soul_path: str | None) -> AgentRuntime:
-    """Instantiate the requested runtime via its resolved plugin."""
-    plugin = _resolve_runtime_plugin(runtime_name)
+def _build_runtime(
+    runtime_name: str,
+    label: str,
+    soul_path: str | None,
+    *,
+    _plugin: RuntimePlugin | None = None,
+) -> AgentRuntime:
+    """Instantiate the requested runtime via one resolved plugin instance.
+
+    ``_plugin`` lets the run command retain the exact object it resolved so
+    the optional ``pre_run`` lifecycle hook executes on the same instance
+    whose ``build`` method created the runtime. Other commands can continue
+    using the three-argument form and have the plugin resolved here.
+    """
+    plugin = _plugin or _resolve_runtime_plugin(runtime_name)
     return plugin.build(runtime_name, label, soul_path)

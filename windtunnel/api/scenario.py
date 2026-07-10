@@ -15,9 +15,9 @@ Design decisions captured here:
    extractor requires a number-parser that handles "12 units", "12.0",
    "twelve" etc. — a fragile NLP problem. Word-boundary regex is simple,
    deterministic, and solves the known false-positive ("3" matching B003CCC)
-   without over-engineering. Unit matching is advisory: when unit is
-   specified, the regex also checks that the number appears near the unit
-   word (within 30 chars), but the number alone is sufficient to pass.
+   without over-engineering. When a unit is specified, the matcher requires
+   that unit to appear near the number (within 30 chars) without requiring an
+   exact ``"3 units"`` phrase.
 
 2. Policy is a named predicate over a Trace. The effect_class field is
    a forward-compat hook for the side-effect-safety dim — it
@@ -71,8 +71,8 @@ class NumberFact:
     BATCH-2026.
 
     unit: when specified, evaluator also checks that the number appears
-    within 30 characters of the unit string in the answer (advisory —
-    tightens the check but doesn't require exact "3 units" phrasing).
+    within 30 characters of the unit string in the answer. This tightens the
+    check without requiring exact "3 units" phrasing.
     """
     value: int
     unit: str | None = None

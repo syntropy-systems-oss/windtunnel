@@ -35,8 +35,8 @@ MCPHandle
         Every tool call routed through this server since last reset.
     reset_call_log() -> None
         Clear the log between scenarios.
-    configure_failure_mode(mode) -> None
-        Inject failure modes for the silent-failure dim (timeout,
+    FailureInjectableMCPHandle.configure_failure_mode(mode) -> None (optional)
+        Inject failure modes for specialized reliability scenarios (timeout,
         malformed JSON, empty result). None = normal operation.
 
 MCPServer.stop() -> None
@@ -114,6 +114,15 @@ class MCPHandle(Protocol):
         """
         ...
 
+@runtime_checkable
+class FailureInjectableMCPHandle(Protocol):
+    """Optional MCPHandle extension for synthetic failure injection.
+
+    Failure injection is useful for mocks that exercise recovery behavior,
+    but it is not part of the minimal evidence/lifecycle contract required of
+    every MCP handle.
+    """
+
     def configure_failure_mode(self, mode: str | None) -> None:
         """Inject a failure mode into the server for the next scenario.
 
@@ -180,7 +189,7 @@ class MCPServer(Protocol):
 
     Lifecycle:
         handle = server.start()          # called once per batch
-        handle.configure_failure_mode(mode)
+        # optionally: handle.configure_failure_mode(mode)
         handle.call_log()                # inspect between scenarios
         handle.reset_call_log()          # clear between scenarios
         server.stop()                    # called once after all scenarios

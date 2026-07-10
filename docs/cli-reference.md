@@ -2,7 +2,7 @@
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at 5af9cd0cb626 — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at c05a5ea7f52d — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
 The `wt` command ships 11 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
@@ -55,7 +55,7 @@ Arguments and options:
 
 | Name | Required | Default | Help |
 |---|---:|---|---|
-| `--labels` | no | [] | Variant labels to compare (space-separated). |
+| `--labels` | no | [] | Variant labels to compare (space-separated); the first label is the baseline. |
 | `--runs` | no | runs | Path to the runs/ directory (default: ./runs) |
 
 ## `wt run`
@@ -270,7 +270,7 @@ Classify failed runs and emit a markdown report grouped by failure category.
 Usage:
 
 ```bash
-wt triage [-h] [--runs DIR] [--classifier {rule_based,llm_judge}]
+wt triage [-h] [--runs DIR] [--classifier {rule_based}]
 ```
 
 Arguments and options:
@@ -278,7 +278,7 @@ Arguments and options:
 | Name | Required | Default | Help |
 |---|---:|---|---|
 | `--runs` | no | runs | Path to the runs/ directory (default: ./runs). Each trace must have a sibling .score.json file. |
-| `--classifier` | no | rule_based | Classifier to use: rule_based (default, deterministic) or llm_judge (stub — raises NotImplementedError until implemented). Choices: rule_based, llm_judge. |
+| `--classifier` | no | rule_based | Classifier to use (default: rule_based, deterministic). Choices: rule_based. |
 
 ## `wt skill`
 

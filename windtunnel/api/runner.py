@@ -387,6 +387,8 @@ def run_scenario(
 
     Returns ScenarioResult with aggregate verdict + per-run details.
     """
+    if runs_per_scenario < 1:
+        raise ValueError("runs_per_scenario must be at least 1")
     if config is None:
         config = AgentConfig()
     if mcps is None:

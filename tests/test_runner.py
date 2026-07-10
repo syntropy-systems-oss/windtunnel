@@ -53,6 +53,15 @@ class TestRunScenario:
         assert result.aggregate.total == 5
         assert len(result.runs) == 5
 
+    @pytest.mark.parametrize("runs", [0, -1])
+    def test_nonpositive_run_count_is_rejected_before_provision(self, runs: int) -> None:
+        runtime = InMemoryRuntime(scripted_responses=["ok"])
+
+        with pytest.raises(ValueError, match="at least 1"):
+            run_scenario(_scenario(), runtime, runs_per_scenario=runs)
+
+        assert runtime.provisions == []
+
     def test_all_pass_when_fact_present(self) -> None:
         runtime = InMemoryRuntime(scripted_responses=["ok everything is ok"])
         result = run_scenario(_scenario(facts=[["ok"]]), runtime, runs_per_scenario=3)

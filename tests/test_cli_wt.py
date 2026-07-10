@@ -67,6 +67,7 @@ def _trace(
     scenario_id: str,
     *,
     run_id: str = "run-1",
+    variant_id: str = "candidate",
     seconds: float = 0.25,
     model: str = "model-x",
     quant: str = "q4",
@@ -79,7 +80,7 @@ def _trace(
     return Trace(
         scenario_id=scenario_id,
         agent_id="agent-x",
-        variant_id="candidate",
+        variant_id=variant_id,
         model=model,
         quant=quant,
         sampler={},
@@ -131,7 +132,11 @@ def _patch_cli_run(
     import windtunnel.cli as cli
 
     monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: packs)
-    monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path: object())
+    monkeypatch.setattr(
+        cli,
+        "_build_runtime",
+        lambda runtime_name, label, soul_path, **_kwargs: object(),
+    )
     monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda runtime_name: object())
 
     def fake_run_scenario(scenario, runtime, *args, **kwargs):
@@ -245,10 +250,63 @@ class TestWtReport:
 
 
 class TestWtCompare:
+    @staticmethod
+    def _write_result(runs_dir: Path, scenario_id: str, label: str, passed: bool) -> None:
+        from windtunnel.api.score import LayerResult, Score, score_to_dict
+        from windtunnel.api.trace import save_trace, storage_path
+
+        trace = _trace(scenario_id, run_id=f"{scenario_id}-{label}", variant_id=label)
+        trace_path = storage_path(trace, base_dir=runs_dir)
+        save_trace(trace, trace_path)
+        layer = LayerResult(passed=passed, detail="fixture")
+        score = Score(
+            outcome=layer,
+            trajectory=LayerResult(passed=True, detail="fixture"),
+            constraint=LayerResult(passed=True, detail="fixture"),
+            robustness=LayerResult(passed=True, detail="fixture"),
+        )
+        trace_path.with_suffix(".score.json").write_text(
+            json.dumps(score_to_dict(score)),
+            encoding="utf-8",
+        )
+
     def test_compare_without_labels_shows_help_or_error(self) -> None:
         result = _wt("compare")
         # Should print usage or error (not crash with traceback)
         assert result.returncode != 0 or "label" in (result.stdout + result.stderr).lower()
+
+    def test_fixed_baseline_failure_is_not_a_regression(self, tmp_path: Path) -> None:
+        runs_dir = tmp_path / "runs"
+        self._write_result(runs_dir, "recovered", "baseline", False)
+        self._write_result(runs_dir, "recovered", "candidate", True)
+
+        result = _wt(
+            "compare", "--labels", "baseline", "candidate", "--runs", str(runs_dir)
+        )
+
+        assert result.returncode == 0
+
+    def test_candidate_regression_exits_nonzero(self, tmp_path: Path) -> None:
+        runs_dir = tmp_path / "runs"
+        self._write_result(runs_dir, "regressed", "baseline", True)
+        self._write_result(runs_dir, "regressed", "candidate", False)
+
+        result = _wt(
+            "compare", "--labels", "baseline", "candidate", "--runs", str(runs_dir)
+        )
+
+        assert result.returncode == 1
+
+    def test_unchanged_failure_is_not_a_regression(self, tmp_path: Path) -> None:
+        runs_dir = tmp_path / "runs"
+        self._write_result(runs_dir, "known_failure", "baseline", False)
+        self._write_result(runs_dir, "known_failure", "candidate", False)
+
+        result = _wt(
+            "compare", "--labels", "baseline", "candidate", "--runs", str(runs_dir)
+        )
+
+        assert result.returncode == 0
 
 
 class TestWtRun:
@@ -268,6 +326,52 @@ class TestWtRun:
         # Without args it may print usage or exit non-zero — both acceptable
         # as long as it doesn't crash with an unhandled exception
         assert "traceback" not in result.stderr.lower() or result.returncode != 0
+
+    def test_runs_must_be_positive(self) -> None:
+        result = _wt("run", "--runs", "0")
+        assert result.returncode == 2
+        assert "at least 1" in result.stderr
+
+    def test_build_and_pre_run_share_one_plugin_instance(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        import windtunnel.api.runner as runner
+        import windtunnel.cli as cli
+
+        scenario = _scenario("plugin_lifecycle")
+        instances: list[object] = []
+
+        class StatefulPlugin:
+            def __init__(self) -> None:
+                self.runtime = None
+                instances.append(self)
+
+            def build(self, runtime_name: str, label: str, soul_path: str | None):
+                self.runtime = object()
+                return self.runtime
+
+            def pre_run(self, runtime, scenarios, runtime_name: str) -> None:
+                assert runtime is self.runtime
+
+        monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda _name: StatefulPlugin())
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [_pack("local", [scenario])])
+        monkeypatch.setattr(
+            runner,
+            "run_scenario",
+            lambda selected, runtime, *args, **kwargs: _result(selected, passed=True),
+        )
+
+        rc = cli.main([
+            "run",
+            "--runtime", "stateful",
+            "--scenario", scenario.name,
+            "--runs-dir", str(tmp_path / "runs"),
+        ])
+
+        assert rc == 0
+        assert len(instances) == 1
 
 
 class TestWtRunSelection:
@@ -620,7 +724,11 @@ class TestWtRunCiOutput:
         scenario = _scenario("needs_world", tags=["dim:custom"])
         pack = _pack("custom", [scenario])
         monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [pack])
-        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path: object())
+        monkeypatch.setattr(
+            cli,
+            "_build_runtime",
+            lambda runtime_name, label, soul_path, **_kwargs: object(),
+        )
         monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda runtime_name: object())
 
         def fail_world(*_args, **_kwargs):

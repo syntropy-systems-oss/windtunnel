@@ -64,9 +64,9 @@ class FailureClassification:
 
 ## LLM-judge status
 
-Wind Tunnel 0.5.0 ships the deterministic `RuleBasedClassifier`. It also ships
-an `LLMJudgeClassifier` class and a `wt triage --classifier llm_judge` parser
-choice as a registration point, but the class raises `NotImplementedError`.
+Wind Tunnel ships the deterministic `RuleBasedClassifier`. It also includes an
+`LLMJudgeClassifier` implementation sketch, but does not advertise that class
+as a CLI choice because it raises `NotImplementedError`.
 
 The sketch below is design guidance for a future implementation or downstream
 fork. It is not runnable as shipped.
@@ -132,10 +132,12 @@ class MyLLMJudgeClassifier:
 
 ## Registering with the CLI
 
-There is no classifier entry-point group in 0.5.0. The shipped CLI supports:
+There is no classifier entry-point group. The shipped CLI supports:
 
 - `rule_based`: implemented.
-- `llm_judge`: reserved, but raises `NotImplementedError` until implemented.
+
+`LLMJudgeClassifier` remains an unregistered implementation sketch until it
+can classify a run successfully.
 
 For an in-repo classifier, add it to the `--classifier` choices and dispatch in
 `windtunnel/cli.py`:
@@ -177,6 +179,6 @@ Target: >= 80% agreement on the hand-labeled set.
 ## See also
 
 - `windtunnel/triage/rule_based.py` — the baseline rule-based classifier
-- `windtunnel/triage/llm_judge.py` — the LLM-judge stub with implementation notes
+- `windtunnel/triage/llm_judge.py` — an unregistered LLM-judge implementation sketch
 - [failure-taxonomy.md](failure-taxonomy.md) — category definitions and fix vectors
 - [writing-an-optimizer.md](writing-an-optimizer.md) — how to implement an optimizer
