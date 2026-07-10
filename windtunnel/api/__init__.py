@@ -56,7 +56,7 @@ from windtunnel.api.preconditions import (
     WorldMismatchError,
 )
 from windtunnel.api.replay import GenerateFn, replay
-from windtunnel.api.runner import ScenarioResult, run_scenario
+from windtunnel.api.runner import ScenarioResult, run_matrix, run_scenario
 from windtunnel.api.scenario import (
     NumberFact,
     Perturbation,
@@ -125,7 +125,7 @@ __all__ = [
     # canary
     "CanaryResult", "run_reset_canary",
     # runner
-    "ScenarioResult", "run_scenario",
+    "ScenarioResult", "run_matrix", "run_scenario",
     # replay
     "GenerateFn", "replay",
     # state_reset

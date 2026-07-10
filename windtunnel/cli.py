@@ -11,7 +11,7 @@ Subcommands:
     wt doctor   --runtime RUNTIME [--soul PATH] [--label LABEL]
     wt import   --trace PATH --out DIR [--force]
     wt validate [--strict] PATH [PATH ...]
-    wt triage   [--runs DIR] [--classifier rule_based|llm_judge]
+    wt triage   [--runs DIR] [--classifier rule_based]
     wt skill    path | install [--dest DIR] [--copy]
 
 Design: argparse (stdlib) — no click dependency. Each subcommand is a
@@ -245,7 +245,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     Loads traces for each label from the runs/ dir and prints a diff table.
     Labels correspond to variant_id values in stored traces.
     """
-    from windtunnel.report import _cell_from_run, load_runs  # noqa: PLC0415
+    from windtunnel.report import _cell_from_run, compute_diff, load_runs  # noqa: PLC0415
 
     runs_dir = Path(args.runs)
     labels: list[str] = args.labels
@@ -275,7 +275,6 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         for sid, _ in cells:
             all_scenarios.add(sid)
 
-    any_regression = False
     for sid in sorted(all_scenarios):
         row = f"{sid:<40} "
         for lbl in labels:
@@ -288,11 +287,18 @@ def _cmd_compare(args: argparse.Namespace) -> int:
                     selected_cell.get("trace") or {}, selected_cell.get("score") or {}
                 )
                 status = str(report_cell["verdict"])
-                if status == "FAIL":
-                    any_regression = True
                 row += f"{status:<17}"
         print(row)
 
+    # The first label is the baseline; a pre-existing baseline failure is not
+    # itself a regression. Fail only when a later label moves to a worse
+    # verdict, preserving PASS_WITH_VARIANCE ordering through compute_diff().
+    baseline = labels[0]
+    any_regression = any(
+        item["direction"] == "regression"
+        for candidate in labels[1:]
+        for item in compute_diff(runs_dir, baseline, candidate)
+    )
     return 1 if any_regression else 0
 
 
@@ -340,8 +346,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
     hooks = _resolve_hooks(getattr(args, "hook", None))
     sweep_timestamp = _sweep_artifact_timestamp()
 
-    # Build runtime
-    runtime = _build_runtime(runtime_name, label, soul_path=args.soul)
+    # Resolve once for the entire invocation: stateful plugins must receive
+    # build() and pre_run() on the same object.
+    plugin = _resolve_runtime_plugin(runtime_name)
+    runtime = _build_runtime(runtime_name, label, soul_path=args.soul, _plugin=plugin)
 
     # Discover scenario packs (built-ins + the "windtunnel.scenario_packs"
     # entry-point group). The pack is the unit that carries a dim's scenarios,
@@ -419,7 +427,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
     # (bench servers, container prep, workspace seeding) lives in the driver
     # package's plugin module. Plugins decide applicability themselves by
     # inspecting scenario tags, so the CLI never special-cases a platform.
-    plugin = _resolve_runtime_plugin(runtime_name)
     pre_run = getattr(plugin, "pre_run", None)
     if pre_run is not None:
         pre_run(runtime, scenarios, runtime_name)
@@ -473,16 +480,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     for selected_entry in selected:
         scenario = selected_entry.scenario
-        # Wire the MCPServer for this scenario based on its dim tag — but ONLY
-        # for plugin runtimes, which provision the mock into the real platform
-        # MCP (e.g. acme via its runs API, acme_gateway via the gateway
-        # path). The built-in in_memory runtime is scripted — it IGNORES mcps,
-        # and starting an unused FastMCP subprocess can fail on a local dep/
-        # port conflict before the run even reaches its real target. So don't
-        # build the mock for it.
+        # Wire the MCPServer only when the runtime can mount runner-managed
+        # handles. Contract C, in_memory, and terminal-only runtimes own their
+        # tool surfaces; an unused mock would create misleading empty evidence.
         scenario_mcps = None
         scenario_probe = None
-        if runtime_name != "in_memory":
+        if getattr(runtime, "accepts_runner_managed_mcps", True):
             for tag in getattr(scenario, "tags", []):
                 if tag in mcp_registry:
                     factory = mcp_registry[tag]
@@ -490,16 +493,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     # which injects MOCK_MCP_FAILURE_MODE per scenario) can specialize.
                     scenario_mcps = [factory(scenario)]
                     break
-            # External-state probe, same dim-tag dispatch as the mock. Factories
-            # are read per scenario (not snapshotted into a registry above)
-            # because pre_run() may have set them after pack discovery. The
-            # factory itself may return None for scenarios it doesn't observe.
-            for pack in packs:
-                if pack.state_probe_factory is None:
-                    continue
-                if f"dim:{pack.name}" in getattr(scenario, "tags", []):
-                    scenario_probe = pack.state_probe_factory(scenario)
-                    break
+
+        # External-state probes are independent of MCP mounting. Factories are
+        # read per scenario (not snapshotted above) because pre_run() may have
+        # set them after pack discovery.
+        for pack in packs:
+            if pack.state_probe_factory is None:
+                continue
+            if f"dim:{pack.name}" in getattr(scenario, "tags", []):
+                scenario_probe = pack.state_probe_factory(scenario)
+                break
 
         transport_only = any(t in transport_only_dims for t in getattr(scenario, "tags", []))
 
@@ -859,10 +862,6 @@ def _cmd_triage(args: argparse.Namespace) -> int:
         from windtunnel.triage.rule_based import RuleBasedClassifier  # noqa: PLC0415
 
         clf: FailureClassifier = RuleBasedClassifier()
-    elif classifier_name == "llm_judge":
-        from windtunnel.triage.llm_judge import LLMJudgeClassifier  # noqa: PLC0415
-
-        clf = LLMJudgeClassifier()
     else:
         print(f"wt triage: unknown classifier {classifier_name!r}", file=sys.stderr)
         return 2
@@ -1417,7 +1416,7 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs="+",
         metavar="LABEL",
         default=[],
-        help="Variant labels to compare (space-separated).",
+        help="Variant labels to compare (space-separated); the first label is the baseline.",
     )
     compare_p.add_argument(
         "--runs",
@@ -1515,7 +1514,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--runs",
         dest="n_runs",
-        type=int,
+        type=_positive_int,
         default=1,
         metavar="N",
         help="Number of runs per scenario (default: 1).",
@@ -1779,9 +1778,8 @@ def _build_parser() -> argparse.ArgumentParser:
     triage_p.add_argument(
         "--classifier",
         default="rule_based",
-        choices=["rule_based", "llm_judge"],
-        help="Classifier to use: rule_based (default, deterministic) or "
-        "llm_judge (stub — raises NotImplementedError until implemented).",
+        choices=["rule_based"],
+        help="Classifier to use (default: rule_based, deterministic).",
     )
 
     # ── skill ────────────────────────────────────────────────────────────────
@@ -1811,6 +1809,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def _positive_int(raw: str) -> int:
+    """Parse an integer CLI argument that must be greater than zero."""
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {raw!r}") from exc
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
 
 
 def main(argv: list[str] | None = None) -> int:

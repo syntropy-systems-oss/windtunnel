@@ -90,6 +90,16 @@ class SamplingConfig:
     tool_choice: str | None = None
     max_tokens: int | None = None
 
+    def __post_init__(self) -> None:
+        if self.temperature is not None and not 0.0 <= self.temperature <= 2.0:
+            raise ValueError("temperature must be between 0.0 and 2.0")
+        if self.top_p is not None and not 0.0 < self.top_p <= 1.0:
+            raise ValueError("top_p must be greater than 0.0 and at most 1.0")
+        if self.tool_choice is not None and not self.tool_choice.strip():
+            raise ValueError("tool_choice must not be empty")
+        if self.max_tokens is not None and self.max_tokens < 1:
+            raise ValueError("max_tokens must be at least 1")
+
 
 @dataclass
 class MCPSpec:
@@ -289,12 +299,30 @@ class AgentRuntime(Protocol):
         mcps: list of ALREADY-STARTED MCPHandle objects (started by the
             runner before calling provision). Runtimes that need to register
             upstream MCP servers (e.g. a platform runtime) use these handles'
-            .url to perform registration. Runtimes that don't care about MCP
-            registration (RawDockerRuntime, InMemoryRuntime) accept and ignore
-            this parameter — their agent config points directly at the mcp url.
+            .url to perform registration. Runtimes that cannot mount these
+            handles expose the optional RunnerMCPConfigurableRuntime capability
+            with accepts_runner_managed_mcps=False; the CLI will not construct
+            scenario-pack MCPs for them. Direct run_scenario callers retain
+            explicit control over the MCP servers they pass.
 
         Returns an AgentHandle ready to accept send() calls.
         Raises RuntimeError if provisioning fails (container won't start,
         SSH unreachable, etc.) — caller should propagate, not swallow.
         """
+        ...
+
+
+@runtime_checkable
+class RunnerMCPConfigurableRuntime(Protocol):
+    """Optional AgentRuntime capability for runner-managed MCP mounting.
+
+    The runner assumes compatibility when this capability is absent, which
+    preserves existing third-party runtimes. Implement it and return ``False``
+    when the agent owns its tool surface and cannot mount MCP handles started
+    by Wind Tunnel (for example Contract C and terminal-only runtimes).
+    """
+
+    @property
+    def accepts_runner_managed_mcps(self) -> bool:
+        """Whether Wind Tunnel should start and pass scenario-pack MCPs."""
         ...

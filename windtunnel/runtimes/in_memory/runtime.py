@@ -150,3 +150,4 @@ class InMemoryRuntime:
         handle = _InMemoryHandle(self._responses, surface=self._surface)
         self.provisions.append((config, handle))
         return handle
+    accepts_runner_managed_mcps = False

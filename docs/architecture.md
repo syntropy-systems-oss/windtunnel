@@ -141,9 +141,9 @@ on borrowed time).
 otherwise `FAIL` — unless the scenario sets `variance_allowed=True`
 (for sampler-sensitivity work), which yields `PASS_WITH_VARIANCE` with
 `pass_rate ± stddev`. Every scenario carries a `FailureCost`
-(severity / customer_visible / reversible / side_effect_performed) so
-weighted views can make one critical, irreversible regression outweigh ten
-cheap ones.
+(severity / customer_visible / reversible / side_effect_performed) for reports
+and downstream policy. The built-in 0.8 aggregate records this annotation but
+does not use it to change the verdict.
 
 ## 4. Trajectory truth: the MCP call log
 
@@ -175,7 +175,7 @@ corruption lands:
   wrong prior tool call, a truncated pagination, a stale memory line. The
   model either resists the poison or succumbs — the eval is real either way.
 - **Environment-shaping** (mock failure modes via
-  `MCPHandle.configure_failure_mode()`) — the tool server misbehaves live:
+  `FailureInjectableMCPHandle.configure_failure_mode()`) — the tool server misbehaves live:
   malformed JSON, timeout, unexpectedly empty result.
 
 Every perturbation declares a `marker`; the runner ensures it lands in the
@@ -223,7 +223,9 @@ The `wt` CLI is the packaged workflow surface:
 - `wt validate` validates and lints Contract A envelopes.
 - `wt triage` classifies saved failures against the
   [failure taxonomy](failure-taxonomy.md). The shipped classifier is
-  rule-based; `llm_judge` is a stub registration point in 0.5.0.
+  rule-based. An LLM-backed classifier can implement the same protocol; the
+  repository's `LLMJudgeClassifier` remains an unregistered implementation
+  sketch rather than a selectable CLI feature.
 
 See [CLI reference](cli-reference.md) for options and exit codes.
 

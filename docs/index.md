@@ -70,7 +70,7 @@ See the [CLI reference](cli-reference.md) for options and exit codes.
 - **[Writing a runtime](writing-a-runtime.md)** — wire Wind Tunnel to your agent platform (four small methods).
 - **[Importing a trace](importing-a-trace.md)** — turn a Contract A trace into an authored regression test.
 - **[Recording a universe](recording-a-universe.md)** — serve recorded tool calls as a hermetic mock upstream.
-- **[CLI reference](cli-reference.md)** — all eight `wt` commands in Wind Tunnel 0.5.0.
+- **[CLI reference](cli-reference.md)** — every shipped `wt` command and option.
 - **[Architecture](architecture.md)** — the API/SPI split and the four-layer scoring model.
 - **[Failure taxonomy](failure-taxonomy.md)** — what the triage classifier can tell you.
 - **[Agent quickstart](agent-quickstart.md)** — using a coding agent? Point it at this one page.

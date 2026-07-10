@@ -4,9 +4,9 @@ A score is a tuple, not a single number. Each layer is independently
 pass/fail with a diagnostic detail string. A scenario can pass outcome
 and fail trajectory and that distinction is visible in reports.
 
-FailureCost is authored per-scenario and attached to Score for weighted
-aggregation — a single critical/customer_visible/irreversible regression
-outweighs ten low/internal/reversible ones.
+FailureCost is authored per-scenario and attached to Score as reporting and
+downstream-policy metadata. The built-in 0.8 aggregate records it but does not
+change the verdict based on its values.
 
 Design:
 - Pure dataclasses, stdlib only.
@@ -42,11 +42,14 @@ class LayerResult:
 
 @dataclass
 class FailureCost:
-    """Per-scenario cost annotation for weighted aggregation.
+    """Per-scenario cost annotation for reporting and downstream policy.
 
     Defaults to the safest/cheapest profile: low severity, internal,
     reversible, no side effect performed. Scenarios that can cause
     irreversible customer-visible damage must override these.
+
+    Wind Tunnel 0.8 records this metadata but does not use it to change the
+    built-in aggregate verdict.
     """
     severity: SeverityLevel = "low"
     customer_visible: bool = False
@@ -59,8 +62,8 @@ class Score:
     """Four-layer score for one scenario run.
 
     Each layer is independently evaluated and independently pass/fail.
-    The failure_cost is attached here so the aggregate report can weight
-    regressions appropriately.
+    The failure_cost is attached for reports and downstream gate policies; it
+    does not alter the built-in outcome-only aggregate verdict in 0.8.
     """
     outcome: LayerResult
     trajectory: LayerResult

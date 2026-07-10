@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/getting-started.md at ed831723fa98 — do not edit; edit docs/getting-started.md. -->
+<!-- GENERATED from docs/getting-started.md at f4062a75d38b — do not edit; edit docs/getting-started.md. -->
 ---
 description: "Step-by-step guide to install Wind Tunnel, run and report scenarios, gate CI, and triage failures."
 ---
@@ -162,7 +162,7 @@ emits the report's own data as a standalone artifact.
 
 ## 6. Know the rest of the CLI
 
-Wind Tunnel 0.5.0 ships eight `wt` subcommands:
+Wind Tunnel ships the following `wt` commands:
 
 | Command | What it does |
 |---|---|
@@ -221,8 +221,8 @@ Each failed run is classified against the
 [failure taxonomy](failure-taxonomy.md) (wrong tool, guessed instead of
 clarified, fabricated after silent tool failure, ...) with a confidence and a
 fix vector. See [writing-a-classifier.md](writing-a-classifier.md) to add
-your own rules. The `llm_judge` classifier name is reserved in the CLI but is
-still a shipped stub that raises `NotImplementedError`.
+your own rules. An LLM-backed classifier can implement the same protocol; the
+repository's implementation sketch is not registered as a CLI choice.
 
 ## Next steps
 

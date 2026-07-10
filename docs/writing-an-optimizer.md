@@ -7,7 +7,7 @@ Wind Tunnel optimizers implement the `Optimizer` Protocol defined in
 `windtunnel/triage/optimizer.py`. Any object with `propose_fix()` and
 `apply_fix()` methods satisfies the Protocol.
 
-Wind Tunnel 0.5.0 ships the Protocol and dataclasses only. The built-in
+Wind Tunnel ships the Protocol and dataclasses only. The built-in
 `GEPAOptimizer` is a stub whose methods raise `NotImplementedError`, and there
 is no shipped optimizer CLI loop. Treat the GEPA and TextGrad sections below as
 design sketches for downstream implementations, not runnable functionality.
@@ -131,7 +131,7 @@ TextGrad (arXiv 2406.07496) treats prompt text as optimizable variables.
 The "gradient" is a textual critique of the current prompt. The optimizer
 applies the gradient update to the prompt variable (SOUL.md, tool description).
 
-This is not implemented in Wind Tunnel 0.5.0. A downstream implementation
+This is not implemented in Wind Tunnel. A downstream implementation
 would use the same Protocol with a different `propose_fix()` implementation:
 - Use TextGrad's `Variable` and `TextLoss` abstractions.
 - The `FailureClassification.evidence` list drives the `TextLoss`.

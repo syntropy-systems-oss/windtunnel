@@ -14,7 +14,8 @@ The intended consumer is the GEPA-style optimization loop:
                                            ↓
                            re-run scenario → see if regression resolves
 
-The CLASSIFIER side is this module + rule_based.py (baseline) + llm_judge.py (stub).
+The CLASSIFIER side is this module + rule_based.py (baseline) + an unregistered
+llm_judge.py implementation sketch.
 The OPTIMIZER side is optimizer.py (stub contracts for GEPA/TextGrad).
 
 See windtunnel/docs/writing-a-classifier.md to implement a custom classifier.
@@ -117,7 +118,7 @@ class FailureClassifier(Protocol):
 
     Built-in implementations:
         RuleBasedClassifier  (windtunnel/triage/rule_based.py) — deterministic rules
-        LLMJudgeClassifier   (windtunnel/triage/llm_judge.py)  — stub for LLM-based
+        LLMJudgeClassifier   (windtunnel/triage/llm_judge.py)  — unregistered sketch
 
     Custom implementations:
         See windtunnel/docs/writing-a-classifier.md for the full extension contract.

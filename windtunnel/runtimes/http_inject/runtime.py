@@ -396,6 +396,8 @@ class _HttpInjectHandle:
 class HttpInjectRuntime:
     """Contract C AgentRuntime backed by the built-in HTTP inject wire."""
 
+    accepts_runner_managed_mcps = False
+
     def __init__(self, base_url: str | None = None, timeout_s: float | None = None) -> None:
         self._base_url = (base_url or os.environ.get("WT_INJECT_URL") or DEFAULT_BASE_URL).rstrip("/")
         self._timeout_s = _resolve_timeout(timeout_s)

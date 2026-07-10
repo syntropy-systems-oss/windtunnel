@@ -10,7 +10,7 @@ deploy it.
 
 ```python
 from windtunnel.api import Scenario, run_scenario
-from windtunnel.mcp.fastmcp.server import LoggingFastMCP, FastMCPServer
+from windtunnel.mcp.fastmcp import FastMCPServer, LoggingFastMCP
 
 crm = LoggingFastMCP("crm")                          # the scenario brings its own tools
 
@@ -60,8 +60,9 @@ reports, so you can see *how* something passed, not just that it did.
 
 A batch of N runs aggregates to a verdict: `PASS` only if **all** N runs
 pass (or `PASS_WITH_VARIANCE` for scenarios that explicitly allow sampler
-variance). Every scenario carries a `FailureCost` (severity, customer-visible,
-reversible) so one critical regression outweighs ten cheap ones.
+variance). Every scenario carries a `FailureCost` annotation (severity,
+customer-visible, reversible) for reports and downstream policy; in 0.8 it
+does not change the built-in aggregate verdict.
 
 How is this different from Inspect, promptfoo, or a hand-rolled pytest
 harness? The founding bet: **agent reliability bugs live in the seams** —
@@ -217,7 +218,7 @@ dotted path.
 ## Documentation
 
 - [Getting started](docs/getting-started.md) — install, first scenario, first report
-- [CLI reference](docs/cli-reference.md) — all eight `wt` subcommands in v0.5.0
+- [CLI reference](docs/cli-reference.md) — every shipped `wt` command and option
 - [Architecture](docs/architecture.md) — the two-surface design and the four-layer scoring model
 - [Writing a scenario](docs/writing-a-scenario.md) — the `Scenario` schema, field by field
 - [Writing a runtime](docs/writing-a-runtime.md) — implement the SPI for your platform

@@ -612,6 +612,8 @@ class _HarborSymbols:
 class TerminusRuntime:
     """AgentRuntime backed by Harbor's Terminus-2 terminal agent."""
 
+    accepts_runner_managed_mcps = False
+
     def __init__(self, config: TerminusRuntimeConfig | None = None) -> None:
         self.config = config or TerminusRuntimeConfig.from_env()
         self._harbor = _load_harbor_symbols()

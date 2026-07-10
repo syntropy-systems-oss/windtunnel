@@ -13,6 +13,8 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 
+import pytest
+
 from windtunnel.spi.agent_runtime import (
     AgentConfig,
     AgentHandle,
@@ -21,12 +23,16 @@ from windtunnel.spi.agent_runtime import (
     Message,
     ModelSpec,
     Response,
+    RunnerMCPConfigurableRuntime,
     SamplingConfig,
+    SurfaceIntrospectableAgentHandle,
 )
 from windtunnel.spi.mcp_server import (
+    FailureInjectableMCPHandle,
     MCPCall,
     MCPHandle,
     MCPServer,
+    ToolDefinitionIntrospectableMCPHandle,
     ToolIntrospectableMCPHandle,
 )
 
@@ -100,6 +106,25 @@ class TestSamplingConfig:
         assert s.top_p == 1.0
         assert s.tool_choice == "auto"
         assert s.max_tokens == 2048
+
+    @pytest.mark.parametrize("temperature", [-0.1, 2.1])
+    def test_temperature_range_is_enforced(self, temperature: float) -> None:
+        with pytest.raises(ValueError, match="temperature"):
+            SamplingConfig(temperature=temperature)
+
+    @pytest.mark.parametrize("top_p", [0.0, -0.1, 1.1])
+    def test_top_p_range_is_enforced(self, top_p: float) -> None:
+        with pytest.raises(ValueError, match="top_p"):
+            SamplingConfig(top_p=top_p)
+
+    @pytest.mark.parametrize("max_tokens", [0, -1])
+    def test_token_budget_must_be_positive(self, max_tokens: int) -> None:
+        with pytest.raises(ValueError, match="max_tokens"):
+            SamplingConfig(max_tokens=max_tokens)
+
+    def test_tool_choice_must_not_be_blank(self) -> None:
+        with pytest.raises(ValueError, match="tool_choice"):
+            SamplingConfig(tool_choice="  ")
 
 
 class TestMCPSpec:
@@ -241,6 +266,20 @@ class _ConcreteToolIntrospectableMCPHandle(_ConcreteMCPHandle):
         return ["client_lookup"]
 
 
+class _MinimalMCPHandle:
+    """Minimal evidence handle without specialized failure injection."""
+
+    @property
+    def url(self) -> str:
+        return "http://localhost:8080/mcp"
+
+    def call_log(self) -> list[MCPCall]:
+        return []
+
+    def reset_call_log(self) -> None:
+        pass
+
+
 class _ConcreteMCPServer:
     """Minimal concrete MCPServer."""
 
@@ -255,6 +294,23 @@ class TestMCPServerProtocol:
     def test_concrete_handle_satisfies_protocol(self) -> None:
         handle = _ConcreteMCPHandle()
         assert isinstance(handle, MCPHandle)
+        assert isinstance(handle, FailureInjectableMCPHandle)
+
+    def test_failure_injection_is_not_required_by_minimal_handle(self) -> None:
+        handle = _MinimalMCPHandle()
+        assert isinstance(handle, MCPHandle)
+        assert not isinstance(handle, FailureInjectableMCPHandle)
+
+    def test_optional_protocols_are_exported_from_spi_root(self) -> None:
+        from windtunnel import spi
+
+        assert spi.RunnerMCPConfigurableRuntime is RunnerMCPConfigurableRuntime
+        assert spi.SurfaceIntrospectableAgentHandle is SurfaceIntrospectableAgentHandle
+        assert (
+            spi.ToolDefinitionIntrospectableMCPHandle
+            is ToolDefinitionIntrospectableMCPHandle
+        )
+        assert spi.FailureInjectableMCPHandle is FailureInjectableMCPHandle
 
     def test_served_tools_is_optional_on_mcp_handle(self) -> None:
         handle = _ConcreteMCPHandle()

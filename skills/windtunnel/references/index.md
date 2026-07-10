@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/index.md at af7035031d4f — do not edit; edit docs/index.md. -->
+<!-- GENERATED from docs/index.md at 2cedb6fa2d49 — do not edit; edit docs/index.md. -->
 ---
 description: "Overview of Wind Tunnel's four-layer agent reliability bench, import workflow, CLI, and starting points."
 ---
@@ -71,7 +71,7 @@ See the [CLI reference](cli-reference.md) for options and exit codes.
 - **[Writing a runtime](writing-a-runtime.md)** — wire Wind Tunnel to your agent platform (four small methods).
 - **[Importing a trace](importing-a-trace.md)** — turn a Contract A trace into an authored regression test.
 - **[Recording a universe](recording-a-universe.md)** — serve recorded tool calls as a hermetic mock upstream.
-- **[CLI reference](cli-reference.md)** — all eight `wt` commands in Wind Tunnel 0.5.0.
+- **[CLI reference](cli-reference.md)** — every shipped `wt` command and option.
 - **[Architecture](architecture.md)** — the API/SPI split and the four-layer scoring model.
 - **[Failure taxonomy](failure-taxonomy.md)** — what the triage classifier can tell you.
 - **[Agent quickstart](agent-quickstart.md)** — using a coding agent? Point it at this one page.

@@ -27,7 +27,8 @@ Lifecycle (one `wt run` invocation):
     plugin.pre_run(runtime, scenarios, runtime_name)   # optional hook
     ... run loop ...
 
-pre_run() is where platform-specific BENCH PREP lives — the glue that used to
+The same plugin instance is retained for both calls. pre_run() is where
+platform-specific BENCH PREP lives — the glue that used to
 be hardcoded in cli.py: container env propagation, fake-server wiring,
 workspace seeding, readiness-probe specialization. It is called exactly once,
 after build() and scenario loading and before any scenario executes. Plugins

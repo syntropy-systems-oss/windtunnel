@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/writing-a-scenario.md at 20eb25a75810 — do not edit; edit docs/writing-a-scenario.md. -->
+<!-- GENERATED from docs/writing-a-scenario.md at 8c51742b5620 — do not edit; edit docs/writing-a-scenario.md. -->
 ---
 description: "Reference for authoring backend-agnostic Scenario objects, scoring fields, perturbations, dimensions, and scenario packs."
 ---
@@ -309,7 +309,7 @@ passed directly as `run_scenario(..., state_probe=probe)`.
 ### Metadata
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `failure_cost` | `FailureCost` | safest profile | `severity`/`customer_visible`/`reversible`/`side_effect_performed` — for weighted aggregation. |
+| `failure_cost` | `FailureCost` | safest profile | `severity`/`customer_visible`/`reversible`/`side_effect_performed` metadata for reports and downstream policy; it does not alter the built-in 0.8 verdict. |
 | `variance_allowed` | `bool` | `False` | If `True`, the deploy gate accepts sub-100% and reports `pass_rate ± stddev` (sampler-sensitivity dim). |
 | `tags` | `list[str]` | `[]` | Convention: `"dim:<name>"` groups regressions by dimension. |
 
