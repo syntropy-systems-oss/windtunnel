@@ -601,6 +601,40 @@ class TestDiffView:
         assert len(improvements) == 1
         assert improvements[0]["scenario_id"] == "sc_gamma"
 
+    def test_variance_verdict_is_ranked_between_fail_and_pass(self, tmp_path: Path):
+        runs_dir = tmp_path / "runs"
+        failed = _make_trace(scenario_id="variable", variant_id="baseline")
+        variable = _make_trace(scenario_id="variable", variant_id="candidate")
+        _write_run(tmp_path, failed, _make_score(outcome_pass=False), base_runs=runs_dir)
+        _write_run(tmp_path, variable, _make_score(outcome_pass=True), base_runs=runs_dir)
+
+        records = [
+            {
+                "scenario_id": "variable",
+                "label": "baseline",
+                "verdict": "FAIL",
+                "layer_pass_rates": {"outcome": 0.0},
+                "run_ids": [failed.run_id],
+            },
+            {
+                "scenario_id": "variable",
+                "label": "candidate",
+                "verdict": "PASS_WITH_VARIANCE",
+                "layer_pass_rates": {"outcome": 0.5},
+                "run_ids": [variable.run_id],
+            },
+        ]
+        (runs_dir / "ledger.ndjsonl").write_text(
+            "\n".join(json.dumps(record) for record in records) + "\n",
+            encoding="utf-8",
+        )
+
+        forward = self._get_diff(tmp_path, runs_dir, "baseline", "candidate")
+        reverse = self._get_diff(tmp_path, runs_dir, "candidate", "baseline")
+
+        assert forward[0]["direction"] == "improvement"
+        assert reverse[0]["direction"] == "regression"
+
     def test_diff_no_change_excluded(self, tmp_path: Path):
         """sc_alpha is PASS→PASS — it must NOT appear in the diff."""
         runs_dir, label_a, label_b = self._build_regression_runs(tmp_path)
@@ -917,3 +951,84 @@ class TestLoadRuns:
         report = _import_report()
         cells = report.load_runs(runs_dir=runs_dir)
         assert cells == {}
+
+    def test_ledger_aggregate_overrides_latest_run_verdict(self, tmp_path: Path) -> None:
+        """Regression: a failed 1/2 batch must not look green merely because
+        its chronologically latest individual run passed."""
+        runs_dir = tmp_path / "runs"
+        failed = _make_trace(
+            scenario_id="aggregate_case",
+            variant_id="candidate",
+            started_at=_ts("2026-05-27T12:00:00+00:00"),
+        )
+        passed = _make_trace(
+            scenario_id="aggregate_case",
+            variant_id="candidate",
+            started_at=_ts("2026-05-27T13:00:00+00:00"),
+        )
+        _write_run(
+            tmp_path,
+            failed,
+            _make_score(outcome_pass=False),
+            base_runs=runs_dir,
+        )
+        _write_run(
+            tmp_path,
+            passed,
+            _make_score(outcome_pass=True),
+            base_runs=runs_dir,
+        )
+        ledger = {
+            "ts": "2026-05-27T13:00:01Z",
+            "scenario_id": "aggregate_case",
+            "label": "candidate",
+            "verdict": "FAIL",
+            "runs": 2,
+            "layer_pass_rates": {
+                "outcome": 0.5,
+                "trajectory": 1.0,
+                "constraint": 1.0,
+                "robustness": 1.0,
+            },
+            "run_ids": [failed.run_id, passed.run_id],
+        }
+        (runs_dir / "ledger.ndjsonl").write_text(
+            json.dumps(ledger) + "\n",
+            encoding="utf-8",
+        )
+
+        report = _import_report()
+        loaded = report.load_runs(runs_dir)
+        raw = loaded[("aggregate_case", "candidate")]
+        cell = report._cell_from_run(raw["trace"], raw["score"])
+
+        assert raw["trace"]["run_id"] == passed.run_id
+        assert cell["verdict"] == "FAIL"
+        assert cell["layers"]["outcome"]["pass_rate"] == 0.5
+        assert cell["layers"]["outcome"]["passed"] is False
+
+    def test_stale_ledger_aggregate_does_not_override_unrelated_run(self, tmp_path: Path) -> None:
+        runs_dir = tmp_path / "runs"
+        passed = _make_trace(
+            scenario_id="aggregate_case",
+            variant_id="candidate",
+        )
+        _write_run(tmp_path, passed, _make_score(outcome_pass=True), base_runs=runs_dir)
+        stale = {
+            "scenario_id": "aggregate_case",
+            "label": "candidate",
+            "verdict": "FAIL",
+            "layer_pass_rates": {"outcome": 0.0},
+            "run_ids": ["pruned-run"],
+        }
+        (runs_dir / "ledger.ndjsonl").write_text(
+            json.dumps(stale) + "\n",
+            encoding="utf-8",
+        )
+
+        report = _import_report()
+        raw = report.load_runs(runs_dir)[("aggregate_case", "candidate")]
+        cell = report._cell_from_run(raw["trace"], raw["score"])
+
+        assert cell["verdict"] == "PASS"
+        assert cell["aggregate"] is None

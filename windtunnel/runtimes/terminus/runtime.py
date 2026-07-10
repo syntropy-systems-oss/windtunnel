@@ -47,7 +47,7 @@ import warnings
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from windtunnel.spi.agent_runtime import AgentConfig, AgentHandle, Message, Response
 
@@ -456,7 +456,7 @@ class _DockerWorkspaceEnvironment:
                 self._container_command(command),
             ]
         )
-        return await self._command_runner.run(args, timeout_sec=timeout_sec)
+        return cast(_ExecResult, await self._command_runner.run(args, timeout_sec=timeout_sec))
 
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
         host_target = self._host_path_for_container_path(target_path)
@@ -618,7 +618,7 @@ class TerminusRuntime:
         self._command_runner = _new_command_runner()
         self.provisions: list[tuple[AgentConfig, _TerminusHandle]] = []
 
-    def provision(self, config: AgentConfig, mcps: list | None = None) -> AgentHandle:  # type: ignore[override]
+    def provision(self, config: AgentConfig, mcps: list[Any] | None = None) -> AgentHandle:
         # mcps: ignored — Terminus-2 has one terminal tool, not mountable MCPs.
         del mcps
         if self.config.isolation == "host":
@@ -640,10 +640,15 @@ class TerminusRuntime:
         if self.config.isolation == "docker":
             handle.reset_state()
         self.provisions.append((config, handle))
-        return handle  # type: ignore[return-value]
+        return handle
 
 
 class _TerminusHandle:
+    # Terminus receives one coarse instruction per trial, not an OpenAI message
+    # history. Refuse history-shaped perturbations rather than scoring an unseen
+    # counterfactual and marking robustness green.
+    _windtunnel_consumes_full_history = False
+
     def __init__(
         self,
         *,
@@ -831,7 +836,10 @@ class _TerminusHandle:
             "-c",
             command,
         ]
-        result = _run_async(self._command_runner.run(args, timeout_sec=timeout_sec))
+        result = cast(
+            _ExecResult,
+            _run_async(self._command_runner.run(args, timeout_sec=timeout_sec)),
+        )
         if result.return_code != 0:
             raise RuntimeError(_command_failure("docker exec", result))
         return result

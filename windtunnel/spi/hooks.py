@@ -177,12 +177,14 @@ class HookContext:
         timeout_s = _converse_timeout_s()
         started = time.perf_counter()
         result_queue: queue.Queue[tuple[str, str | BaseException]] = queue.Queue(maxsize=1)
+        handle = self._handle
+        session_id = self._session_id
 
         def _worker() -> None:
             try:
-                response = self._handle.send(
+                response = handle.send(
                     [{"role": "user", "content": text}],
-                    self._session_id or "",
+                    session_id,
                 )
                 reply = self._reply_normalizer(response)
             except BaseException as exc:  # noqa: BLE001 - propagate through queue

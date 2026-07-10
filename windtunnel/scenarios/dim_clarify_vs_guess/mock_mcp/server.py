@@ -261,7 +261,10 @@ def ops_order_report(
     # Minimal stub — returns placeholder data. The clarify scenarios don't
     # test order values, only whether the model asked first.
     if not client:
-        inner = {"error": "client id required", "note": "Provide an exact client id."}
+        inner: dict[str, Any] = {
+            "error": "client id required",
+            "note": "Provide an exact client id.",
+        }
         return _envelope(inner)
     # Deterministic stub result
     inner = {

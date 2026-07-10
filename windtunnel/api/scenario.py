@@ -54,7 +54,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from windtunnel.api.preconditions import Precondition
 from windtunnel.api.score import FailureCost, LayerResult
@@ -154,7 +154,9 @@ class PreSendPerturbation(Perturbation):
     pre_send: ClassVar[bool] = True
 
     @abstractmethod
-    def shape_messages(self, messages: list[dict], scenario: Scenario) -> list[dict]:
+    def shape_messages(
+        self, messages: list[dict[str, Any]], scenario: Scenario
+    ) -> list[dict[str, Any]]:
         """Return a NEW messages list with the corrupted prior turns injected.
 
         messages: the accumulated OpenAI-format message list for the final

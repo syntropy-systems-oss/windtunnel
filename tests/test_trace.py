@@ -410,6 +410,16 @@ class TestStoragePath:
         p2 = storage_path(t2, base_dir=tmp_path)
         assert p1 != p2
 
+    def test_dot_dot_identity_component_cannot_escape_base_dir(self, tmp_path):
+        """Regression: a plugin-authored scenario id of '..' previously wrote
+        the trace outside the configured runs directory."""
+        trace = _make_trace(scenario_id="..")
+
+        path = storage_path(trace, base_dir=tmp_path)
+
+        assert path.resolve().is_relative_to(tmp_path.resolve())
+        assert ".." not in path.relative_to(tmp_path).parts
+
 
 # ─── 6. Replay ────────────────────────────────────────────────────────────────
 

@@ -27,6 +27,8 @@ Design notes:
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from windtunnel.api.scenario import Scenario
 from windtunnel.api.score import Score
 from windtunnel.api.trace import Trace
@@ -98,11 +100,17 @@ def _fix(category: str, **overrides: object) -> FixSuggestion | None:
     if entry is None:
         return None
     fix_vector, rationale = entry
+    target = overrides.get("target", {})
+    if not isinstance(target, dict):
+        target = {}
+    diff_text = overrides.get("diff_text")
+    if diff_text is not None and not isinstance(diff_text, str):
+        diff_text = str(diff_text)
     return FixSuggestion(
         fix_vector=str(overrides.get("fix_vector", fix_vector)),
-        target=dict(overrides.get("target", {})),  # type: ignore[arg-type]
+        target={str(key): value for key, value in target.items()},
         rationale=str(overrides.get("rationale", rationale)),
-        diff_text=overrides.get("diff_text", None) if "diff_text" in overrides else None,  # type: ignore[assignment]
+        diff_text=diff_text,
     )
 
 
@@ -609,7 +617,9 @@ def rule_policy_pressure_fail(
 # High-specificity rules (exact structural matches) come first.
 # Lower-specificity rules (dim-tag heuristics) come last before the fallback.
 
-RULES = [
+RuleFn = Callable[[Scenario, Trace, Score], FailureClassification | None]
+
+RULES: list[RuleFn] = [
     # Exact structural matches (confidence=1.0)
     rule_template_corruption,        # apply_chat_template raised → template_corruption
     rule_unsafe_executed,            # verdict_bucket:unsafe_* → side_effect_safety_violation
@@ -656,7 +666,7 @@ class RuleBasedClassifier:
     in the evidence list so downstream consumers don't crash.
     """
 
-    def __init__(self, rules: list | None = None) -> None:
+    def __init__(self, rules: list[RuleFn] | None = None) -> None:
         self._rules = rules if rules is not None else RULES
 
     def classify(

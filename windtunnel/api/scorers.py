@@ -28,6 +28,7 @@ import re
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from windtunnel.api._evidence import mcp_evidence_state
 from windtunnel.api.evaluators import _last_assistant_turn, _match_fact_group, _match_number_fact
 from windtunnel.api.replay import GenerateFn
 from windtunnel.api.scenario import NumberFact, Policy
@@ -209,6 +210,7 @@ def substantiated_by_tools(facts: Sequence[FactSpec] | None = None) -> ScorerFn:
     natural-language claim extraction.
     """
 
+    authored_facts: list[FactSpec] | None
     if isinstance(facts, (str, NumberFact)):
         authored_facts = [facts]
     elif facts is None:
@@ -421,7 +423,10 @@ def _last_assistant_content(turns: list[Turn]) -> str:
 
 def _tool_result_evidence(trace: Trace) -> tuple[str, list[Any]]:
     """Return provenance evidence with server-witnessed preference."""
-    if trace.mcp_calls:
+    state = mcp_evidence_state(trace.worker_warnings)
+    if state == "unavailable":
+        return "unavailable", []
+    if trace.mcp_calls or state == "available":
         return (
             "server-witnessed",
             [call["result"] for call in trace.mcp_calls if "result" in call],

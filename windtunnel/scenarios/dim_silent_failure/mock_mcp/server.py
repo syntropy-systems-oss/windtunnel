@@ -63,7 +63,7 @@ from mcp.server.fastmcp import FastMCP
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import synthetic_db  # type: ignore[import-not-found]
-from synthetic_db import (  # type: ignore[import-not-found]
+from synthetic_db import (
     PRODUCTS,
     VALID_STAGES,
     find_clients,
@@ -90,7 +90,7 @@ def _maybe_inject_failure(tool_name: str) -> str | None:
             f"[mock-mcp-silent-failure] INJECTING malformed_json for {tool_name}",
             flush=True,
         )
-        return get_malformed_response()
+        return str(get_malformed_response())
 
     if mode == "timeout":
         delay = synthetic_db.timeout_seconds

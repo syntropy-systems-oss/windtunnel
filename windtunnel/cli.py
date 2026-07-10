@@ -29,10 +29,29 @@ import json
 import shutil
 import sys
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
+from typing import Any, Protocol, cast
+
+from windtunnel.api.pack import ScenarioPack
+from windtunnel.api.runner import ScenarioResult
+from windtunnel.api.scenario import Scenario
+from windtunnel.api.score import Score
+from windtunnel.api.trace import Trace
+from windtunnel.spi.agent_runtime import AgentConfig, AgentRuntime
+from windtunnel.spi.hooks import HookArtifact
+from windtunnel.triage.classifier import FailureClassification, FailureClassifier
+
+
+class _RuntimePluginLike(Protocol):
+    """The required portion of RuntimePlugin; ``pre_run`` remains optional."""
+
+    def build(
+        self, runtime_name: str, label: str, soul_path: str | None
+    ) -> AgentRuntime: ...
 
 
 @dataclass(frozen=True)
@@ -44,8 +63,8 @@ class _SelectedScenario:
     helper flattened everything into a bare Scenario list.
     """
 
-    pack: object
-    scenario: object
+    pack: ScenarioPack
+    scenario: Scenario
 
 
 @dataclass(frozen=True)
@@ -75,9 +94,9 @@ class _CompletedAggregate:
     plus the transport-only/runner-error context directly.
     """
 
-    pack: object
-    scenario: object
-    result: object
+    pack: ScenarioPack
+    scenario: Scenario
+    result: ScenarioResult
     transport_only: bool
     had_runner_error: bool
 
@@ -120,7 +139,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     Loads traces for each label from the runs/ dir and prints a diff table.
     Labels correspond to variant_id values in stored traces.
     """
-    from windtunnel.report import load_runs  # noqa: PLC0415
+    from windtunnel.report import _cell_from_run, load_runs  # noqa: PLC0415
 
     runs_dir = Path(args.runs)
     labels: list[str] = args.labels
@@ -135,7 +154,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         return 1
 
     # Group by label (variant_id)
-    by_label: dict[str, list[tuple[str, dict]]] = {lbl: [] for lbl in labels}
+    by_label: dict[str, list[tuple[str, dict[str, Any]]]] = {lbl: [] for lbl in labels}
     for (scenario_id, variant_id), cell in all_runs.items():
         if variant_id in by_label:
             by_label[variant_id].append((scenario_id, cell))
@@ -155,15 +174,15 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         row = f"{sid:<40} "
         for lbl in labels:
             cell_map = dict(by_label[lbl])
-            cell = cell_map.get(sid)
-            if cell is None:
+            selected_cell = cell_map.get(sid)
+            if selected_cell is None:
                 row += f"{'N/A':<17}"
             else:
-                score = cell.get("score") or {}
-                outcome = score.get("outcome", {})
-                passed = outcome.get("passed", False)
-                status = "PASS" if passed else "FAIL"
-                if not passed:
+                report_cell = _cell_from_run(
+                    selected_cell.get("trace") or {}, selected_cell.get("score") or {}
+                )
+                status = str(report_cell["verdict"])
+                if status == "FAIL":
                     any_regression = True
                 row += f"{status:<17}"
         print(row)
@@ -173,7 +192,13 @@ def _cmd_compare(args: argparse.Namespace) -> int:
 
 # ─── run ─────────────────────────────────────────────────────────────────────
 
-def _write_score_sidecar(trace_path: Path, score, scenario, *, origin: dict | None = None) -> Path:
+def _write_score_sidecar(
+    trace_path: Path,
+    score: Score,
+    scenario: Scenario,
+    *,
+    origin: dict[str, Any] | None = None,
+) -> Path:
     """Write the `.score.json` sidecar next to a saved trace.
 
     The sidecar is the union of BOTH consumer shapes, so one file feeds all
@@ -211,7 +236,7 @@ def _write_score_sidecar(trace_path: Path, score, scenario, *, origin: dict | No
     return score_path
 
 
-def _write_hook_artifact_sidecar(trace_path: Path, artifact) -> Path:
+def _write_hook_artifact_sidecar(trace_path: Path, artifact: HookArtifact) -> Path:
     """Write one run-scoped hook artifact beside its trace."""
     suffix = f".{_artifact_component(artifact.hook_name)}"
     if artifact.label:
@@ -225,7 +250,9 @@ def _write_hook_artifact_sidecar(trace_path: Path, artifact) -> Path:
     return artifact_path
 
 
-def _write_pack_hook_artifact(runs_dir: Path, sweep_timestamp: str, artifact) -> Path:
+def _write_pack_hook_artifact(
+    runs_dir: Path, sweep_timestamp: str, artifact: HookArtifact
+) -> Path:
     """Write one pack-scoped hook artifact at the runs directory root."""
     return _write_sweep_hook_artifact(runs_dir, sweep_timestamp, artifact)
 
@@ -233,7 +260,7 @@ def _write_pack_hook_artifact(runs_dir: Path, sweep_timestamp: str, artifact) ->
 def _write_scenario_hook_artifact(
     runs_dir: Path,
     sweep_timestamp: str,
-    artifact,
+    artifact: HookArtifact,
     scenario_id: str,
 ) -> Path:
     """Write one scenario-scoped hook artifact at the runs directory root."""
@@ -248,7 +275,7 @@ def _write_scenario_hook_artifact(
 def _write_sweep_hook_artifact(
     runs_dir: Path,
     sweep_timestamp: str,
-    artifact,
+    artifact: HookArtifact,
     *,
     scenario_id: str | None = None,
 ) -> Path:
@@ -352,13 +379,13 @@ def _wt_version() -> str:
 
 def _ledger_record(
     *,
-    scenario,
-    pack,
-    result,
+    scenario: Scenario,
+    pack: ScenarioPack,
+    result: ScenarioResult,
     label: str,
     git_sha: str | None,
     wt_version: str,
-) -> dict:
+) -> dict[str, Any]:
     """Build one ledger row for a scenario aggregate.
 
     The ledger is intentionally mechanism-only: the CLI records aggregate facts
@@ -391,7 +418,7 @@ def _ledger_record(
     }
 
 
-def _append_ledger_records(runs_dir: Path, records: list[dict]) -> None:
+def _append_ledger_records(runs_dir: Path, records: list[dict[str, Any]]) -> None:
     """Append scenario-aggregate rows to <runs-dir>/ledger.ndjsonl.
 
     Ledger writes are a CLI side effect, never a run gate. Any filesystem
@@ -689,7 +716,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             had_runner_error=had_runner_error,
         ))
 
-        status = "PASS" if agg.verdict == "PASS" else "FAIL"
+        status = agg.verdict
         if had_runner_error:
             note = "  ✗ EXECUTION ERROR (runner_error in trace — counts as a real failure)"
         elif transport_only:
@@ -709,7 +736,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return _finish(1 if any_fail else 0)
 
 
-def _discover_scenario_packs(extra_sources: list[str] | None = None) -> list:
+def _discover_scenario_packs(
+    extra_sources: list[str] | None = None,
+) -> list[ScenarioPack]:
     """Return all ScenarioPacks: built-ins, entry points, then local sources.
 
     The scenario-side mirror of _resolve_runtime_plugin:
@@ -735,7 +764,7 @@ def _discover_scenario_packs(extra_sources: list[str] | None = None) -> list:
 
     from windtunnel.scenarios import builtin_packs  # noqa: PLC0415
 
-    packs: list = list(builtin_packs())
+    packs: list[ScenarioPack] = list(builtin_packs())
     for ep in entry_points(group="windtunnel.scenario_packs"):
         try:
             obj = ep.load()
@@ -751,7 +780,7 @@ def _discover_scenario_packs(extra_sources: list[str] | None = None) -> list:
     return packs
 
 
-def _coerce_scenario_pack(obj: object, label: str, value: str) -> object:
+def _coerce_scenario_pack(obj: object, label: str, value: str) -> ScenarioPack:
     from windtunnel.api.pack import ScenarioPack  # noqa: PLC0415
 
     if not isinstance(obj, ScenarioPack) and callable(obj):
@@ -767,7 +796,7 @@ def _coerce_scenario_pack(obj: object, label: str, value: str) -> object:
     return obj
 
 
-def _load_scenario_pack_source(source: str) -> object:
+def _load_scenario_pack_source(source: str) -> ScenarioPack:
     module_or_path, sep, attr = source.partition(":")
     if not sep or not module_or_path or not attr:
         print(
@@ -809,7 +838,9 @@ class _InMemoryPlugin:
     No pre_run hook: a scripted runtime has no bench infrastructure to prep.
     """
 
-    def build(self, runtime_name: str, label: str, soul_path: str | None) -> object:
+    def build(
+        self, runtime_name: str, label: str, soul_path: str | None
+    ) -> AgentRuntime:
         from windtunnel.runtimes.in_memory import InMemoryRuntime  # noqa: PLC0415
         return InMemoryRuntime(scripted_responses=["ok"])
 
@@ -817,7 +848,9 @@ class _InMemoryPlugin:
 class _HttpInjectPlugin:
     """Built-in RuntimePlugin for Contract C HTTP inject endpoints."""
 
-    def build(self, runtime_name: str, label: str, soul_path: str | None) -> object:
+    def build(
+        self, runtime_name: str, label: str, soul_path: str | None
+    ) -> AgentRuntime:
         from windtunnel.runtimes.http_inject import HttpInjectRuntime  # noqa: PLC0415
         return HttpInjectRuntime()
 
@@ -825,12 +858,14 @@ class _HttpInjectPlugin:
 class _TerminusPlugin:
     """Built-in RuntimePlugin for Harbor Terminus-2 terminal agents."""
 
-    def build(self, runtime_name: str, label: str, soul_path: str | None) -> object:
+    def build(
+        self, runtime_name: str, label: str, soul_path: str | None
+    ) -> AgentRuntime:
         from windtunnel.runtimes.terminus import TerminusRuntime  # noqa: PLC0415
         return TerminusRuntime()
 
 
-def _resolve_runtime_plugin(runtime_name: str) -> object:
+def _resolve_runtime_plugin(runtime_name: str) -> _RuntimePluginLike:
     """Resolve a --runtime name to a RuntimePlugin instance.
 
     Resolution order (see windtunnel.spi.runtime_plugin for the contract):
@@ -842,7 +877,7 @@ def _resolve_runtime_plugin(runtime_name: str) -> object:
          the escape hatch for drivers not (yet) packaged with an entry point.
       4. Error (exit 2) listing the built-in + discovered names.
     """
-    builtin = {
+    builtin: dict[str, Callable[[], _RuntimePluginLike]] = {
         "http_inject": _HttpInjectPlugin,
         "in_memory": _InMemoryPlugin,
         "terminus": _TerminusPlugin,
@@ -879,7 +914,7 @@ def _resolve_runtime_plugin(runtime_name: str) -> object:
     sys.exit(2)
 
 
-def _as_plugin_instance(obj: object) -> object:
+def _as_plugin_instance(obj: object) -> _RuntimePluginLike:
     """Normalize an entry-point/dotted-path target to a plugin INSTANCE.
 
     The contract (spi/runtime_plugin.py) is deliberately simple: the target is
@@ -888,8 +923,8 @@ def _as_plugin_instance(obj: object) -> object:
     config args — belongs inside the plugin's own build().
     """
     if isinstance(obj, type):
-        return obj()
-    return obj
+        obj = obj()
+    return cast(_RuntimePluginLike, obj)
 
 
 def _resolve_hooks(hook_names: list[str] | None) -> list[object]:
@@ -928,14 +963,19 @@ def _as_hook_instance(obj: object) -> object:
     return obj
 
 
-def _dispatch_pack_end_hooks(hooks: list[object], *, config: object, completed: list[_CompletedAggregate]) -> list:
+def _dispatch_pack_end_hooks(
+    hooks: list[object],
+    *,
+    config: AgentConfig,
+    completed: list[_CompletedAggregate],
+) -> list[HookArtifact]:
     """Fire CLI-scope on_pack_end hooks and return buffered artifacts."""
     if not hooks:
         return []
 
     from windtunnel.spi.hooks import Hook, HookContext  # noqa: PLC0415
 
-    artifacts = []
+    artifacts: list[HookArtifact] = []
     aggregates = [item.result.aggregate for item in completed]
     for hook in hooks:
         method = getattr(hook, "on_pack_end", None)
@@ -966,7 +1006,9 @@ def _dispatch_pack_end_hooks(hooks: list[object], *, config: object, completed: 
     return artifacts
 
 
-def _build_runtime(runtime_name: str, label: str, soul_path: str | None) -> object:
+def _build_runtime(
+    runtime_name: str, label: str, soul_path: str | None
+) -> AgentRuntime:
     """Instantiate the requested runtime via its resolved plugin."""
     plugin = _resolve_runtime_plugin(runtime_name)
     return plugin.build(runtime_name, label, soul_path)
@@ -978,7 +1020,7 @@ def _select_scenarios(
     tag_filters: list[str],
     pack_filters: list[str],
     owner_filters: list[str],
-    packs: list,
+    packs: list[ScenarioPack],
 ) -> _SelectionResult:
     """Select scenarios from packs with OR-within-flag, AND-across-flags.
 
@@ -1087,7 +1129,7 @@ def _print_selection_warnings(selection: _SelectionResult, *, command: str = "wt
         )
 
 
-def _load_scenarios(names: list[str], packs: list) -> list:
+def _load_scenarios(names: list[str], packs: list[ScenarioPack]) -> list[Scenario]:
     """Flatten the packs' scenarios (pack order preserved) and filter by name.
 
     Every dimension arrives as a ScenarioPack — built-ins from
@@ -1119,15 +1161,18 @@ def _counts_as_gate_failure(completed: _CompletedAggregate) -> bool:
     CI on model-quality verdicts. A runner_error is an execution failure and
     still gates even for transport-only dims.
     """
-    agg = completed.result.aggregate
-    return agg.verdict != "PASS" and (not completed.transport_only or completed.had_runner_error)
+    if completed.had_runner_error:
+        return True
+    if completed.transport_only:
+        return False
+    return completed.result.aggregate.verdict == "FAIL"
 
 
 def _write_run_output(
     output_format: str,
     out_path: Path,
     completed: list[_CompletedAggregate],
-    records: list[dict],
+    records: list[dict[str, Any]],
 ) -> None:
     """Write the requested machine-readable `wt run` output file."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1140,7 +1185,7 @@ def _write_run_output(
     raise ValueError(f"unknown run output format: {output_format!r}")
 
 
-def _write_run_json(out_path: Path, records: list[dict]) -> None:
+def _write_run_json(out_path: Path, records: list[dict[str, Any]]) -> None:
     """Write the sweep document: the very records the ledger just received.
 
     Sharing _ledger_record() output (rather than assembling a parallel
@@ -1431,7 +1476,7 @@ def _rescore_trace_paths(args: argparse.Namespace) -> list[Path] | None:
     return trace_paths
 
 
-def _rescore_scenario_map(entries: list[_SelectedScenario]) -> dict[str, object] | None:
+def _rescore_scenario_map(entries: list[_SelectedScenario]) -> dict[str, Scenario] | None:
     """Return scenario_id -> Scenario, or print ambiguity errors."""
     by_id: dict[str, list[_SelectedScenario]] = {}
     for entry in entries:
@@ -1455,7 +1500,7 @@ def _rescore_scenario_map(entries: list[_SelectedScenario]) -> dict[str, object]
     return {name: values[0].scenario for name, values in by_id.items()}
 
 
-def _score_saved_trace(trace, scenario) -> object:
+def _score_saved_trace(trace: Trace, scenario: Scenario) -> Score:
     """Re-run all score layers derivable from a saved trace."""
     from windtunnel.api.evaluators import (  # noqa: PLC0415
         evaluate_constraint,
@@ -1474,17 +1519,18 @@ def _score_saved_trace(trace, scenario) -> object:
     )
 
 
-def _read_score_sidecar(trace_path: Path) -> dict | None:
+def _read_score_sidecar(trace_path: Path) -> dict[str, Any] | None:
     score_path = trace_path.with_suffix(".score.json")
     if not score_path.is_file():
         return None
     try:
-        return json.loads(score_path.read_text(encoding="utf-8"))
+        data = json.loads(score_path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
     except (OSError, json.JSONDecodeError):
         return None
 
 
-def _old_layer_verdict(score_data: dict | None, layer_name: str) -> str:
+def _old_layer_verdict(score_data: dict[str, Any] | None, layer_name: str) -> str:
     if score_data is None:
         return "UNKNOWN"
     layer = score_data.get(layer_name)
@@ -1497,7 +1543,7 @@ def _old_layer_verdict(score_data: dict | None, layer_name: str) -> str:
     return "PASS" if bool(layer["passed"]) else "FAIL"
 
 
-def _score_layer_verdict(score, layer_name: str) -> str:
+def _score_layer_verdict(score: Score, layer_name: str) -> str:
     layer = getattr(score, layer_name)
     return "PASS" if layer.passed else "FAIL"
 
@@ -1543,7 +1589,7 @@ def _cmd_triage(args: argparse.Namespace) -> int:
     # Build classifier
     if classifier_name == "rule_based":
         from windtunnel.triage.rule_based import RuleBasedClassifier  # noqa: PLC0415
-        clf = RuleBasedClassifier()
+        clf: FailureClassifier = RuleBasedClassifier()
     elif classifier_name == "llm_judge":
         from windtunnel.triage.llm_judge import LLMJudgeClassifier  # noqa: PLC0415
         clf = LLMJudgeClassifier()
@@ -1560,7 +1606,7 @@ def _cmd_triage(args: argparse.Namespace) -> int:
 
     # Classify each failed run
     # Groups: category → list of (scenario_id, trace, classification)
-    by_category: dict[str, list[tuple[str, str, object]]] = {}
+    by_category: dict[str, list[tuple[str, str, FailureClassification]]] = {}
     skipped = 0
     passed = 0
 
@@ -1630,7 +1676,9 @@ def _cmd_triage(args: argparse.Namespace) -> int:
         return 0
 
     # Sort categories: unknown last, others by count descending
-    def _sort_key(item: tuple[str, list]) -> tuple[int, int]:
+    def _sort_key(
+        item: tuple[str, list[tuple[str, str, FailureClassification]]],
+    ) -> tuple[int, int]:
         cat, entries = item
         return (1 if cat == "unknown" else 0, -len(entries))
 
@@ -1640,8 +1688,8 @@ def _cmd_triage(args: argparse.Namespace) -> int:
         # Emit fix suggestion from first entry with one
         fix_shown = False
         for _name, _run_id, clf_result in entries:
-            if not fix_shown and clf_result.suggested_fix is not None:  # type: ignore[union-attr]
-                fix = clf_result.suggested_fix  # type: ignore[union-attr]
+            if not fix_shown and clf_result.suggested_fix is not None:
+                fix = clf_result.suggested_fix
                 print(f"**Suggested fix vector:** `{fix.fix_vector}`")
                 print(f"**Rationale:** {fix.rationale}\n")
                 fix_shown = True
@@ -1650,8 +1698,8 @@ def _cmd_triage(args: argparse.Namespace) -> int:
         print("| Scenario | Run ID | Confidence | Evidence |")
         print("|----------|--------|-----------|---------|")
         for name, run_id, clf_result in entries:
-            conf = f"{clf_result.confidence:.0%}"  # type: ignore[union-attr]
-            ev = "; ".join(clf_result.evidence[:2]) if clf_result.evidence else ""  # type: ignore[union-attr]
+            conf = f"{clf_result.confidence:.0%}"
+            ev = "; ".join(clf_result.evidence[:2]) if clf_result.evidence else ""
             ev = ev[:80] + "..." if len(ev) > 80 else ev
             print(f"| `{name}` | `{run_id}` | {conf} | {ev} |")
         print()
@@ -1776,7 +1824,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
 # ─── surface ─────────────────────────────────────────────────────────────────
 
-def _probe_runtime_surface(args: argparse.Namespace) -> dict | None:
+def _probe_runtime_surface(args: argparse.Namespace) -> dict[str, Any] | None:
     """Provision the runtime, probe its surface with the run-time timing
     (reset first, then probe), tear down. Returns the surface block, or
     None when the handle has no surface introspection at all."""
@@ -1808,7 +1856,7 @@ def _probe_runtime_surface(args: argparse.Namespace) -> dict | None:
     return block
 
 
-def _describe_absent_surface(block: dict | None) -> str:
+def _describe_absent_surface(block: dict[str, Any] | None) -> str:
     if block is None:
         return "runtime has no surface introspection (describe_surface not implemented)"
     if block.get("status") == "unavailable":

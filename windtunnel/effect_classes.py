@@ -65,7 +65,7 @@ FORBIDDEN_OR_EXPLICIT_APPROVAL: frozenset[EffectClass] = frozenset({
 
 # ─── EffectPolicy ─────────────────────────────────────────────────────────────
 
-class EffectPolicy(dict):
+class EffectPolicy(dict[EffectClass, str]):
     """Maps EffectClass → autonomy string for a scenario.
 
     Subclasses dict so callers can use ep[EffectClass.READ] directly.

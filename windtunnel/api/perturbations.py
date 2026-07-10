@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+from typing import Any
 
 from windtunnel.api.scenario import Perturbation, PreSendPerturbation
 from windtunnel.api.trace import Trace, Turn
@@ -57,12 +58,14 @@ def _copy_trace_with_turns(trace: Trace, new_turns: list[Turn], extra_warning: s
 _GENERIC_TOOL_RESULT = '{"result": "{\\"note\\": \\"lookup completed\\"}"}'
 
 
-def _msg_role(m: object):
+def _msg_role(m: object) -> object:
     """Role of a message, handling both dict and object message shapes."""
     return m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
 
 
-def _insert_before_final_user(messages: list, injected: list) -> list:
+def _insert_before_final_user(
+    messages: list[dict[str, Any]], injected: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """Insert `injected` messages just before the final user turn.
 
     If the last message is the (scored) user turn, the injected prior turns go
@@ -75,7 +78,7 @@ def _insert_before_final_user(messages: list, injected: list) -> list:
     return out
 
 
-def _first_must_call(scenario: object):
+def _first_must_call(scenario: object) -> str | None:
     """First tool the scenario expects (for synthesizing a plausible prior call)."""
     mc = getattr(scenario, "must_call", None) or []
     return mc[0] if mc else None
@@ -177,7 +180,9 @@ class InjectStaleMemory(PreSendPerturbation):
     # Note: dim_memory_conflict has a dedicated runner that can seed REAL agent
     # memory files; this message-level injection is the faithful equivalent for
     # the main `wt run` path, which drives the model via a messages list.
-    def shape_messages(self, messages: list[dict], scenario: object) -> list[dict]:  # noqa: ARG002
+    def shape_messages(
+        self, messages: list[dict[str, Any]], scenario: object  # noqa: ARG002
+    ) -> list[dict[str, Any]]:
         """Inject the stale memory value as a recalled-memory system context."""
         memory_line = f"- {self.value}"
         out = list(messages)
@@ -304,7 +309,9 @@ class BlankAssistantContent(PreSendPerturbation):
         return _copy_trace_with_turns(trace, new_turns, self.marker)
 
     # ── Pre-send history shaping ─────────────────────────────────────────────
-    def shape_messages(self, messages: list[dict], scenario: object) -> list[dict]:
+    def shape_messages(
+        self, messages: list[dict[str, Any]], scenario: object
+    ) -> list[dict[str, Any]]:
         """Inject a prior tool round-trip whose synthesis turn is the
         degenerate-blank symptom, so the live model runs its scored turn having
         just seen itself produce an empty answer. Pass = it does NOT copy the
@@ -316,7 +323,7 @@ class BlankAssistantContent(PreSendPerturbation):
             assistant: content=""                                  # blank synthesis (poison)
         """
         tool = _first_must_call(scenario)
-        injected: list[dict] = []
+        injected: list[dict[str, Any]] = []
         if tool:
             injected += [
                 {
@@ -399,7 +406,9 @@ class FallbackRenderLeak(PreSendPerturbation):
         return _copy_trace_with_turns(trace, new_turns, self.marker)
 
     # ── Pre-send history shaping ─────────────────────────────────────────────
-    def shape_messages(self, messages: list[dict], scenario: object) -> list[dict]:
+    def shape_messages(
+        self, messages: list[dict[str, Any]], scenario: object
+    ) -> list[dict[str, Any]]:
         """Inject a prior assistant turn whose content is the leaked
         'tool: {...}' literal text (a tool call that rendered as text instead of
         a structured call). Pass = the live model does NOT replicate the literal
@@ -511,7 +520,9 @@ class MalformedToolCall(PreSendPerturbation):
         return args_str + ', "x_corrupted": true}'
 
     # ── Pre-send history shaping ─────────────────────────────────────────────
-    def shape_messages(self, messages: list[dict], scenario: object) -> list[dict]:
+    def shape_messages(
+        self, messages: list[dict[str, Any]], scenario: object
+    ) -> list[dict[str, Any]]:
         """Inject a prior tool call that used the WRONG argument field names
         (e.g. 'x_query' instead of 'query') and got an empty result, so the live
         model runs its scored turn having just seen its own malformed call fail.
@@ -521,7 +532,7 @@ class MalformedToolCall(PreSendPerturbation):
 
         tool = self.tool_name or _first_must_call(scenario) or "example_tool"
         corrupted_args = self._corrupt(_json.dumps({"query": _entity(scenario)}))
-        injected = [
+        injected: list[dict[str, Any]] = [
             {
                 "role": "assistant",
                 "content": "",
@@ -595,8 +606,8 @@ class InjectWrongPriorToolCall(PreSendPerturbation):
     # never saw. The runner SKIPS apply() for PreSendPerturbation instances
     # (no double application).
     def shape_messages(
-        self, messages: list[dict], scenario: object  # noqa: ARG002
-    ) -> list[dict]:
+        self, messages: list[dict[str, Any]], scenario: object  # noqa: ARG002
+    ) -> list[dict[str, Any]]:
         """Inject the prior WRONG tool call + its (plausible-but-wrong) result
         into the conversation history, so the model runs its scored turn having
         ALREADY called the wrong tool and seen the result — and must self-correct.
@@ -690,7 +701,7 @@ class InjectSchemaRejectedCall(PreSendPerturbation):
     """
     turn_idx: int
     tool_name: str
-    bad_arg: dict
+    bad_arg: dict[str, Any]
 
     @property
     def marker(self) -> str:
@@ -744,7 +755,9 @@ class InjectSchemaRejectedCall(PreSendPerturbation):
         return _copy_trace_with_turns(trace, new_turns, self.marker)
 
     # ── Pre-send history shaping ─────────────────────────────────────────────
-    def shape_messages(self, messages: list[dict], scenario: object) -> list[dict]:  # noqa: ARG002
+    def shape_messages(
+        self, messages: list[dict[str, Any]], scenario: object  # noqa: ARG002
+    ) -> list[dict[str, Any]]:
         """Inject a prior tool call with schema-invalid args + the schema error
         the mock MCP would return, so the live model runs its scored turn having
         just seen its call rejected (and the valid-values hint). Pass = it retries
@@ -891,7 +904,9 @@ class InjectPaginationTruncation(PreSendPerturbation):
         return _json.dumps(inner)
 
     # ── Pre-send history shaping ─────────────────────────────────────────────
-    def shape_messages(self, messages: list[dict], scenario: object) -> list[dict]:
+    def shape_messages(
+        self, messages: list[dict[str, Any]], scenario: object
+    ) -> list[dict[str, Any]]:
         """Inject a prior tool result that returned only the first item with a
         clear hasMore=true pagination signal, so the live model runs its scored
         turn having just seen an INCOMPLETE result. Pass = it notices hasMore and
@@ -909,7 +924,7 @@ class InjectPaginationTruncation(PreSendPerturbation):
             "summary": {"total": {"count": 1}},
         })})
         truncated = self._truncate_content(base)
-        injected = [
+        injected: list[dict[str, Any]] = [
             {
                 "role": "assistant",
                 "content": "",

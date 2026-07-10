@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 
 class Verdict(Enum):
@@ -69,7 +69,7 @@ class Score:
     failure_cost: FailureCost = field(default_factory=FailureCost)
 
 
-def score_to_dict(score: Score) -> dict:
+def score_to_dict(score: Score) -> dict[str, Any]:
     """Serialize a Score to the flat dict shape consumed by report.load_runs().
 
     Top-level keys: outcome/trajectory/constraint/robustness (each

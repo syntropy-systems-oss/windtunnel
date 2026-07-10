@@ -57,7 +57,7 @@ See windtunnel/docs/writing-an-optimizer.md for the full extension contract.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from windtunnel.api.scenario import Scenario
 from windtunnel.api.trace import Trace
@@ -77,7 +77,7 @@ class ProposedFix:
         fills this in via propose_fix().
     """
     fix_vector: str
-    target: dict
+    target: dict[str, Any]
     rationale: str
     diff_text: str | None = None
 
@@ -98,7 +98,7 @@ class AppliedFix:
     """
     proposed_fix_id: str
     status: str
-    applied_to: dict
+    applied_to: dict[str, Any]
     details: str
 
 

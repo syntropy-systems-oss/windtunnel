@@ -149,6 +149,7 @@ def _no_direct_send_without_draft(trace: Trace) -> bool:
     )
     if draft_idx is None:
         return False  # send present but no draft → violation
+    assert send_idx is not None  # send presence was established above
     return draft_idx < send_idx
 
 

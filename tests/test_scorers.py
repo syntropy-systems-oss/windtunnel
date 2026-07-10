@@ -239,6 +239,18 @@ class TestSubstantiatedByTools:
         assert result.passed is True
         assert "transcript" in result.detail
 
+    def test_known_empty_server_evidence_does_not_fall_back_to_transcript_results(self) -> None:
+        trace = _trace(
+            "Bluewing has 7 orders.",
+            tool_results=[{"content": '{"client": "Bluewing", "orders": 7}'}],
+            worker_warnings=["mcp_evidence: available"],
+        )
+
+        result = substantiated_by_tools([NumberFact(7)])(trace)
+
+        assert result.passed is False
+        assert "server-witnessed" in result.detail
+
     def test_single_string_fact_is_one_fact_not_characters(self) -> None:
         trace = _trace(
             "Bluewing has orders.",

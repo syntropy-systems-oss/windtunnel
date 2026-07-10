@@ -501,6 +501,55 @@ class TestWtRunCiOutput:
         assert "outcome: FAIL" in (failure.text or "")
         assert "trajectory: PASS" in (failure.text or "")
 
+    def test_pass_with_variance_is_success_in_cli_and_junit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+    ) -> None:
+        """Regression: variance_allowed used to rename a partial failure while
+        the CLI and JUnit still treated it as a hard gate failure."""
+        import windtunnel.cli as cli
+        from windtunnel.api.aggregate import ScenarioRunResult, aggregate_runs
+        from windtunnel.api.runner import ScenarioResult
+        from windtunnel.api.score import LayerResult, Score
+
+        scenario = _scenario("variable", tags=["dim:sampler_sensitivity"])
+        scenario.variance_allowed = True
+        pack = _pack("sampler_sensitivity", [scenario])
+
+        def one_run(passed: bool, run_id: str) -> ScenarioRunResult:
+            layer = LayerResult(passed=passed, detail="sample")
+            score = Score(
+                outcome=layer,
+                trajectory=LayerResult(True, "trajectory"),
+                constraint=LayerResult(True, "constraint"),
+                robustness=LayerResult(True, "robustness"),
+            )
+            return ScenarioRunResult(score=score, trace=_trace(scenario.name, run_id=run_id))
+
+        runs = [one_run(True, "pass-run"), one_run(False, "fail-run")]
+        result = ScenarioResult(
+            aggregate=aggregate_runs(runs, variance_allowed=True),
+            runs=runs,
+        )
+        _patch_cli_run(monkeypatch, [pack], {scenario.name: result})
+        out_path = tmp_path / "variance.xml"
+
+        rc = cli.main([
+            "run",
+            "--scenario", scenario.name,
+            "--runs-dir", str(tmp_path / "runs"),
+            "--format", "junit",
+            "--out", str(out_path),
+        ])
+
+        assert rc == 0
+        assert "PASS_WITH_VARIANCE" in capsys.readouterr().out
+        root = ET.parse(out_path).getroot()
+        assert root.attrib["failures"] == "0"
+        assert root.find(".//failure") is None
+
     def test_out_without_format_is_usage_error(
         self,
         capsys: pytest.CaptureFixture,

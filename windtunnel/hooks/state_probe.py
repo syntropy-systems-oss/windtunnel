@@ -203,16 +203,16 @@ def _bounded_json(value: Any, *, depth: int = 0) -> Any:
             out["__truncated__"] = f"{len(items) - _MAX_ITEMS} more keys"
         return out
     if isinstance(value, list | tuple):
-        out = [_bounded_json(item, depth=depth + 1) for item in value[:_MAX_ITEMS]]
+        out_list = [_bounded_json(item, depth=depth + 1) for item in value[:_MAX_ITEMS]]
         if len(value) > _MAX_ITEMS:
-            out.append({"__truncated__": f"{len(value) - _MAX_ITEMS} more items"})
-        return out
+            out_list.append({"__truncated__": f"{len(value) - _MAX_ITEMS} more items"})
+        return out_list
     if isinstance(value, set | frozenset):
         rendered = sorted(_bounded_repr(item) for item in value)
-        out = rendered[:_MAX_ITEMS]
+        out_set = rendered[:_MAX_ITEMS]
         if len(rendered) > _MAX_ITEMS:
-            out.append(f"... {len(rendered) - _MAX_ITEMS} more")
-        return out
+            out_set.append(f"... {len(rendered) - _MAX_ITEMS} more")
+        return out_set
     return _bounded_repr(value)
 
 

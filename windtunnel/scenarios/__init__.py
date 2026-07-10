@@ -7,8 +7,10 @@ how the `wt` CLI discovers them; third-party packs arrive via the
 "windtunnel.scenario_packs" entry-point group instead (see windtunnel.api.pack).
 """
 
+from windtunnel.api.pack import ScenarioPack
 
-def builtin_packs() -> list:
+
+def builtin_packs() -> list[ScenarioPack]:
     """Return the built-in ScenarioPacks, in canonical bench order.
 
     WHY an explicit list rather than pkgutil-iterating dim_* subpackages:
