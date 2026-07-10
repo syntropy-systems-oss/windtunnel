@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.7.1...v0.8.0) (2026-07-10)
+
+
+### Features
+
+* reorganize framework internals ([#40](https://github.com/syntropy-systems-oss/windtunnel/issues/40)) ([ebd614c](https://github.com/syntropy-systems-oss/windtunnel/commit/ebd614cf05020c0471e273738608c05f554cedef))
+
 ## [0.7.1](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.7.0...v0.7.1) (2026-07-10)
 
 
