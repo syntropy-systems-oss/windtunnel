@@ -144,9 +144,9 @@ class InMemoryRuntime:
         self._surface = surface
         self.provisions: list[tuple[AgentConfig, _InMemoryHandle]] = []
 
-    def provision(self, config: AgentConfig, mcps: list | None = None) -> AgentHandle:  # type: ignore[override]
+    def provision(self, config: AgentConfig, mcps: list[Any] | None = None) -> AgentHandle:
         # mcps: ignored — InMemoryRuntime is network-free; the MCP handles are
         # not needed because send() returns scripted responses.
         handle = _InMemoryHandle(self._responses, surface=self._surface)
         self.provisions.append((config, handle))
-        return handle  # type: ignore[return-value]
+        return handle

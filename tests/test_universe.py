@@ -435,7 +435,8 @@ class TestDivergenceEvidence:
             "divergence": {"policy": "empty", "matched": None}
         }
         assert trace.worker_warnings == [
-            "universe_divergence: tool=client_lookup policy=empty"
+            "universe_divergence: tool=client_lookup policy=empty",
+            "mcp_evidence: available",
         ]
 
 

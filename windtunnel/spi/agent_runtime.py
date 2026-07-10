@@ -279,7 +279,7 @@ class AgentRuntime(Protocol):
     handle.teardown() when the batch is finished.
     """
 
-    def provision(self, config: AgentConfig, mcps: list | None = None) -> AgentHandle:
+    def provision(self, config: AgentConfig, mcps: list[Any] | None = None) -> AgentHandle:
         """Provision a live agent handle for the given config.
 
         May perform expensive operations: container start, SSH tunnel

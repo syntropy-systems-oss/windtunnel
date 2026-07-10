@@ -330,9 +330,9 @@ class _SubprocessMCPHandle:
 
     B4: call_log() fetches from the HTTP /calls endpoint on the mock server
     (same host:port as the MCP server, injected by LoggingFastMCP.build_app()).
-    reset_call_log() POSTs /calls/reset.  Both are best-effort — they return
-    [] / silently succeed on connection failure so transient start-up windows
-    don't crash the bench.
+    Evidence and reset failures raise: silently returning ``[]`` would collapse
+    "zero calls witnessed" and "witness unavailable", allowing transcript
+    narration to masquerade as server evidence.
 
     calls_url: "http://<host>:<port>/calls" — set by FastMCPServer.start().
     """
@@ -349,42 +349,38 @@ class _SubprocessMCPHandle:
     def call_log(self) -> list[MCPCall]:
         """Fetch recorded calls from the mock server's /calls HTTP endpoint.
 
-        Returns [] on any connection/HTTP error (not raises) — caller treats
-        an empty log as "no calls recorded yet" rather than crashing.
+        An empty list positively means "zero calls witnessed". Transport and
+        decoding errors raise so the runner can fail evidence collection closed.
         """
         if not self.calls_url:
-            return []
-        try:
-            import urllib.request as _urllib_request
-            with _urllib_request.urlopen(self.calls_url, timeout=5) as resp:
-                raw = resp.read().decode("utf-8")
-            data = __import__("json").loads(raw)
-            return [
-                MCPCall(
-                    tool_name=d["tool_name"],
-                    args=d.get("args", {}),
-                    result=d.get("result"),
-                    timestamp_ms=d.get("timestamp_ms", 0.0),
-                )
-                for d in data
-            ]
-        except Exception:
-            return []
+            raise RuntimeError("MCP call-log URL is unavailable")
+        import urllib.request as _urllib_request
+        with _urllib_request.urlopen(self.calls_url, timeout=5) as resp:
+            raw = resp.read().decode("utf-8")
+        data = __import__("json").loads(raw)
+        if not isinstance(data, list):
+            raise RuntimeError("MCP call-log response must be a list")
+        return [
+            MCPCall(
+                tool_name=d["tool_name"],
+                args=d.get("args", {}),
+                result=d.get("result"),
+                timestamp_ms=d.get("timestamp_ms", 0.0),
+            )
+            for d in data
+        ]
 
     def reset_call_log(self) -> None:
         """POST /calls/reset to clear the recorded calls on the mock server."""
         if not self.calls_url:
-            return
+            raise RuntimeError("MCP call-log reset URL is unavailable")
         reset_url = self.calls_url.rstrip("/").replace("/calls", "/calls/reset")
         if not reset_url.endswith("/reset"):
             reset_url = self.calls_url.rstrip("/") + "/reset"
-        try:
-            import urllib.request as _urllib_request
-            req = _urllib_request.Request(reset_url, data=b"{}", method="POST")
-            req.add_header("Content-Type", "application/json")
-            with _urllib_request.urlopen(req, timeout=5):
-                pass
-        except Exception:
+        import urllib.request as _urllib_request
+        req = _urllib_request.Request(reset_url, data=b"{}", method="POST")
+        req.add_header("Content-Type", "application/json")
+        with _urllib_request.urlopen(req, timeout=5):
             pass
 
     def configure_failure_mode(self, mode: str | None) -> None:
@@ -396,18 +392,17 @@ class _SubprocessMCPHandle:
     def served_tools(self) -> list[str]:
         """Fetch canonical tool names from the mock server's /tools endpoint."""
         if not self.calls_url:
-            return []
+            raise RuntimeError("MCP tool-introspection URL is unavailable")
         tools_url = self.calls_url.rstrip("/").replace("/calls", "/tools")
         if not tools_url.endswith("/tools"):
             tools_url = self.calls_url.rstrip("/") + "/tools"
-        try:
-            import urllib.request as _urllib_request
-            with _urllib_request.urlopen(tools_url, timeout=5) as resp:
-                raw = resp.read().decode("utf-8")
-            data = __import__("json").loads(raw)
-            return [str(name) for name in data]
-        except Exception:
-            return []
+        import urllib.request as _urllib_request
+        with _urllib_request.urlopen(tools_url, timeout=5) as resp:
+            raw = resp.read().decode("utf-8")
+        data = __import__("json").loads(raw)
+        if not isinstance(data, list):
+            raise RuntimeError("MCP tool-introspection response must be a list")
+        return [str(name) for name in data]
 
 
 class FastMCPServer:

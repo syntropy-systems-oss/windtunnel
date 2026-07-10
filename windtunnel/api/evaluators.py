@@ -58,6 +58,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from windtunnel.api._evidence import mcp_evidence_state
 from windtunnel.api.scenario import NumberFact, Scenario, TrajectoryCheck
 from windtunnel.api.score import LayerResult
 from windtunnel.api.trace import Trace, Turn
@@ -175,7 +176,18 @@ def _last_assistant_turn(trace: Trace) -> Turn | None:
 
 
 def _has_tool_calls(trace: Trace) -> bool:
-    """Return True if any turn in the trace has at least one tool call."""
+    """Return tool-use truth from the strongest evidence available.
+
+    A known-empty server log is proof that no call reached the server and must
+    override transcript narration.  When evidence collection failed, fail
+    closed.  Traces without an evidence marker are historical/no-MCP traces and
+    retain transcript fallback compatibility.
+    """
+    state = mcp_evidence_state(trace.worker_warnings)
+    if state == "unavailable":
+        return False
+    if state == "available" or trace.mcp_calls:
+        return bool(trace.mcp_calls)
     return any(turn.tool_calls for turn in trace.turns)
 
 
@@ -326,7 +338,7 @@ def tool_name_matches(canonical: str, full: str) -> bool:
     )
 
 
-def _any_tool_name_matches(canonical: str, full_names) -> bool:
+def _any_tool_name_matches(canonical: str, full_names: list[str]) -> bool:
     """True if any name in ``full_names`` matches ``canonical`` (see
     tool_name_matches for the decoration contract)."""
     return any(tool_name_matches(canonical, full) for full in full_names)
@@ -450,7 +462,13 @@ def evaluate_trajectory(trace: Trace, scenario: Scenario) -> LayerResult:
     - transcript fallback (mcp_calls empty, e.g. in_memory runtime):
       unchanged legacy semantics, scoring turns[*].tool_calls as before.
     """
-    if trace.mcp_calls:
+    evidence_state = mcp_evidence_state(trace.worker_warnings)
+    if evidence_state == "unavailable":
+        return LayerResult(
+            passed=False,
+            detail="MCP evidence unavailable; refusing transcript fallback [evidence: unavailable]",
+        )
+    if trace.mcp_calls or evidence_state == "available":
         tool_names = _extract_server_tool_names(trace)
         evidence = "server-witnessed"
     else:

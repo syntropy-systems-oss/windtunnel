@@ -169,7 +169,7 @@ def _exact_client_id(query: str) -> str | None:
         return None
     for c in CLIENTS:
         if c["id"].lower() == q:
-            return c["id"]
+            return str(c["id"])
     return None
 
 

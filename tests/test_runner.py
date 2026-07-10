@@ -376,6 +376,62 @@ class TestMcpCallCollection:
         result = run_scenario(_scenario(), runtime)
         assert result.runs[0].trace.mcp_calls == []
 
+    def test_known_empty_server_log_overrides_claimed_transcript_call(self) -> None:
+        """Regression: [] from a present logging server means zero witnessed
+        calls, not permission to trust a call the runtime merely narrated."""
+        claimed_call = {
+            "id": "claimed",
+            "type": "function",
+            "function": {"name": "client_lookup", "arguments": "{}"},
+        }
+        scenario = Scenario(
+            name="claimed_only",
+            prompt="q",
+            target_facts=[["ok"]],
+            requires_tool_use=True,
+            must_call=["client_lookup"],
+        )
+        server = _StubMCPServer([])
+        runtime = InMemoryRuntime([
+            {"content": "ok", "tool_calls": [claimed_call]},
+        ])
+
+        result = run_scenario(scenario, runtime, mcps=[server])
+        run = result.runs[0]
+
+        assert result.aggregate.verdict == "FAIL"
+        assert run.score.outcome.passed is False
+        assert run.score.trajectory.passed is False
+        assert "server-witnessed" in run.score.trajectory.detail
+        assert "mcp_evidence: available" in run.trace.worker_warnings
+
+    def test_unavailable_server_log_fails_closed_without_transcript_fallback(self) -> None:
+        class BrokenEvidenceHandle(_StubMCPHandle):
+            def call_log(self) -> list[MCPCall]:
+                raise ConnectionError("call log offline")
+
+        server = _StubMCPServer([])
+        server.handle = BrokenEvidenceHandle([])
+        scenario = Scenario(
+            name="unavailable_evidence",
+            prompt="q",
+            target_facts=[["ok"]],
+            must_call=["client_lookup"],
+        )
+        claimed_call = {"name": "client_lookup", "args": {}}
+        runtime = InMemoryRuntime([
+            {"content": "ok", "tool_calls": [claimed_call]},
+        ])
+
+        run = run_scenario(scenario, runtime, mcps=[server]).runs[0]
+
+        assert run.score.trajectory.passed is False
+        assert "evidence unavailable" in run.score.trajectory.detail.lower()
+        assert any(
+            warning.startswith("mcp_evidence: unavailable")
+            for warning in run.trace.worker_warnings
+        )
+
     def test_non_json_result_coerced(self) -> None:
         """A non-JSON-serializable tool result must not break the trace."""
         weird = object()

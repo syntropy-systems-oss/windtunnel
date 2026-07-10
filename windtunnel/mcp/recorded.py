@@ -332,7 +332,7 @@ def _build_mcp_app(name: str, handle: RecordedMCPHandle) -> Any:
 
     server = Server(name)
 
-    @server.list_tools()
+    @server.list_tools()  # type: ignore[no-untyped-call,untyped-decorator]
     async def _list_tools() -> list[Any]:
         return [
             types.Tool(
@@ -344,7 +344,7 @@ def _build_mcp_app(name: str, handle: RecordedMCPHandle) -> Any:
             for tool in handle.universe.tools
         ]
 
-    @server.call_tool(validate_input=False)
+    @server.call_tool(validate_input=False)  # type: ignore[untyped-decorator]
     async def _call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
         result = handle.call_tool(tool_name, arguments)
         is_error = isinstance(result, dict) and "error" in result

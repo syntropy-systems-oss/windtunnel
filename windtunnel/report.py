@@ -13,10 +13,11 @@ Design decisions:
     dropdowns let the user pick labels A and B; vanilla JS highlights changed cells.
   - Runs/ layout consumed: <runs>/<scenario_id>/<agent_id>/<variant_id>/.../*.json
     Score sidecar: <same path>.score.json (written by the bench runner).
-  - One score per (scenario_id, variant_id) — if multiple runs exist, the latest
-    (by filename lexicographic order, which is chronological per storage_path())
-    is used. Aggregation across N runs happens upstream (api/aggregate.py);
-    the report shows the latest run per cell.
+  - One cell per (scenario_id, variant_id). When the CLI ledger contains the
+    aggregate for a multi-run batch, the cell verdict and layer rates come from
+    that aggregate; the latest trace in the batch remains the drill-down sample.
+    Trace-only directories without a ledger retain the historical latest-run
+    fallback.
 """
 from __future__ import annotations
 
@@ -48,8 +49,12 @@ def load_runs(runs_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
     if not runs_dir.exists():
         return {}
 
-    # Collect: (scenario_id, variant_id) -> latest (trace_path, score_path)
-    candidates: dict[tuple[str, str], tuple[Path, Path]] = {}
+    # Load every complete trace/sidecar pair first. Grouping by the IDs stored
+    # inside the trace avoids path-sanitization aliases becoming report IDs.
+    candidates: dict[
+        tuple[str, str],
+        list[tuple[Path, dict[str, Any], dict[str, Any]]],
+    ] = {}
 
     for trace_path in sorted(runs_dir.rglob("*.json")):
         if not is_trace_json_path(trace_path):
@@ -58,29 +63,84 @@ def load_runs(runs_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
         if not score_path.exists():
             continue
 
-        # Derive scenario_id and variant_id from the path structure:
-        # <runs>/<scenario_id>/<agent_id>/<variant_id>/<model>/<quant>/<filename>
-        parts = trace_path.relative_to(runs_dir).parts
-        if len(parts) < 6:
-            continue  # not deep enough — skip
-
-        scenario_id = parts[0]
-        variant_id = parts[2]
-        key = (scenario_id, variant_id)
-
-        # Keep latest (sorted rglob gives lexicographic order = chronological)
-        candidates[key] = (trace_path, score_path)
-
-    result: dict[tuple[str, str], dict[str, Any]] = {}
-    for key, (trace_path, score_path) in candidates.items():
         try:
             trace_data = json.loads(trace_path.read_text(encoding="utf-8"))
             score_data = json.loads(score_path.read_text(encoding="utf-8"))
-            result[key] = {"trace": trace_data, "score": score_data}
         except (json.JSONDecodeError, OSError):
             continue
+        if not isinstance(trace_data, dict) or not isinstance(score_data, dict):
+            continue
+        scenario_id = trace_data.get("scenario_id")
+        variant_id = trace_data.get("variant_id")
+        if not isinstance(scenario_id, str) or not isinstance(variant_id, str):
+            continue
+        candidates.setdefault((scenario_id, variant_id), []).append(
+            (trace_path, trace_data, score_data)
+        )
+
+    result: dict[tuple[str, str], dict[str, Any]] = {}
+    aggregates = _load_latest_aggregates(runs_dir)
+    for key, grouped_runs in candidates.items():
+        aggregate = aggregates.get(key)
+        selected_runs = grouped_runs
+        if aggregate is not None:
+            aggregate_run_ids = {
+                str(run_id) for run_id in aggregate.get("run_ids", [])
+            }
+            matching = [
+                candidate
+                for candidate in grouped_runs
+                if str(candidate[1].get("run_id", "")) in aggregate_run_ids
+            ]
+            if matching:
+                selected_runs = matching
+            else:
+                # A ledger may outlive pruned/moved trace files. Never attach a
+                # stale aggregate to an unrelated older run merely because the
+                # scenario and label happen to match.
+                aggregate = None
+
+        _path, trace_data, score_data = max(
+            selected_runs,
+            key=lambda candidate: (
+                str(candidate[1].get("started_at", "")),
+                candidate[0].name,
+            ),
+        )
+        if aggregate is not None:
+            score_data = {**score_data, "_aggregate": aggregate}
+        result[key] = {"trace": trace_data, "score": score_data}
 
     return result
+
+
+def _load_latest_aggregates(
+    runs_dir: Path,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Load the last valid ledger aggregate for each scenario/variant pair."""
+    ledger_path = runs_dir / "ledger.ndjsonl"
+    if not ledger_path.is_file():
+        return {}
+
+    aggregates: dict[tuple[str, str], dict[str, Any]] = {}
+    try:
+        lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        scenario_id = record.get("scenario_id")
+        label = record.get("label")
+        if isinstance(scenario_id, str) and isinstance(label, str):
+            aggregates[(scenario_id, label)] = record
+    return aggregates
 
 
 # ─── Data model builders ──────────────────────────────────────────────────────
@@ -104,29 +164,39 @@ def _cell_from_run(
     robustness = score_data.get("robustness", {})
     fc = score_data.get("failure_cost", {})
 
-    # Verdict: PASS if outcome passed, FAIL otherwise
-    verdict = "PASS" if outcome.get("passed", False) else "FAIL"
+    aggregate = score_data.get("_aggregate")
+    if not isinstance(aggregate, dict):
+        aggregate = None
+    layer_pass_rates = aggregate.get("layer_pass_rates", {}) if aggregate else {}
+
+    # Aggregate truth wins when available; trace-only corpora fall back to the
+    # historical per-run verdict.
+    verdict = (
+        str(aggregate.get("verdict"))
+        if aggregate is not None
+        else ("PASS" if outcome.get("passed", False) else "FAIL")
+    )
+
+    def _layer(name: str, raw: dict[str, Any]) -> dict[str, Any]:
+        aggregate_rate = layer_pass_rates.get(name)
+        rate = (
+            float(aggregate_rate)
+            if isinstance(aggregate_rate, int | float)
+            else (1.0 if raw.get("passed", False) else 0.0)
+        )
+        detail = str(raw.get("detail", ""))
+        if aggregate is not None:
+            detail = f"aggregate pass rate={rate:.0%}; latest run: {detail}"
+        return {"passed": rate == 1.0, "pass_rate": rate, "detail": detail}
 
     return {
         "verdict": verdict,
         "tool_call_count": _tool_call_count(trace_data),
         "layers": {
-            "outcome": {
-                "passed": outcome.get("passed", False),
-                "detail": outcome.get("detail", ""),
-            },
-            "trajectory": {
-                "passed": trajectory.get("passed", False),
-                "detail": trajectory.get("detail", ""),
-            },
-            "constraint": {
-                "passed": constraint.get("passed", False),
-                "detail": constraint.get("detail", ""),
-            },
-            "robustness": {
-                "passed": robustness.get("passed", False),
-                "detail": robustness.get("detail", ""),
-            },
+            "outcome": _layer("outcome", outcome),
+            "trajectory": _layer("trajectory", trajectory),
+            "constraint": _layer("constraint", constraint),
+            "robustness": _layer("robustness", robustness),
         },
         "failure_cost": {
             "severity": fc.get("severity", "low"),
@@ -142,6 +212,7 @@ def _cell_from_run(
             "quant": trace_data.get("quant", ""),
             "turns": trace_data.get("turns", []),
         },
+        "aggregate": aggregate,
     }
 
 
@@ -226,7 +297,7 @@ def _build_report_data(cells: dict[tuple[str, str], dict[str, Any]]) -> dict[str
     def _layer_rate(layer: str) -> float:
         if n == 0:
             return 0.0
-        return sum(1 for c in all_cells if c["layers"][layer]["passed"]) / n
+        return sum(float(c["layers"][layer]["pass_rate"]) for c in all_cells) / n
 
     summary = {
         "outcome_pass_rate": _layer_rate("outcome"),
@@ -287,15 +358,11 @@ def compute_diff(
         if verdict_a == verdict_b:
             continue  # no change — exclude from diff
 
-        # Regression: was PASS, now FAIL
-        # Improvement: was FAIL, now PASS
-        if verdict_a == "PASS" and verdict_b == "FAIL":
-            direction = "regression"
-        elif verdict_a == "FAIL" and verdict_b == "PASS":
-            direction = "improvement"
-        else:
-            # PASS_WITH_VARIANCE transitions etc.
-            direction = "regression" if verdict_b != "PASS" else "improvement"
+        direction = (
+            "improvement"
+            if _verdict_rank(verdict_b) > _verdict_rank(verdict_a)
+            else "regression"
+        )
 
         result.append({
             "scenario_id": sc_id,
@@ -305,6 +372,15 @@ def compute_diff(
         })
 
     return result
+
+
+def _verdict_rank(verdict: object) -> int:
+    """Order aggregate verdicts from hard failure to stable pass."""
+    if verdict == "PASS":
+        return 2
+    if isinstance(verdict, str) and "VARIANCE" in verdict:
+        return 1
+    return 0
 
 
 # ─── Markdown generator ───────────────────────────────────────────────────────
@@ -381,7 +457,7 @@ def generate_markdown(
                 sev = cell["failure_cost"]["severity"]
                 sev_tag = f"[{sev}]" if sev != "low" else ""
                 row.append(f"{icon} n={tc}{(' ' + sev_tag) if sev_tag else ''}")
-                if verdict == "PASS":
+                if verdict != "FAIL":
                     pass_counts[var] += 1
         lines.append("| " + " | ".join(row) + " |")
 
@@ -410,19 +486,16 @@ def generate_markdown(
     for layer_key, layer_label in layer_labels:
         row = [layer_label]
         for var in variants:
-            # Count passes for this layer across all scenarios for this variant
-            layer_passes = 0
-            layer_total = 0
+            # Average aggregate pass rates for this layer across scenarios.
+            rates: list[float] = []
             for sc in scenarios:
                 cell = sc["cells"].get(var)
                 if cell is not None:
-                    layer_total += 1
-                    if cell["layers"][layer_key]["passed"]:
-                        layer_passes += 1
-            if layer_total == 0:
+                    rates.append(float(cell["layers"][layer_key]["pass_rate"]))
+            if not rates:
                 row.append("—")
             else:
-                pct = f"{layer_passes}/{layer_total}"
+                pct = f"{sum(rates) / len(rates):.0%}"
                 row.append(pct)
         lines.append("| " + " | ".join(row) + " |")
 
@@ -775,10 +848,13 @@ _JS = r"""
       const tr = tbody.querySelector(`tr[data-scenario-id="${sc.scenario_id}"]`);
       if (!tr) return;
 
-      if (cellA.verdict === 'PASS' && cellB.verdict !== 'PASS') {
+      const verdictRank = verdict => verdict === 'PASS' ? 2
+        : verdict.includes('VARIANCE') ? 1
+        : 0;
+      if (verdictRank(cellB.verdict) < verdictRank(cellA.verdict)) {
         tr.classList.add('diff-regression');
         regressions++;
-      } else if (cellA.verdict !== 'PASS' && cellB.verdict === 'PASS') {
+      } else {
         tr.classList.add('diff-improvement');
         improvements++;
       }

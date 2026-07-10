@@ -43,13 +43,18 @@ Matrix dispatch:
 from __future__ import annotations
 
 import json
+import threading
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from windtunnel.api._evidence import (
+    MCP_EVIDENCE_AVAILABLE,
+    MCP_EVIDENCE_UNAVAILABLE_PREFIX,
+)
 from windtunnel.api.aggregate import AggregateResult, ScenarioRunResult, aggregate_runs
 from windtunnel.api.evaluators import (
     evaluate_constraint,
@@ -100,6 +105,35 @@ class ScenarioResult:
         )
 
 
+class _SerializedAgentHandle:
+    """Serialize sends, resets, and teardown for one runtime handle.
+
+    Post-score hooks may execute ``send()`` on a worker thread so they can
+    report a diagnostic timeout.  A timed-out worker is still running; sharing
+    this lock with the runner's next reset/teardown prevents that late request
+    from racing state isolation or resource destruction.
+    """
+
+    def __init__(self, inner: AgentHandle) -> None:
+        self._inner = inner
+        self._lock = threading.RLock()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def send(self, messages: list[dict[str, Any]], session_id: str) -> dict[str, Any]:
+        with self._lock:
+            return self._inner.send(messages, session_id)
+
+    def reset_state(self) -> None:
+        with self._lock:
+            self._inner.reset_state()
+
+    def teardown(self) -> None:
+        with self._lock:
+            self._inner.teardown()
+
+
 @dataclass
 class _RunHookState:
     """Mutable hook side-channel for a single run."""
@@ -114,13 +148,13 @@ def _hook_name(hook: object) -> str:
     return str(getattr(hook, "name", hook.__class__.__name__))
 
 
-def _hook_method(hook: object, point: str):
+def _hook_method(hook: object, point: str) -> Callable[..., Any] | None:
     method = getattr(hook, point, None)
     if not callable(method):
         return None
     if isinstance(hook, Hook) and getattr(type(hook), point, None) is getattr(Hook, point, None):
         return None
-    return method
+    return cast(Callable[..., Any], method)
 
 
 def _append_hook_warning(sink: list[str], hook: object, exc: BaseException) -> None:
@@ -218,8 +252,8 @@ def _collect_mcp_evidence(mcp_handles: list[MCPHandle]) -> tuple[list[dict[str, 
       extra gets the same guard — it is runtime-controlled metadata.
     - Sorted by timestamp_ms across ALL handles, so a multi-server run
       yields one chronological stream — the order trajectory scoring needs.
-    - Best-effort per handle: a dead/unreachable handle contributes []
-      rather than failing the run (matches _SubprocessMCPHandle semantics).
+    - Evidence failures are persisted as unavailable markers so scoring fails
+      closed instead of treating absence as a witnessed empty log.
     The returned warning list is derived from call-log metadata, not a new
     component channel.  Universe replay misses are witnessed calls with
     ``extra.divergence``; the runner turns that evidence into the
@@ -228,10 +262,12 @@ def _collect_mcp_evidence(mcp_handles: list[MCPHandle]) -> tuple[list[dict[str, 
     """
     calls: list[dict[str, Any]] = []
     warnings: list[str] = []
+    unavailable: list[str] = []
     for mcp in mcp_handles:
         try:
             log = mcp.call_log()
-        except Exception:
+        except Exception as exc:
+            unavailable.append(f"{_mcp_handle_label(mcp)}: {type(exc).__name__}: {exc}")
             continue
         for c in log:
             result = c.result
@@ -261,7 +297,25 @@ def _collect_mcp_evidence(mcp_handles: list[MCPHandle]) -> tuple[list[dict[str, 
                         )
             calls.append(call_dict)
     calls.sort(key=lambda c: c.get("timestamp_ms") or 0.0)
+    if unavailable:
+        warnings.append(
+            f"{MCP_EVIDENCE_UNAVAILABLE_PREFIX} ({'; '.join(unavailable)})"
+        )
+    elif mcp_handles:
+        # This marker is load-bearing when calls == []: it means a logging
+        # server was present and positively witnessed zero calls, so evaluators
+        # must not fall back to the agent's self-reported transcript.
+        warnings.append(MCP_EVIDENCE_AVAILABLE)
     return calls, warnings
+
+
+def _mcp_handle_label(mcp: MCPHandle) -> str:
+    """Return a bounded diagnostic label without trusting handle properties."""
+    try:
+        url = mcp.url
+    except Exception:
+        url = None
+    return str(url or type(mcp).__name__)
 
 
 # ─── External-state observation capture ───────────────────────────────────────
@@ -526,6 +580,20 @@ def _run_once(
     started_at = datetime.now(UTC)
     turns: list[Turn] = []
 
+    pre_send_perturbations = [
+        perturbation
+        for perturbation in scenario.perturbations
+        if isinstance(perturbation, PreSendPerturbation)
+    ]
+    if pre_send_perturbations and not getattr(
+        handle, "_windtunnel_consumes_full_history", True
+    ):
+        names = ", ".join(type(perturbation).__name__ for perturbation in pre_send_perturbations)
+        raise RuntimeError(
+            "runtime cannot deliver history-shaped perturbations to the model: "
+            f"{names}; refusing to mark an unseen perturbation as applied"
+        )
+
     # Reset MCP call logs before this run so trace.mcp_calls reflects
     # ONLY this run's traffic (logs accumulate across runs otherwise).
     for mcp in mcp_handles:
@@ -748,7 +816,7 @@ def run_scenario(
         # Provision agent — pass already-started handles so platform runtime
         # plugins can register them into the live MCP server without
         # starting them a second time.
-        handle = runtime.provision(config, mcps=mcp_handles)
+        handle = _SerializedAgentHandle(runtime.provision(config, mcps=mcp_handles))
 
         _bind_state_probe_workspace(state_probe, handle)
         _check_world_preconditions(scenario, mcp_handles, config, state_probe, handle)
@@ -802,27 +870,25 @@ def run_scenario(
                 warnings = [f"runner_error: {exc}"]
                 if hook_state is not None:
                     warnings.extend(hook_state.warnings)
-                trace_kwargs = {
-                    "scenario_id": scenario.name,
-                    "agent_id": config.agent_id,
-                    "variant_id": config.variant_id,
-                    "model": model,
-                    "quant": quant,
-                    "sampler": sampler,
-                    "started_at": now,
-                    "finished_at": now,
-                    "turns": [],
-                    "tool_schema_hash": _tool_schema_hash(mcp_handles),
-                    "worker_warnings": warnings,
-                }
-                if hook_state is not None:
-                    trace_kwargs["run_id"] = hook_state.run_id
-                trace = Trace(**trace_kwargs)
+                trace = Trace(
+                    run_id=hook_state.run_id if hook_state is not None else str(uuid.uuid4()),
+                    scenario_id=scenario.name,
+                    agent_id=config.agent_id,
+                    variant_id=config.variant_id,
+                    model=model,
+                    quant=quant,
+                    sampler=sampler,
+                    started_at=now,
+                    finished_at=now,
+                    turns=[],
+                    tool_schema_hash=_tool_schema_hash(mcp_handles),
+                    worker_warnings=warnings,
+                )
                 score = Score(
                     outcome=LayerResult(passed=False, detail=f"run error: {exc}"),
                     trajectory=LayerResult(passed=False, detail="run error"),
-                    constraint=LayerResult(passed=True, detail="no policies checked"),
-                    robustness=LayerResult(passed=True, detail="no perturbations checked"),
+                    constraint=LayerResult(passed=False, detail="not evaluated due run error"),
+                    robustness=LayerResult(passed=False, detail="not evaluated due run error"),
                     failure_cost=scenario.failure_cost,
                 )
                 if hook_state is not None:

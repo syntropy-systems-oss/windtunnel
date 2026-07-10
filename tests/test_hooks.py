@@ -617,6 +617,70 @@ def test_late_reply_after_converse_timeout_is_discarded(
     assert [call["timed_out"] for call in ctx.converse_calls] == [True, False]
 
 
+def test_timed_out_hook_send_finishes_before_next_run_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: a timed-out daemon send must not race reset_state() and
+    repopulate the next run after its reset has completed."""
+    events: list[str] = []
+
+    class OrderedHandle:
+        def __init__(self) -> None:
+            self.reset_count = 0
+            self.main_count = 0
+            self.hook_count = 0
+
+        def reset_state(self) -> None:
+            self.reset_count += 1
+            events.append(f"reset-{self.reset_count}")
+
+        def send(self, messages: list[dict], session_id: str) -> dict:
+            del session_id
+            if messages[0]["content"] == "diagnostic":
+                self.hook_count += 1
+                call = self.hook_count
+                events.append(f"hook-{call}-start")
+                time.sleep(0.04)
+                events.append(f"hook-{call}-end")
+                return {"content": "late diagnostic"}
+            self.main_count += 1
+            events.append(f"main-{self.main_count}")
+            return {"content": "ok"}
+
+        def teardown(self) -> None:
+            events.append("teardown")
+
+    class OrderedRuntime:
+        def __init__(self) -> None:
+            self.handle = OrderedHandle()
+
+        def provision(self, config: AgentConfig, mcps: list | None = None):
+            del config, mcps
+            return self.handle
+
+    class TimeoutHook(Hook):
+        name = "timeout_hook"
+
+        def on_run_scored(self, ctx: HookContext) -> None:
+            try:
+                ctx.converse("diagnostic")
+            except RuntimeError:
+                pass
+
+    monkeypatch.setenv("WT_HOOK_CONVERSE_TIMEOUT_S", "0.01")
+
+    result = run_scenario(
+        _scenario(),
+        OrderedRuntime(),
+        runs_per_scenario=2,
+        hooks=[TimeoutHook()],
+    )
+
+    assert result.aggregate.total == 2
+    assert events.index("hook-1-end") < events.index("reset-2")
+    assert events.index("hook-2-end") < events.index("teardown")
+
+
 def test_scenario_artifact_collision_uses_counter_and_warning(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

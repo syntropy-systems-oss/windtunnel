@@ -320,6 +320,11 @@ def _to_response(envelope: dict[str, Any]) -> Response:
 class _HttpInjectHandle:
     """AgentHandle that POSTs Contract C requests to one endpoint."""
 
+    # Contract C v1 transmits only the newest user text. The runner inspects
+    # this private compatibility marker before attempting a history-shaped
+    # perturbation, which this wire cannot faithfully deliver.
+    _windtunnel_consumes_full_history = False
+
     def __init__(self, base_url: str, timeout_s: float) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_s = timeout_s
@@ -396,8 +401,8 @@ class HttpInjectRuntime:
         self._timeout_s = _resolve_timeout(timeout_s)
         self.provisions: list[tuple[AgentConfig, _HttpInjectHandle]] = []
 
-    def provision(self, config: AgentConfig, mcps: list | None = None) -> AgentHandle:  # type: ignore[override]
+    def provision(self, config: AgentConfig, mcps: list[Any] | None = None) -> AgentHandle:
         # mcps: ignored — Contract C v1 has no tool-registration route.
         handle = _HttpInjectHandle(self._base_url, self._timeout_s)
         self.provisions.append((config, handle))
-        return handle  # type: ignore[return-value]
+        return handle

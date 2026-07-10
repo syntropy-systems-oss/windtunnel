@@ -45,7 +45,7 @@ subclass anything, they just provide matching methods.
 """
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from windtunnel.spi.agent_runtime import AgentRuntime
 
@@ -81,7 +81,7 @@ class RuntimePlugin(Protocol):
         """
         ...
 
-    def pre_run(self, runtime: AgentRuntime, scenarios: list, runtime_name: str) -> None:
+    def pre_run(self, runtime: AgentRuntime, scenarios: list[Any], runtime_name: str) -> None:
         """OPTIONAL one-shot bench prep, after build() + scenario loading.
 
         This is the home for platform-specific run preparation that needs to

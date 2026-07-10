@@ -89,7 +89,7 @@ def run_reset_canary(
     runtime: AgentRuntime,
     config: AgentConfig | None = None,
     *,
-    mcps: list | None = None,
+    mcps: list[Any] | None = None,
     probe_texts: list[str] | None = None,
     state_probe: StateProbe | None = None,
     probe_recall: bool = True,

@@ -254,15 +254,23 @@ def storage_path(trace: Trace, base_dir: Path | None = None) -> Path:
         base_dir = Path(__file__).parent.parent / "runs"
     base_dir = Path(base_dir)
 
-    # Sanitize fields for use in filesystem paths — replace path-unsafe chars.
+    # Sanitize fields for use in filesystem paths. In particular, ``.`` and
+    # ``..`` must never survive as components: scenario packs are extensible,
+    # and their identity strings must not be able to escape base_dir.
     def _safe(s: str) -> str:
-        return s.replace("/", "_").replace(" ", "_").replace(":", "_")
+        component = "".join(
+            char if char.isalnum() or char in "-._" else "_"
+            for char in str(s)
+        )
+        if component in {"", ".", ".."}:
+            return "_" * max(1, len(component))
+        return component
 
     ts = trace.started_at.astimezone(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     short_id = trace.run_id[:8]
     filename = f"{ts}_{short_id}.json"
 
-    return (
+    candidate = (
         base_dir
         / _safe(trace.scenario_id)
         / _safe(trace.agent_id)
@@ -271,3 +279,8 @@ def storage_path(trace: Trace, base_dir: Path | None = None) -> Path:
         / _safe(trace.quant)
         / filename
     )
+    resolved_base = base_dir.resolve()
+    resolved_candidate = candidate.resolve()
+    if not resolved_candidate.is_relative_to(resolved_base):
+        raise ValueError(f"trace storage path escaped base directory: {candidate}")
+    return candidate

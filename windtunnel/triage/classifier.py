@@ -23,7 +23,7 @@ See windtunnel/docs/writing-an-optimizer.md to implement a custom optimizer.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from windtunnel.api.scenario import Scenario
 from windtunnel.api.score import Score
@@ -78,7 +78,7 @@ class FixSuggestion:
         An optimizer can populate this; a human reviewer can read it and decide.
     """
     fix_vector: str
-    target: dict
+    target: dict[str, Any]
     rationale: str
     diff_text: str | None = None
 

@@ -27,6 +27,7 @@ from windtunnel.api.perturbations import (
 )
 from windtunnel.api.runner import run_scenario
 from windtunnel.api.scenario import PreSendPerturbation, Scenario
+from windtunnel.runtimes.http_inject import HttpInjectRuntime
 from windtunnel.runtimes.in_memory import InMemoryRuntime
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -221,3 +222,41 @@ class TestRunnerWiring:
         sys_msgs = [m for m in sent_messages if m["role"] == "system"]
         assert sys_msgs, "expected an injected system memory context"
         assert any("Bluewing uses Gmail." in m["content"] for m in sys_msgs)
+
+    def test_http_inject_refuses_to_mark_undeliverable_history_as_applied(
+        self,
+        monkeypatch,
+    ) -> None:
+        """Regression: Contract C sends only newest text, so a history-shaped
+        perturbation must fail honestly before /wt/inject rather than go green."""
+        operations: list[str] = []
+
+        def fake_post_json(url, payload, *, timeout_s, operation, absent_statuses=()):
+            del url, payload, timeout_s, absent_statuses
+            operations.append(operation)
+            if operation == "reset":
+                return {"wt_inject": 1}
+            raise AssertionError(f"unexpected operation: {operation}")
+
+        monkeypatch.setattr(
+            "windtunnel.runtimes.http_inject.runtime._post_json",
+            fake_post_json,
+        )
+        perturbation = InjectStaleMemory(key="k", value="POISON_SENTINEL")
+        scenario = _scenario([perturbation], must_call=[])
+
+        run = run_scenario(
+            scenario,
+            HttpInjectRuntime(base_url="http://unused", timeout_s=1),
+        ).runs[0]
+
+        assert operations == ["reset"]
+        assert run.score.outcome.passed is False
+        assert run.score.robustness.passed is False
+        assert any(
+            "cannot deliver history-shaped perturbations" in warning
+            for warning in run.trace.worker_warnings
+        )
+        assert not any(
+            perturbation.marker in warning for warning in run.trace.worker_warnings
+        )
