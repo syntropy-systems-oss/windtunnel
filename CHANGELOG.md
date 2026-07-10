@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.7.0...v0.7.1) (2026-07-10)
+
+
+### Bug Fixes
+
+* harden runtime evidence and reporting plumbing ([#38](https://github.com/syntropy-systems-oss/windtunnel/issues/38)) ([cd1a766](https://github.com/syntropy-systems-oss/windtunnel/commit/cd1a766c19406ba0d305a39d5f3c666d11a002a5))
+
 ## [0.7.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.6.0...v0.7.0) (2026-07-08)
 
 
