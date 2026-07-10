@@ -42,18 +42,46 @@ Matrix dispatch:
 """
 from __future__ import annotations
 
-import json
-import threading
 import uuid
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
-from windtunnel.api._evidence import (
-    MCP_EVIDENCE_AVAILABLE,
-    MCP_EVIDENCE_UNAVAILABLE_PREFIX,
+from windtunnel.api._runner.evidence import (
+    capture_observations as _capture_observations,
+)
+from windtunnel.api._runner.evidence import (
+    capture_surface as _capture_surface_impl,
+)
+from windtunnel.api._runner.evidence import (
+    collect_mcp_evidence as _collect_mcp_evidence,
+)
+from windtunnel.api._runner.evidence import (
+    tool_schema_hash as _tool_schema_hash_impl,
+)
+from windtunnel.api._runner.hooks import (
+    RunHookState as _RunHookState,
+)
+from windtunnel.api._runner.hooks import (
+    SerializedAgentHandle as _SerializedAgentHandle,
+)
+from windtunnel.api._runner.hooks import (
+    dispatch_hooks as _dispatch_hooks,
+)
+from windtunnel.api._runner.messages import (
+    build_messages as _build_messages,
+)
+from windtunnel.api._runner.messages import (
+    extract_reply as _extract_reply_impl,
+)
+from windtunnel.api._runner.messages import (
+    extract_response_worker_warnings as _extract_response_worker_warnings,
+)
+from windtunnel.api._runner.world import (
+    bind_state_probe_workspace as _bind_state_probe_workspace,
+)
+from windtunnel.api._runner.world import (
+    check_world_preconditions as _check_world_preconditions,
 )
 from windtunnel.api.aggregate import AggregateResult, ScenarioRunResult, aggregate_runs
 from windtunnel.api.evaluators import (
@@ -62,20 +90,20 @@ from windtunnel.api.evaluators import (
     evaluate_robustness,
     evaluate_trajectory,
 )
-from windtunnel.api.preconditions import (
-    FileExists,
-    Precondition,
-    PreconditionContext,
-    ToolAvailable,
-    WorldMismatchError,
-)
 from windtunnel.api.scenario import PreSendPerturbation, Scenario
 from windtunnel.api.score import LayerResult, Score
-from windtunnel.api.trace import Hash, Trace, Turn, compute_hash
+from windtunnel.api.trace import Trace, Turn
 from windtunnel.spi.agent_runtime import AgentConfig, AgentHandle, AgentRuntime, SamplingConfig
-from windtunnel.spi.hooks import Hook, HookArtifact, HookContext
+from windtunnel.spi.hooks import HookArtifact
 from windtunnel.spi.mcp_server import MCPHandle, MCPServer
 from windtunnel.spi.state_probe import StateProbe
+
+# Compatibility attributes for callers that historically imported these
+# private helpers from api.runner. Their implementations now live in the
+# private runner engine.
+_capture_surface = _capture_surface_impl
+_extract_reply = _extract_reply_impl
+_tool_schema_hash = _tool_schema_hash_impl
 
 # ─── ScenarioResult ───────────────────────────────────────────────────────────
 
@@ -103,445 +131,6 @@ class ScenarioResult:
             f"pass_rate={self.aggregate.pass_rate:.0%}, "
             f"runs={self.aggregate.total})"
         )
-
-
-class _SerializedAgentHandle:
-    """Serialize sends, resets, and teardown for one runtime handle.
-
-    Post-score hooks may execute ``send()`` on a worker thread so they can
-    report a diagnostic timeout.  A timed-out worker is still running; sharing
-    this lock with the runner's next reset/teardown prevents that late request
-    from racing state isolation or resource destruction.
-    """
-
-    def __init__(self, inner: AgentHandle) -> None:
-        self._inner = inner
-        self._lock = threading.RLock()
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._inner, name)
-
-    def send(self, messages: list[dict[str, Any]], session_id: str) -> dict[str, Any]:
-        with self._lock:
-            return self._inner.send(messages, session_id)
-
-    def reset_state(self) -> None:
-        with self._lock:
-            self._inner.reset_state()
-
-    def teardown(self) -> None:
-        with self._lock:
-            self._inner.teardown()
-
-
-@dataclass
-class _RunHookState:
-    """Mutable hook side-channel for a single run."""
-
-    run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    artifacts: list[HookArtifact] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-
-
-def _hook_name(hook: object) -> str:
-    return str(getattr(hook, "name", hook.__class__.__name__))
-
-
-def _hook_method(hook: object, point: str) -> Callable[..., Any] | None:
-    method = getattr(hook, point, None)
-    if not callable(method):
-        return None
-    if isinstance(hook, Hook) and getattr(type(hook), point, None) is getattr(Hook, point, None):
-        return None
-    return cast(Callable[..., Any], method)
-
-
-def _append_hook_warning(sink: list[str], hook: object, exc: BaseException) -> None:
-    sink.append(f"hook:{_hook_name(hook)}: {exc}")
-
-
-def _normalize_hook_reply(response: dict[str, Any]) -> str:
-    reply, _tool_calls = _extract_reply(response)
-    return reply
-
-
-def _dispatch_hooks(
-    hooks: Sequence[object],
-    point: str,
-    *,
-    warning_sink: list[str],
-    artifact_sink: list[HookArtifact],
-    scenario: Scenario | None = None,
-    agent: AgentConfig | None = None,
-    run_id: str | None = None,
-    session_id: str | None = None,
-    trace: Trace | None = None,
-    score: Score | None = None,
-    aggregate: Any = None,
-    handle: AgentHandle | None = None,
-) -> None:
-    if not hooks:
-        return
-    for hook in hooks:
-        ctx: HookContext | None = None
-        try:
-            method = _hook_method(hook, point)
-            if method is None:
-                continue
-            ctx = HookContext(
-                hook_name=_hook_name(hook),
-                phase=point,
-                scenario=scenario,
-                agent=agent,
-                run_id=run_id,
-                session_id=session_id,
-                trace=trace,
-                score=score,
-                aggregate=aggregate,
-                handle=handle if point == "on_run_scored" else None,
-                reply_normalizer=_normalize_hook_reply,
-                warning_sink=warning_sink,
-            )
-            method(ctx)
-        except Exception as exc:  # noqa: BLE001 - hook failures never gate runs
-            _append_hook_warning(warning_sink, hook, exc)
-        if ctx is not None:
-            artifact_sink.extend(ctx.artifacts)
-
-
-# ─── Turn-building helper ─────────────────────────────────────────────────────
-
-def _build_messages(
-    user_turns: list[str],
-    assistant_responses: list[str],
-) -> list[dict[str, Any]]:
-    """Interleave user turns with prior assistant responses.
-
-    Used for multi-turn scenarios. Mirrors the pattern from
-    dim_multi_turn_drift/multi_turn.py build_turn_messages().
-
-    Args:
-        user_turns:          all user turns up to (and including) the current one.
-        assistant_responses: prior assistant responses (len = len(user_turns) - 1).
-
-    Returns list of OpenAI-format message dicts.
-    """
-    messages: list[dict[str, Any]] = []
-    for i, user_text in enumerate(user_turns):
-        messages.append({"role": "user", "content": user_text})
-        if i < len(assistant_responses):
-            messages.append({"role": "assistant", "content": assistant_responses[i]})
-    return messages
-
-
-# ─── MCP call-log collection ──────────────────────────────────────────────────
-
-def _collect_mcp_evidence(mcp_handles: list[MCPHandle]) -> tuple[list[dict[str, Any]], list[str]]:
-    """Drain every handle's call_log() into trace-serializable dicts.
-
-    Normalization decisions:
-    - Dicts, not MCPCall objects — the Trace is pure-stdlib JSON; storing
-      dataclass instances would break save_trace() round-trips.
-    - Dict keys mirror MCPCall fields ({"tool_name", "args", "result",
-      "timestamp_ms", optional "extra"}) — the same shape the /calls HTTP
-      endpoint already serves, so in-process and subprocess logs look
-      identical in a trace.
-    - result is coerced to repr() when not JSON-serializable (in-process
-      handlers may return arbitrary objects; the trace must still save).
-      extra gets the same guard — it is runtime-controlled metadata.
-    - Sorted by timestamp_ms across ALL handles, so a multi-server run
-      yields one chronological stream — the order trajectory scoring needs.
-    - Evidence failures are persisted as unavailable markers so scoring fails
-      closed instead of treating absence as a witnessed empty log.
-    The returned warning list is derived from call-log metadata, not a new
-    component channel.  Universe replay misses are witnessed calls with
-    ``extra.divergence``; the runner turns that evidence into the
-    ``worker_warnings`` marker that perturbations already use for
-    scorer-visible run metadata.
-    """
-    calls: list[dict[str, Any]] = []
-    warnings: list[str] = []
-    unavailable: list[str] = []
-    for mcp in mcp_handles:
-        try:
-            log = mcp.call_log()
-        except Exception as exc:
-            unavailable.append(f"{_mcp_handle_label(mcp)}: {type(exc).__name__}: {exc}")
-            continue
-        for c in log:
-            result = c.result
-            try:
-                json.dumps(result)
-            except (TypeError, ValueError):
-                result = repr(result)
-            call_dict = {
-                "tool_name": c.tool_name,
-                "args": c.args,
-                "result": result,
-                "timestamp_ms": c.timestamp_ms,
-            }
-            if c.extra:
-                extra = c.extra
-                try:
-                    json.dumps(extra)
-                except (TypeError, ValueError):
-                    extra = json.loads(json.dumps(extra, default=repr))
-                call_dict["extra"] = extra
-                divergence = c.extra.get("divergence")
-                if isinstance(divergence, dict):
-                    policy = divergence.get("policy")
-                    if isinstance(policy, str):
-                        warnings.append(
-                            f"universe_divergence: tool={c.tool_name} policy={policy}"
-                        )
-            calls.append(call_dict)
-    calls.sort(key=lambda c: c.get("timestamp_ms") or 0.0)
-    if unavailable:
-        warnings.append(
-            f"{MCP_EVIDENCE_UNAVAILABLE_PREFIX} ({'; '.join(unavailable)})"
-        )
-    elif mcp_handles:
-        # This marker is load-bearing when calls == []: it means a logging
-        # server was present and positively witnessed zero calls, so evaluators
-        # must not fall back to the agent's self-reported transcript.
-        warnings.append(MCP_EVIDENCE_AVAILABLE)
-    return calls, warnings
-
-
-def _mcp_handle_label(mcp: MCPHandle) -> str:
-    """Return a bounded diagnostic label without trusting handle properties."""
-    try:
-        url = mcp.url
-    except Exception:
-        url = None
-    return str(url or type(mcp).__name__)
-
-
-# ─── External-state observation capture ───────────────────────────────────────
-
-def _capture_observations(
-    state_probe: StateProbe | None,
-) -> tuple[dict[str, Any], list[str]]:
-    """Snapshot external state via the probe. Return (observations, warnings).
-
-    Failure semantics differ from _collect_mcp_evidence on purpose: a dead
-    call-log handle silently contributes [] (logs are supplementary
-    evidence), but a failed capture() gets a "probe_error: ..." warning —
-    a Policy reading trace.observations would otherwise fail with a bare
-    KeyError that triage can't distinguish from a genuine violation.
-
-    Non-JSON-serializable leaves are coerced via repr() (json default=)
-    so a sloppy probe can't brick save_trace(); a non-dict capture()
-    return is rejected with a warning rather than stored, because every
-    downstream consumer indexes observations by evidence-source key.
-    """
-    if state_probe is None:
-        return {}, []
-    try:
-        observations = state_probe.capture()
-    except Exception as exc:
-        return {}, [f"probe_error: capture failed: {exc}"]
-    if not isinstance(observations, dict):
-        return {}, [
-            f"probe_error: capture() returned {type(observations).__name__}, expected dict",
-        ]
-    try:
-        json.dumps(observations)
-    except (TypeError, ValueError):
-        # default=repr rescues non-serializable VALUES; non-str KEYS still
-        # raise — degrade to a warning, never crash the run over evidence.
-        try:
-            observations = json.loads(json.dumps(observations, default=repr))
-        except (TypeError, ValueError) as exc:
-            return {}, [f"probe_error: snapshot not JSON-serializable: {exc}"]
-    return observations, []
-
-
-# ─── Response-shape tolerance ─────────────────────────────────────────────────
-
-def _tool_schema_hash(mcp_handles: list[MCPHandle]) -> Hash | None:
-    """Hash the tool surface the run's MCP servers actually offered.
-
-    Per handle, prefers served_tool_definitions() (full name/description/
-    schema entries) and falls back to served_tools() (name-only entries).
-    Entries keep manifest order and handle order — order-sensitive by
-    design, a reordered manifest is a changed surface. Key order within an
-    entry is canonicalized (sort_keys) so semantically identical manifests
-    hash identically.
-
-    Returns None when the manifest is unknown: a handle that exposes no
-    tool metadata (or whose introspection raises) makes the WHOLE surface
-    unknown, because hashing a partial manifest would claim identity over
-    tools we never saw — the placeholder sin this helper replaces. With no
-    handles at all the result is compute_hash("[]"): truthfully no tools.
-    """
-    entries: list[dict[str, Any]] = []
-    try:
-        for mcp in mcp_handles:
-            definitions = getattr(mcp, "served_tool_definitions", None)
-            if callable(definitions):
-                entries.extend(definitions())
-                continue
-            names = getattr(mcp, "served_tools", None)
-            if callable(names):
-                entries.extend({"name": name} for name in names())
-                continue
-            return None  # opaque handle — the whole manifest is unknown
-        return compute_hash(json.dumps(entries, sort_keys=True, ensure_ascii=False))
-    except Exception:
-        # Total by design: this also runs inside the failed-run except
-        # path, where a raise here would mask the original runner error.
-        return None
-
-
-def _capture_surface(handle: AgentHandle) -> tuple[dict[str, Any] | None, list[str]]:
-    """Probe the handle's prompt surface, totally and honestly.
-
-    Returns (surface_block, warnings). None when the handle has no
-    describe_surface() capability at all — distinct from a probed
-    {"status": "unavailable"}. A raising or non-conforming probe becomes
-    {"status": "invalid"} with a worker warning; the malformed value is
-    never stored (a plausible-but-partial surface is worse evidence than
-    an honest absence). Total by design — a broken reporting capability
-    must not torch the run it exists to document.
-    """
-    describe = getattr(handle, "describe_surface", None)
-    if not callable(describe):
-        return None, []
-    try:
-        block = describe()
-    except Exception as exc:
-        detail = f"describe_surface raised: {exc}"
-        return {"status": "invalid", "detail": detail}, [f"surface_invalid: {detail}"]
-    if not isinstance(block, dict) or not isinstance(block.get("status"), str):
-        detail = "describe_surface returned a non-conforming block"
-        return {"status": "invalid", "detail": detail}, [f"surface_invalid: {detail}"]
-    if block["status"] == "invalid":
-        return block, [f"surface_invalid: {block.get('detail') or 'unspecified'}"]
-    return block, []
-
-
-def _extract_reply(response: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
-    """Extract (content, tool_calls) from an AgentHandle.send() response.
-
-    Tolerates the response shapes the SPI accepts (see
-    spi/agent_runtime.py AgentHandle.send):
-
-    - OpenAI chat-completions: {"choices": [{"message": {...}}]}
-      — kept for OpenAI-compat; an empty "choices" list yields ("", []).
-    - flat message:            {"content": str, "tool_calls": [...]}
-      — the forward-looking minimal contract.
-    - wrapped message:         {"message": {"content": ..., "tool_calls": ...}}
-
-    Missing/None content normalizes to ""; missing/None tool_calls to [].
-    """
-    msg: dict[str, Any] = {}
-    choices = response.get("choices")
-    if choices:
-        msg = choices[0].get("message") or {}
-    elif isinstance(response.get("message"), dict):
-        msg = response["message"]
-    elif "choices" not in response:
-        msg = response  # flat shape: the response IS the message
-    content: str = msg.get("content") or ""
-    tool_calls: list[dict[str, Any]] = msg.get("tool_calls") or []
-    return content, tool_calls
-
-
-def _extract_response_worker_warnings(response: dict[str, Any]) -> list[str]:
-    """Return runtime-supplied warnings from a send() response, if present.
-
-    Runtimes may need to surface scoreable agent-level failures without
-    raising and without inventing assistant content. A top-level
-    ``worker_warnings`` list is copied into the Trace alongside probe/MCP
-    warnings; malformed warning payloads degrade to one diagnostic string.
-    """
-    if "worker_warnings" not in response:
-        return []
-    warnings = response["worker_warnings"]
-    if not isinstance(warnings, list):
-        return [
-            "runtime_warning_shape: response worker_warnings must be a list, "
-            f"got {type(warnings).__name__}",
-        ]
-    return [str(warning) for warning in warnings]
-
-
-# ─── World preconditions ─────────────────────────────────────────────────────
-
-def _compiled_preconditions(scenario: Scenario) -> list[Precondition]:
-    """Return explicit preconditions plus requires_tools/requires_files sugar."""
-    return [
-        *(ToolAvailable(name) for name in scenario.requires_tools),
-        *(FileExists(path) for path in scenario.requires_files),
-        *scenario.preconditions,
-    ]
-
-
-def _handle_path(handle: AgentHandle | None, attr: str) -> Path | None:
-    if handle is None:
-        return None
-    try:
-        raw = getattr(handle, attr)
-    except Exception:
-        return None
-    if raw is None:
-        return None
-    try:
-        return Path(raw)
-    except TypeError:
-        return None
-
-
-def _bind_state_probe_workspace(
-    state_probe: StateProbe | None,
-    handle: AgentHandle | None,
-) -> None:
-    """Best-effort optional hook for probes that need a runtime workspace path."""
-    if state_probe is None:
-        return
-    workspace_dir = _handle_path(handle, "workspace_dir")
-    if workspace_dir is None:
-        return
-    bind = getattr(state_probe, "bind_workspace", None)
-    if not callable(bind):
-        bind = getattr(state_probe, "set_workspace_dir", None)
-    if callable(bind):
-        bind(workspace_dir)
-
-
-def _check_world_preconditions(
-    scenario: Scenario,
-    mcp_handles: list[MCPHandle],
-    config: AgentConfig,
-    state_probe: StateProbe | None,
-    handle: AgentHandle | None = None,
-) -> None:
-    """Evaluate all preconditions and raise one joined mismatch error."""
-    checks = _compiled_preconditions(scenario)
-    if not checks:
-        return
-
-    ctx = PreconditionContext(
-        mcp_handles=mcp_handles,
-        state_probe=state_probe,
-        agent_config=config,
-        runtime_handle=handle,
-        workspace_dir=_handle_path(handle, "workspace_dir"),
-        workspace_template=_handle_path(handle, "workspace_template"),
-    )
-    failures: list[str] = []
-    for check in checks:
-        try:
-            failure = check.check(ctx)
-        except Exception as exc:  # noqa: BLE001 - fail closed, but keep checking
-            failure = f"check raised {exc}"
-        if failure is not None:
-            failures.append(f"{check!r}: {failure}")
-
-    if failures:
-        raise WorldMismatchError(scenario.name, failures)
 
 
 # ─── Core single-run driver ───────────────────────────────────────────────────

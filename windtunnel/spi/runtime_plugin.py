@@ -36,25 +36,25 @@ a bench fixture server when a matching dim is selected) — the CLI never
 special-cases a platform.
 
 pre_run is OPTIONAL: the CLI invokes it via getattr(plugin, "pre_run", None),
-so a minimal plugin may omit it entirely. (Note: omitting it also means
-isinstance(plugin, RuntimePlugin) is False under @runtime_checkable — the CLI
-deliberately does not isinstance-gate on this Protocol for that reason.)
+so a minimal plugin may omit it entirely. RuntimePlugin therefore declares
+only the required build() method; implementations may add pre_run without a
+second registration contract.
 
 Like the rest of spi/, this is a structural Protocol — implementers don't
 subclass anything, they just provide matching methods.
 """
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from windtunnel.spi.agent_runtime import AgentRuntime
 
 
 @runtime_checkable
 class RuntimePlugin(Protocol):
-    """Factory + bench-prep hook for one (or several) named runtimes.
+    """Required runtime factory contract for one or several runtime names.
 
-    Implementers: the built-in in_memory plugin (windtunnel.cli),
+    Implementers: the built-in plugins (windtunnel._cli.runtime_discovery),
     platform driver packages (e.g. an AcmePlugin), and any
     third-party driver registered under the "windtunnel.runtimes"
     entry-point group.
@@ -78,23 +78,5 @@ class RuntimePlugin(Protocol):
         vars (e.g. WT_ACME_*) and should raise/exit loudly when they
         are missing — build() runs before any scenario, so failing fast
         here is the cheap failure.
-        """
-        ...
-
-    def pre_run(self, runtime: AgentRuntime, scenarios: list[Any], runtime_name: str) -> None:
-        """OPTIONAL one-shot bench prep, after build() + scenario loading.
-
-        This is the home for platform-specific run preparation that needs to
-        see the full scenario selection: starting fake upstream servers,
-        propagating their dynamic ports into container env (recreate, not
-        restart — Docker can't mutate a running container's env), seeding
-        fixture workspaces, swapping readiness probes. Inspect the scenarios'
-        tags to decide what applies; do nothing when nothing matches.
-
-        Called at most once per `wt run` invocation, before the first
-        scenario executes. NOT called by `wt replay` (replay has no scenario
-        selection to prep for). Implementations needing end-of-process
-        cleanup for resources started here should register it themselves
-        (e.g. atexit) — the CLI has no post_run hook.
         """
         ...

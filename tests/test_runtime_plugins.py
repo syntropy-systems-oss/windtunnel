@@ -156,4 +156,6 @@ class TestUnknownRuntimeError:
 
 class TestRuntimePluginProtocol:
     def test_protocol_exported_from_spi(self) -> None:
-        from windtunnel.spi import RuntimePlugin  # noqa: F401
+        from windtunnel.spi import RuntimePlugin
+
+        assert isinstance(DottedFixturePlugin(), RuntimePlugin)

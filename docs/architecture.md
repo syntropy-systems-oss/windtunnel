@@ -45,6 +45,30 @@ produce.
                                        └─────────────────┘
 ```
 
+## Internal implementation boundaries
+
+The stable modules above are also compatibility facades. Their public import
+paths stay fixed while focused private packages own the implementation:
+
+| Stable surface | Private implementation | Responsibility |
+|---|---|---|
+| `windtunnel.api.runner` | `windtunnel.api._runner` | Message shaping, evidence capture, world preconditions, and hook dispatch. |
+| `windtunnel.api.evaluators` | `windtunnel.api._matching` | Shared fact, number, last-turn, and canonical tool-name matching. |
+| `windtunnel.cli` | `windtunnel._cli` | Runtime/scenario discovery, selection, hooks, sweep storage, and machine-readable output. |
+| `windtunnel.report` | `windtunnel._report` | Run loading, report modeling/diffs, and text/JSON rendering. |
+
+Private implementation modules may depend on API/SPI contracts, but never
+import back from their facade. That one-way dependency keeps orchestration
+testable without creating circular imports. Code outside Wind Tunnel should
+continue importing the stable surface; underscore-prefixed packages are free
+to evolve between releases.
+
+SPI concepts have one canonical definition. In particular, `MCPSpec` is
+defined in `spi.agent_runtime` and re-exported elsewhere, and a
+`RuntimePlugin` structurally requires only `build()`. Optional lifecycle hooks
+such as `pre_run()` are discovered by capability rather than made part of the
+minimum plugin contract.
+
 ## 2. Anatomy of a scored run
 
 `run_scenario(scenario, runtime, mcps)` orchestrates one batch:

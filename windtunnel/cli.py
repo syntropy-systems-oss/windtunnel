@@ -18,89 +18,194 @@ Design: argparse (stdlib) — no click dependency. Each subcommand is a
 function; main() is the dispatch entry point. Exit code 0 = all pass,
 non-zero = any regression or error.
 """
+
 from __future__ import annotations
 
 import argparse
 import fnmatch
-import hashlib
-import importlib
-import importlib.util
 import json
 import shutil
 import sys
 import traceback
-from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any
 
-from windtunnel.api.pack import ScenarioPack
-from windtunnel.api.runner import ScenarioResult
+from windtunnel._cli.hooks import (
+    _as_hook_instance as _as_hook_instance_impl,
+)
+from windtunnel._cli.hooks import (
+    _dispatch_pack_end_hooks as _dispatch_pack_end_hooks_impl,
+)
+from windtunnel._cli.hooks import (
+    _resolve_hooks as _resolve_hooks_impl,
+)
+from windtunnel._cli.models import (
+    _CompletedAggregate as _CompletedAggregateModel,
+)
+from windtunnel._cli.models import (
+    _SelectedScenario as _SelectedScenarioModel,
+)
+from windtunnel._cli.models import (
+    _SelectionResult as _SelectionResultModel,
+)
+from windtunnel._cli.output import (
+    _aggregate_time_seconds as _aggregate_time_seconds_impl,
+)
+from windtunnel._cli.output import (
+    _counts_as_gate_failure as _counts_as_gate_failure_impl,
+)
+from windtunnel._cli.output import (
+    _format_seconds as _format_seconds_impl,
+)
+from windtunnel._cli.output import (
+    _junit_failure_message as _junit_failure_message_impl,
+)
+from windtunnel._cli.output import (
+    _junit_failure_text as _junit_failure_text_impl,
+)
+from windtunnel._cli.output import (
+    _triage_categories as _triage_categories_impl,
+)
+from windtunnel._cli.output import (
+    _write_run_json as _write_run_json_impl,
+)
+from windtunnel._cli.output import (
+    _write_run_junit as _write_run_junit_impl,
+)
+from windtunnel._cli.output import (
+    _write_run_output as _write_run_output_impl,
+)
+from windtunnel._cli.runtime_discovery import (
+    _as_plugin_instance as _as_plugin_instance_impl,
+)
+from windtunnel._cli.runtime_discovery import (
+    _build_runtime as _build_runtime_impl,
+)
+from windtunnel._cli.runtime_discovery import (
+    _HttpInjectPlugin as _HttpInjectPluginImpl,
+)
+from windtunnel._cli.runtime_discovery import (
+    _InMemoryPlugin as _InMemoryPluginImpl,
+)
+from windtunnel._cli.runtime_discovery import (
+    _resolve_runtime_plugin as _resolve_runtime_plugin_impl,
+)
+from windtunnel._cli.runtime_discovery import (
+    _TerminusPlugin as _TerminusPluginImpl,
+)
+from windtunnel._cli.scenario_discovery import (
+    _coerce_scenario_pack as _coerce_scenario_pack_impl,
+)
+from windtunnel._cli.scenario_discovery import (
+    _discover_scenario_packs as _discover_scenario_packs_impl,
+)
+from windtunnel._cli.scenario_discovery import (
+    _load_scenario_pack_source as _load_scenario_pack_source_impl,
+)
+from windtunnel._cli.scenario_discovery import (
+    _load_scenarios as _load_scenarios_impl,
+)
+from windtunnel._cli.scenario_discovery import (
+    _print_selection_warnings as _print_selection_warnings_impl,
+)
+from windtunnel._cli.scenario_discovery import (
+    _select_scenarios as _select_scenarios_impl,
+)
+from windtunnel._cli.storage import (
+    _append_ledger_records as _append_ledger_records_impl,
+)
+from windtunnel._cli.storage import (
+    _artifact_component as _artifact_component_impl,
+)
+from windtunnel._cli.storage import (
+    _collision_safe_artifact_path as _collision_safe_artifact_path_impl,
+)
+from windtunnel._cli.storage import (
+    _git_sha as _git_sha_impl,
+)
+from windtunnel._cli.storage import (
+    _ledger_record as _ledger_record_impl,
+)
+from windtunnel._cli.storage import (
+    _ledger_timestamp as _ledger_timestamp_impl,
+)
+from windtunnel._cli.storage import (
+    _origin_from_tags as _origin_from_tags_impl,
+)
+from windtunnel._cli.storage import (
+    _sweep_artifact_timestamp as _sweep_artifact_timestamp_impl,
+)
+from windtunnel._cli.storage import (
+    _write_hook_artifact_sidecar as _write_hook_artifact_sidecar_impl,
+)
+from windtunnel._cli.storage import (
+    _write_pack_hook_artifact as _write_pack_hook_artifact_impl,
+)
+from windtunnel._cli.storage import (
+    _write_scenario_hook_artifact as _write_scenario_hook_artifact_impl,
+)
+from windtunnel._cli.storage import (
+    _write_score_sidecar as _write_score_sidecar_impl,
+)
+from windtunnel._cli.storage import (
+    _write_sweep_hook_artifact as _write_sweep_hook_artifact_impl,
+)
+from windtunnel._cli.storage import (
+    _wt_version as _wt_version_impl,
+)
 from windtunnel.api.scenario import Scenario
 from windtunnel.api.score import Score
 from windtunnel.api.trace import Trace
-from windtunnel.spi.agent_runtime import AgentConfig, AgentRuntime
-from windtunnel.spi.hooks import HookArtifact
 from windtunnel.triage.classifier import FailureClassification, FailureClassifier
 
-
-class _RuntimePluginLike(Protocol):
-    """The required portion of RuntimePlugin; ``pre_run`` remains optional."""
-
-    def build(
-        self, runtime_name: str, label: str, soul_path: str | None
-    ) -> AgentRuntime: ...
-
-
-@dataclass(frozen=True)
-class _SelectedScenario:
-    """A Scenario paired with the ScenarioPack that contributed it.
-
-    The run loop mostly cares about the Scenario itself, but CI output and
-    pack/owner selection need the pack boundary that was lost when the old
-    helper flattened everything into a bare Scenario list.
-    """
-
-    pack: ScenarioPack
-    scenario: Scenario
-
-
-@dataclass(frozen=True)
-class _SelectionResult:
-    """The selected scenarios plus selector values that matched nothing.
-
-    Missing values are reported as usage-adjacent diagnostics without making a
-    partially matching selection fail. That preserves the historical
-    --scenario behavior: unknown names are printed, but known names still run;
-    only an empty final selection exits 2.
-    """
-
-    entries: list[_SelectedScenario]
-    unmatched_scenarios: list[str]
-    unmatched_tags: list[str]
-    unmatched_packs: list[str]
-    unmatched_owners: list[str]
-
-
-@dataclass(frozen=True)
-class _CompletedAggregate:
-    """A completed scenario aggregate with the metadata sweep writers need.
-
-    One collection feeds every end-of-sweep side effect: _ledger_record()
-    rows go to the ledger AND to `wt run --format json --out ...` (same
-    records by construction), while the JUnit writer reads the aggregate
-    plus the transport-only/runner-error context directly.
-    """
-
-    pack: ScenarioPack
-    scenario: Scenario
-    result: ScenarioResult
-    transport_only: bool
-    had_runner_error: bool
+# Compatibility facade: command orchestration and historical test seams remain
+# available from ``windtunnel.cli`` while their implementations live in focused
+# private service modules.
+_as_hook_instance = _as_hook_instance_impl
+_dispatch_pack_end_hooks = _dispatch_pack_end_hooks_impl
+_resolve_hooks = _resolve_hooks_impl
+_CompletedAggregate = _CompletedAggregateModel
+_SelectedScenario = _SelectedScenarioModel
+_SelectionResult = _SelectionResultModel
+_as_plugin_instance = _as_plugin_instance_impl
+_build_runtime = _build_runtime_impl
+_HttpInjectPlugin = _HttpInjectPluginImpl
+_InMemoryPlugin = _InMemoryPluginImpl
+_resolve_runtime_plugin = _resolve_runtime_plugin_impl
+_TerminusPlugin = _TerminusPluginImpl
+_coerce_scenario_pack = _coerce_scenario_pack_impl
+_discover_scenario_packs = _discover_scenario_packs_impl
+_load_scenario_pack_source = _load_scenario_pack_source_impl
+_load_scenarios = _load_scenarios_impl
+_print_selection_warnings = _print_selection_warnings_impl
+_select_scenarios = _select_scenarios_impl
+_counts_as_gate_failure = _counts_as_gate_failure_impl
+_write_run_output = _write_run_output_impl
+_write_run_json = _write_run_json_impl
+_write_run_junit = _write_run_junit_impl
+_junit_failure_message = _junit_failure_message_impl
+_junit_failure_text = _junit_failure_text_impl
+_triage_categories = _triage_categories_impl
+_aggregate_time_seconds = _aggregate_time_seconds_impl
+_format_seconds = _format_seconds_impl
+_write_score_sidecar = _write_score_sidecar_impl
+_write_hook_artifact_sidecar = _write_hook_artifact_sidecar_impl
+_write_pack_hook_artifact = _write_pack_hook_artifact_impl
+_write_scenario_hook_artifact = _write_scenario_hook_artifact_impl
+_write_sweep_hook_artifact = _write_sweep_hook_artifact_impl
+_collision_safe_artifact_path = _collision_safe_artifact_path_impl
+_artifact_component = _artifact_component_impl
+_sweep_artifact_timestamp = _sweep_artifact_timestamp_impl
+_ledger_timestamp = _ledger_timestamp_impl
+_origin_from_tags = _origin_from_tags_impl
+_git_sha = _git_sha_impl
+_wt_version = _wt_version_impl
+_ledger_record = _ledger_record_impl
+_append_ledger_records = _append_ledger_records_impl
 
 # ─── report ──────────────────────────────────────────────────────────────────
+
 
 def _cmd_report(args: argparse.Namespace) -> int:
     """Handle the `wt report` subcommand."""
@@ -132,6 +237,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
 
 
 # ─── compare ─────────────────────────────────────────────────────────────────
+
 
 def _cmd_compare(args: argparse.Namespace) -> int:
     """Handle the `wt compare` subcommand.
@@ -191,251 +297,6 @@ def _cmd_compare(args: argparse.Namespace) -> int:
 
 
 # ─── run ─────────────────────────────────────────────────────────────────────
-
-def _write_score_sidecar(
-    trace_path: Path,
-    score: Score,
-    scenario: Scenario,
-    *,
-    origin: dict[str, Any] | None = None,
-) -> Path:
-    """Write the `.score.json` sidecar next to a saved trace.
-
-    The sidecar is the union of BOTH consumer shapes, so one file feeds all
-    built-in commands:
-      - `wt report` / `wt compare` (report.load_runs → _cell_from_run) read the
-        FLAT top-level layer keys: outcome/trajectory/constraint/robustness
-        (each {"passed","detail"}) + failure_cost.
-      - `wt triage` (_cmd_triage) reads the NESTED keys: "score" (the same four
-        layers) + "scenario" (enough Scenario fields to rebuild it for the
-        classifier).
-    Each consumer ignores the other's keys.
-    """
-    import json  # noqa: PLC0415
-
-    from windtunnel.api.score import score_to_dict  # noqa: PLC0415
-
-    flat = score_to_dict(score)
-    sidecar = {
-        **flat,
-        "score": flat,
-        "scenario": {
-            "name": getattr(scenario, "name", ""),
-            "prompt": getattr(scenario, "prompt", ""),
-            "target_facts": getattr(scenario, "target_facts", []),
-            "requires_tool_use": getattr(scenario, "requires_tool_use", False),
-            "tags": list(getattr(scenario, "tags", []) or []),
-            "must_call": getattr(scenario, "must_call", []),
-            "forbidden_calls": getattr(scenario, "forbidden_calls", []),
-        },
-    }
-    if origin is not None:
-        sidecar["origin"] = origin
-    score_path = trace_path.with_suffix(".score.json")
-    score_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
-    return score_path
-
-
-def _write_hook_artifact_sidecar(trace_path: Path, artifact: HookArtifact) -> Path:
-    """Write one run-scoped hook artifact beside its trace."""
-    suffix = f".{_artifact_component(artifact.hook_name)}"
-    if artifact.label:
-        suffix += f".{_artifact_component(artifact.label)}"
-    suffix += ".json"
-    artifact_path = trace_path.with_suffix(suffix)
-    artifact_path.write_text(
-        json.dumps(artifact.payload, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    return artifact_path
-
-
-def _write_pack_hook_artifact(
-    runs_dir: Path, sweep_timestamp: str, artifact: HookArtifact
-) -> Path:
-    """Write one pack-scoped hook artifact at the runs directory root."""
-    return _write_sweep_hook_artifact(runs_dir, sweep_timestamp, artifact)
-
-
-def _write_scenario_hook_artifact(
-    runs_dir: Path,
-    sweep_timestamp: str,
-    artifact: HookArtifact,
-    scenario_id: str,
-) -> Path:
-    """Write one scenario-scoped hook artifact at the runs directory root."""
-    return _write_sweep_hook_artifact(
-        runs_dir,
-        sweep_timestamp,
-        artifact,
-        scenario_id=scenario_id,
-    )
-
-
-def _write_sweep_hook_artifact(
-    runs_dir: Path,
-    sweep_timestamp: str,
-    artifact: HookArtifact,
-    *,
-    scenario_id: str | None = None,
-) -> Path:
-    """Write one scenario- or pack-scoped hook artifact without overwriting."""
-    filename = f"{sweep_timestamp}.{_artifact_component(artifact.hook_name)}"
-    if scenario_id:
-        filename += f".{_artifact_component(scenario_id)}"
-    if artifact.label:
-        filename += f".{_artifact_component(artifact.label)}"
-    filename += ".pack.json"
-    artifact_path = _collision_safe_artifact_path(Path(runs_dir) / filename)
-    artifact_path.write_text(
-        json.dumps(artifact.payload, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    return artifact_path
-
-
-def _collision_safe_artifact_path(path: Path) -> Path:
-    if not path.exists():
-        return path
-
-    suffix = ".pack.json"
-    name = path.name
-    stem = name[: -len(suffix)] if name.endswith(suffix) else path.stem
-    for counter in range(2, 10000):
-        candidate = path.with_name(f"{stem}-{counter}{suffix}")
-        if not candidate.exists():
-            print(
-                f"wt run: warning: hook artifact target exists: {path}; "
-                f"writing {candidate.name} instead",
-                file=sys.stderr,
-            )
-            return candidate
-    raise OSError(f"could not find non-colliding hook artifact path for {path}")
-
-
-def _artifact_component(value: str) -> str:
-    component = "".join(ch if ch.isalnum() or ch in "_-" else "_" for ch in str(value))
-    return component or "artifact"
-
-
-def _sweep_artifact_timestamp() -> str:
-    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-
-
-def _ledger_timestamp() -> str:
-    """Return the UTC timestamp format used in append-only ledger rows."""
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _origin_from_tags(tags: list[str] | None) -> str | None:
-    """Extract the first best-effort origin:<ref> tag from a scenario."""
-    for tag in tags or []:
-        if tag.startswith("origin:") and tag != "origin:":
-            return tag.removeprefix("origin:")
-    return None
-
-
-def _git_sha() -> str | None:
-    """Best-effort current git SHA for the CLI ledger, or None on any failure."""
-    import subprocess  # noqa: PLC0415
-
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            check=True,
-            text=True,
-            timeout=1.0,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    sha = result.stdout.strip()
-    return sha or None
-
-
-def _wt_version() -> str:
-    """Best-effort installed package version, with a source-tree fallback.
-
-    Editable and source-tree runs can lack distribution metadata depending on
-    how the checkout was invoked. Falling back to pyproject.toml keeps ledger
-    rows useful without making package metadata resolution part of the run gate.
-    """
-    from importlib.metadata import PackageNotFoundError, version  # noqa: PLC0415
-
-    try:
-        return version("windtunnel-bench")
-    except PackageNotFoundError:
-        pass
-
-    try:
-        import tomllib  # noqa: PLC0415
-
-        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        return str(data["project"]["version"])
-    except (OSError, KeyError, TypeError, ValueError):
-        return "0+unknown"
-
-
-def _ledger_record(
-    *,
-    scenario: Scenario,
-    pack: ScenarioPack,
-    result: ScenarioResult,
-    label: str,
-    git_sha: str | None,
-    wt_version: str,
-) -> dict[str, Any]:
-    """Build one ledger row for a scenario aggregate.
-
-    The ledger is intentionally mechanism-only: the CLI records aggregate facts
-    that downstream tools can query, but it does not attach retention, trend, or
-    gating semantics to the row.
-    """
-    agg = result.aggregate
-    first_trace = result.runs[0].trace if result.runs else None
-
-    return {
-        "ts": _ledger_timestamp(),
-        "scenario_id": scenario.name,
-        "pack": getattr(pack, "name", None),
-        "owner": getattr(pack, "owner", None),
-        "label": label,
-        "model": getattr(first_trace, "model", None),
-        "quant": getattr(first_trace, "quant", None),
-        "verdict": agg.verdict,
-        "runs": agg.total,
-        "layer_pass_rates": {
-            "outcome": agg.outcome_pass_rate,
-            "trajectory": agg.trajectory_pass_rate,
-            "constraint": agg.constraint_pass_rate,
-            "robustness": agg.robustness_pass_rate,
-        },
-        "run_ids": [run.trace.run_id for run in result.runs],
-        "origin": _origin_from_tags(getattr(scenario, "tags", []) or []),
-        "git_sha": git_sha,
-        "wt_version": wt_version,
-    }
-
-
-def _append_ledger_records(runs_dir: Path, records: list[dict[str, Any]]) -> None:
-    """Append scenario-aggregate rows to <runs-dir>/ledger.ndjsonl.
-
-    Ledger writes are a CLI side effect, never a run gate. Any filesystem
-    problem degrades to a warning and leaves the sweep's exit-code semantics
-    unchanged.
-    """
-    if not records:
-        return
-
-    ledger_path = Path(runs_dir) / "ledger.ndjsonl"
-    try:
-        with ledger_path.open("a", encoding="utf-8") as f:
-            for record in records:
-                f.write(json.dumps(record, ensure_ascii=False, sort_keys=True))
-                f.write("\n")
-    except OSError as exc:
-        print(f"wt run: warning: could not write ledger {ledger_path}: {exc}", file=sys.stderr)
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
@@ -504,6 +365,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return 2
 
     from windtunnel.spi.agent_runtime import AgentConfig  # noqa: PLC0415
+
     # Thread --soul (a PATH) into AgentConfig.system_prompt so the platform
     # runtime's provision() writes it to the SOUL doc via `set-docs --soul`. The
     # flag is named --soul and the natural target is the SOUL document, so the
@@ -527,8 +389,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
             return 2
         persona_doc = agents_path
     config = AgentConfig(
-        agent_id="wt-cli", variant_id=label,
-        system_prompt=system_prompt, persona_doc=persona_doc,
+        agent_id="wt-cli",
+        variant_id=label,
+        system_prompt=system_prompt,
+        persona_doc=persona_doc,
     )
 
     # Dim-tag → MCPServer factory registry, derived from the packs. Scenarios
@@ -540,9 +404,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     # produce a fresh server instance (lifecycle: start-per-batch,
     # stop-per-batch inside run_scenario).
     mcp_registry = {
-        f"dim:{pack.name}": pack.mcp_factory
-        for pack in packs
-        if pack.mcp_factory is not None
+        f"dim:{pack.name}": pack.mcp_factory for pack in packs if pack.mcp_factory is not None
     }
 
     # NOTE: the probe registry is built LAZILY (inside the loop, below) rather
@@ -602,7 +464,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
         try:
             _write_run_output(output_format, Path(output_path), completed, records)
         except OSError as exc:
-            print(f"wt run: could not write {output_format} output to {output_path}: {exc}", file=sys.stderr)
+            print(
+                f"wt run: could not write {output_format} output to {output_path}: {exc}",
+                file=sys.stderr,
+            )
             return 1
         return rc
 
@@ -636,9 +501,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     scenario_probe = pack.state_probe_factory(scenario)
                     break
 
-        transport_only = any(
-            t in transport_only_dims for t in getattr(scenario, "tags", [])
-        )
+        transport_only = any(t in transport_only_dims for t in getattr(scenario, "tags", []))
 
         # Resilience: a single scenario's failure (e.g. a provision-time agent
         # readiness timeout, or a mock that won't start) MUST NOT abort a long
@@ -650,8 +513,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # per-scenario lines clip the message to 120 chars).
         try:
             result = run_scenario(
-                scenario, runtime, mcps=scenario_mcps, config=config,
-                runs_per_scenario=n_runs, state_probe=scenario_probe, hooks=hooks,
+                scenario,
+                runtime,
+                mcps=scenario_mcps,
+                config=config,
+                runs_per_scenario=n_runs,
+                state_probe=scenario_probe,
+                hooks=hooks,
             )
         except WorldMismatchError as exc:
             any_fail = True
@@ -708,13 +576,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
             for run_result in result.runs
             for w in (getattr(run_result.trace, "worker_warnings", None) or [])
         )
-        completed.append(_CompletedAggregate(
-            pack=selected_entry.pack,
-            scenario=scenario,
-            result=result,
-            transport_only=transport_only,
-            had_runner_error=had_runner_error,
-        ))
+        completed.append(
+            _CompletedAggregate(
+                pack=selected_entry.pack,
+                scenario=scenario,
+                result=result,
+                transport_only=transport_only,
+                had_runner_error=had_runner_error,
+            )
+        )
 
         status = agg.verdict
         if had_runner_error:
@@ -734,601 +604,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
             any_fail = True
 
     return _finish(1 if any_fail else 0)
-
-
-def _discover_scenario_packs(
-    extra_sources: list[str] | None = None,
-) -> list[ScenarioPack]:
-    """Return all ScenarioPacks: built-ins, entry points, then local sources.
-
-    The scenario-side mirror of _resolve_runtime_plugin:
-      1. Built-ins — windtunnel.scenarios.builtin_packs(), an explicit ordered
-         list (order pins the sweep's scenario iteration order).
-      2. Entry points in group "windtunnel.scenario_packs" — each entry-point
-         value resolves to a ScenarioPack INSTANCE or a ZERO-ARG CALLABLE
-         returning one (the callable form lets a pack defer scenario
-         construction to load time, the same instance-or-class latitude the
-         runtimes group gives plugins).
-      3. Explicit local sources from --pack-source. Each source is either
-         "module:attr" or "path/to/file.py:attr" and resolves under the same
-         ScenarioPack-or-zero-arg-callable rule. This is the authoring escape
-         hatch for examples before they are packaged as entry points.
-
-    One deliberate asymmetry: runtimes resolve ONE plugin by --runtime NAME,
-    but every installed pack is loaded — packs ADD scenarios to the selection
-    pool and --scenario is the filter. So a broken pack can't be routed
-    around by naming a different one; it fails the run loudly (exit 2, naming
-    the offending entry point) exactly like an unloadable runtime plugin.
-    """
-    from importlib.metadata import entry_points  # noqa: PLC0415
-
-    from windtunnel.scenarios import builtin_packs  # noqa: PLC0415
-
-    packs: list[ScenarioPack] = list(builtin_packs())
-    for ep in entry_points(group="windtunnel.scenario_packs"):
-        try:
-            obj = ep.load()
-        except Exception as exc:  # noqa: BLE001 — any load failure gets the same exit
-            print(
-                f"wt run: could not load scenario pack {ep.name!r} ({ep.value}): {exc}",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-        packs.append(_coerce_scenario_pack(obj, f"entry point {ep.name!r}", ep.value))
-    for source in extra_sources or []:
-        packs.append(_load_scenario_pack_source(source))
-    return packs
-
-
-def _coerce_scenario_pack(obj: object, label: str, value: str) -> ScenarioPack:
-    from windtunnel.api.pack import ScenarioPack  # noqa: PLC0415
-
-    if not isinstance(obj, ScenarioPack) and callable(obj):
-        obj = obj()
-    if not isinstance(obj, ScenarioPack):
-        print(
-            f"wt run: scenario pack {label} ({value}) must resolve to a "
-            "ScenarioPack instance or a zero-arg callable returning one, "
-            f"got {type(obj).__name__}.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    return obj
-
-
-def _load_scenario_pack_source(source: str) -> ScenarioPack:
-    module_or_path, sep, attr = source.partition(":")
-    if not sep or not module_or_path or not attr:
-        print(
-            "wt run: --pack-source must be module:attr or path/to/file.py:attr, "
-            f"got {source!r}.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    try:
-        if module_or_path.endswith(".py") or "/" in module_or_path or "\\" in module_or_path:
-            path = Path(module_or_path)
-            if not path.is_file():
-                raise FileNotFoundError(path)
-            digest = hashlib.sha1(str(path.resolve()).encode("utf-8")).hexdigest()[:12]
-            module_name = f"_windtunnel_pack_{digest}"
-            spec = importlib.util.spec_from_file_location(module_name, path)
-            if spec is None or spec.loader is None:
-                raise ImportError(f"could not load module spec for {path}")
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = module
-            spec.loader.exec_module(module)
-        else:
-            module = importlib.import_module(module_or_path)
-        obj = getattr(module, attr)
-    except Exception as exc:  # noqa: BLE001 - source load failures are usage errors
-        print(f"wt run: could not load scenario pack source {source!r}: {exc}", file=sys.stderr)
-        sys.exit(2)
-
-    return _coerce_scenario_pack(obj, f"source {source!r}", source)
-
-
-class _InMemoryPlugin:
-    """Built-in RuntimePlugin for the zero-infrastructure scripted runtime.
-
-    One of the small runtimes that ship inside the framework itself —
-    platform driver packages arrive via the "windtunnel.runtimes"
-    entry-point group and stay OUT of cli.py.
-    No pre_run hook: a scripted runtime has no bench infrastructure to prep.
-    """
-
-    def build(
-        self, runtime_name: str, label: str, soul_path: str | None
-    ) -> AgentRuntime:
-        from windtunnel.runtimes.in_memory import InMemoryRuntime  # noqa: PLC0415
-        return InMemoryRuntime(scripted_responses=["ok"])
-
-
-class _HttpInjectPlugin:
-    """Built-in RuntimePlugin for Contract C HTTP inject endpoints."""
-
-    def build(
-        self, runtime_name: str, label: str, soul_path: str | None
-    ) -> AgentRuntime:
-        from windtunnel.runtimes.http_inject import HttpInjectRuntime  # noqa: PLC0415
-        return HttpInjectRuntime()
-
-
-class _TerminusPlugin:
-    """Built-in RuntimePlugin for Harbor Terminus-2 terminal agents."""
-
-    def build(
-        self, runtime_name: str, label: str, soul_path: str | None
-    ) -> AgentRuntime:
-        from windtunnel.runtimes.terminus import TerminusRuntime  # noqa: PLC0415
-        return TerminusRuntime()
-
-
-def _resolve_runtime_plugin(runtime_name: str) -> _RuntimePluginLike:
-    """Resolve a --runtime name to a RuntimePlugin instance.
-
-    Resolution order (see windtunnel.spi.runtime_plugin for the contract):
-      1. Built-ins — "in_memory", "http_inject", "terminus".
-      2. Entry points in group "windtunnel.runtimes", matched by NAME.
-         The entry-point value is a RuntimePlugin instance or class
-         (a class is instantiated with no args).
-      3. "module:attr" dotted path — same instance-or-class rule. This is
-         the escape hatch for drivers not (yet) packaged with an entry point.
-      4. Error (exit 2) listing the built-in + discovered names.
-    """
-    builtin: dict[str, Callable[[], _RuntimePluginLike]] = {
-        "http_inject": _HttpInjectPlugin,
-        "in_memory": _InMemoryPlugin,
-        "terminus": _TerminusPlugin,
-    }
-    if runtime_name in builtin:
-        return builtin[runtime_name]()
-
-    from importlib.metadata import entry_points  # noqa: PLC0415
-    eps = entry_points(group="windtunnel.runtimes")
-    for ep in eps:
-        if ep.name == runtime_name:
-            return _as_plugin_instance(ep.load())
-
-    if ":" in runtime_name:
-        import importlib  # noqa: PLC0415
-        module_name, _, attr = runtime_name.partition(":")
-        try:
-            obj = getattr(importlib.import_module(module_name), attr)
-        except (ImportError, AttributeError) as exc:
-            print(
-                f"wt run: could not load runtime plugin {runtime_name!r}: {exc}",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-        return _as_plugin_instance(obj)
-
-    available = sorted({*builtin, *(ep.name for ep in eps)})
-    print(
-        f"wt run: unknown runtime {runtime_name!r}. Available: "
-        f"{', '.join(available)}. (Or pass a 'module:attr' dotted path to a "
-        f"RuntimePlugin.)",
-        file=sys.stderr,
-    )
-    sys.exit(2)
-
-
-def _as_plugin_instance(obj: object) -> _RuntimePluginLike:
-    """Normalize an entry-point/dotted-path target to a plugin INSTANCE.
-
-    The contract (spi/runtime_plugin.py) is deliberately simple: the target is
-    either a RuntimePlugin instance (used as-is) or a RuntimePlugin class
-    (instantiated with no arguments). Anything fancier — factories with
-    config args — belongs inside the plugin's own build().
-    """
-    if isinstance(obj, type):
-        obj = obj()
-    return cast(_RuntimePluginLike, obj)
-
-
-def _resolve_hooks(hook_names: list[str] | None) -> list[object]:
-    """Resolve repeatable --hook names to hook instances."""
-    if not hook_names:
-        return []
-
-    from importlib.metadata import entry_points  # noqa: PLC0415
-
-    from windtunnel.hooks import BUILTIN_HOOKS  # noqa: PLC0415
-
-    eps = entry_points(group="windtunnel.hooks")
-    hooks: list[object] = []
-    for hook_name in hook_names:
-        if hook_name in BUILTIN_HOOKS:
-            hooks.append(_as_hook_instance(BUILTIN_HOOKS[hook_name]))
-            continue
-        for ep in eps:
-            if ep.name == hook_name:
-                hooks.append(_as_hook_instance(ep.load()))
-                break
-        else:
-            available = sorted({*BUILTIN_HOOKS, *(ep.name for ep in eps)})
-            print(
-                f"wt run: unknown hook {hook_name!r}. Available: "
-                f"{', '.join(available) if available else '(none)'}.",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-    return hooks
-
-
-def _as_hook_instance(obj: object) -> object:
-    if isinstance(obj, type):
-        return obj()
-    return obj
-
-
-def _dispatch_pack_end_hooks(
-    hooks: list[object],
-    *,
-    config: AgentConfig,
-    completed: list[_CompletedAggregate],
-) -> list[HookArtifact]:
-    """Fire CLI-scope on_pack_end hooks and return buffered artifacts."""
-    if not hooks:
-        return []
-
-    from windtunnel.spi.hooks import Hook, HookContext  # noqa: PLC0415
-
-    artifacts: list[HookArtifact] = []
-    aggregates = [item.result.aggregate for item in completed]
-    for hook in hooks:
-        method = getattr(hook, "on_pack_end", None)
-        if not callable(method):
-            continue
-        if isinstance(hook, Hook) and getattr(type(hook), "on_pack_end", None) is Hook.on_pack_end:
-            continue
-        ctx = None
-        warnings: list[str] = []
-        try:
-            ctx = HookContext(
-                hook_name=str(getattr(hook, "name", hook.__class__.__name__)),
-                phase="on_pack_end",
-                agent=config,
-                aggregate=aggregates,
-                warning_sink=warnings,
-            )
-            method(ctx)
-        except Exception as exc:  # noqa: BLE001 - pack hooks are diagnostic only
-            print(
-                f"wt run: warning: hook:{getattr(hook, 'name', hook.__class__.__name__)}: {exc}",
-                file=sys.stderr,
-            )
-        for warning in warnings:
-            print(f"wt run: warning: {warning}", file=sys.stderr)
-        if ctx is not None:
-            artifacts.extend(ctx.artifacts)
-    return artifacts
-
-
-def _build_runtime(
-    runtime_name: str, label: str, soul_path: str | None
-) -> AgentRuntime:
-    """Instantiate the requested runtime via its resolved plugin."""
-    plugin = _resolve_runtime_plugin(runtime_name)
-    return plugin.build(runtime_name, label, soul_path)
-
-
-def _select_scenarios(
-    *,
-    scenario_patterns: list[str],
-    tag_filters: list[str],
-    pack_filters: list[str],
-    owner_filters: list[str],
-    packs: list[ScenarioPack],
-) -> _SelectionResult:
-    """Select scenarios from packs with OR-within-flag, AND-across-flags.
-
-    Selection predicates:
-      - scenario: Scenario.name matched with fnmatch semantics, so exact
-        names remain exact and shell-style globs such as ``lookup_*`` work.
-      - tag: exact membership in Scenario.tags (e.g. ``dim:recovery``).
-      - pack: exact ScenarioPack.name.
-      - owner: exact defensive ``getattr(pack, "owner", None)``.
-
-    Repeated values within one flag are alternatives. Distinct flag families
-    compose as intersections, so ``--pack recovery --tag dim:recovery`` means
-    scenarios in that pack that also carry that tag.
-    """
-    all_entries: list[_SelectedScenario] = []
-    for pack in packs:
-        for scenario in getattr(pack, "scenarios", []) or []:
-            all_entries.append(_SelectedScenario(pack=pack, scenario=scenario))
-
-    def scenario_name(entry: _SelectedScenario) -> str:
-        return str(getattr(entry.scenario, "name", ""))
-
-    def scenario_tags(entry: _SelectedScenario) -> list[str]:
-        return list(getattr(entry.scenario, "tags", []) or [])
-
-    def pack_name(entry: _SelectedScenario) -> str:
-        return str(getattr(entry.pack, "name", ""))
-
-    def pack_owner(entry: _SelectedScenario) -> str | None:
-        owner = getattr(entry.pack, "owner", None)
-        return str(owner) if owner is not None else None
-
-    def scenario_selected(entry: _SelectedScenario) -> bool:
-        return not scenario_patterns or any(
-            fnmatch.fnmatchcase(scenario_name(entry), pattern)
-            for pattern in scenario_patterns
-        )
-
-    def tag_selected(entry: _SelectedScenario) -> bool:
-        tags = scenario_tags(entry)
-        return not tag_filters or any(tag in tags for tag in tag_filters)
-
-    def pack_selected(entry: _SelectedScenario) -> bool:
-        return not pack_filters or any(pack_name(entry) == name for name in pack_filters)
-
-    def owner_selected(entry: _SelectedScenario) -> bool:
-        return not owner_filters or any(pack_owner(entry) == owner for owner in owner_filters)
-
-    entries = [
-        entry for entry in all_entries
-        if (
-            scenario_selected(entry)
-            and tag_selected(entry)
-            and pack_selected(entry)
-            and owner_selected(entry)
-        )
-    ]
-
-    unmatched_scenarios = [
-        pattern for pattern in scenario_patterns
-        if not any(fnmatch.fnmatchcase(scenario_name(entry), pattern) for entry in all_entries)
-    ]
-    unmatched_tags = [
-        tag for tag in tag_filters
-        if not any(tag in scenario_tags(entry) for entry in all_entries)
-    ]
-    unmatched_packs = [
-        name for name in pack_filters
-        if not any(str(getattr(pack, "name", "")) == name for pack in packs)
-    ]
-    unmatched_owners = [
-        owner for owner in owner_filters
-        if not any(str(getattr(pack, "owner", "")) == owner for pack in packs)
-    ]
-
-    return _SelectionResult(
-        entries=entries,
-        unmatched_scenarios=unmatched_scenarios,
-        unmatched_tags=unmatched_tags,
-        unmatched_packs=unmatched_packs,
-        unmatched_owners=unmatched_owners,
-    )
-
-
-def _print_selection_warnings(selection: _SelectionResult, *, command: str = "wt run") -> None:
-    """Emit non-fatal diagnostics for selector values that matched nothing."""
-    if selection.unmatched_scenarios:
-        print(
-            f"{command}: unknown scenario(s): {', '.join(sorted(selection.unmatched_scenarios))}",
-            file=sys.stderr,
-        )
-    if selection.unmatched_tags:
-        print(
-            f"{command}: unknown tag(s): {', '.join(sorted(selection.unmatched_tags))}",
-            file=sys.stderr,
-        )
-    if selection.unmatched_packs:
-        print(
-            f"{command}: unknown pack(s): {', '.join(sorted(selection.unmatched_packs))}",
-            file=sys.stderr,
-        )
-    if selection.unmatched_owners:
-        print(
-            f"{command}: unknown owner(s): {', '.join(sorted(selection.unmatched_owners))}",
-            file=sys.stderr,
-        )
-
-
-def _load_scenarios(names: list[str], packs: list[ScenarioPack]) -> list[Scenario]:
-    """Flatten the packs' scenarios (pack order preserved) and filter by name.
-
-    Every dimension arrives as a ScenarioPack — built-ins from
-    windtunnel.scenarios.builtin_packs() (which keeps the pre-pack flattening
-    order), externals from the "windtunnel.scenario_packs" entry-point group.
-    Pack-specific shaping (e.g. multi_turn_drift exporting its wrappers'
-    inner Scenarios, whose user_turns field drives the multi-turn runner
-    path) happens where the pack is built, not here.
-    """
-    selection = _select_scenarios(
-        scenario_patterns=names,
-        tag_filters=[],
-        pack_filters=[],
-        owner_filters=[],
-        packs=packs,
-    )
-    if selection.unmatched_scenarios:
-        print(
-            f"wt run: unknown scenario(s): {', '.join(sorted(selection.unmatched_scenarios))}",
-            file=sys.stderr,
-        )
-    return [entry.scenario for entry in selection.entries]
-
-
-def _counts_as_gate_failure(completed: _CompletedAggregate) -> bool:
-    """Return the same per-scenario gate decision the run loop uses.
-
-    The outcome aggregate is the gate, except transport-only packs do not flip
-    CI on model-quality verdicts. A runner_error is an execution failure and
-    still gates even for transport-only dims.
-    """
-    if completed.had_runner_error:
-        return True
-    if completed.transport_only:
-        return False
-    return completed.result.aggregate.verdict == "FAIL"
-
-
-def _write_run_output(
-    output_format: str,
-    out_path: Path,
-    completed: list[_CompletedAggregate],
-    records: list[dict[str, Any]],
-) -> None:
-    """Write the requested machine-readable `wt run` output file."""
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    if output_format == "json":
-        _write_run_json(out_path, records)
-        return
-    if output_format == "junit":
-        _write_run_junit(out_path, completed)
-        return
-    raise ValueError(f"unknown run output format: {output_format!r}")
-
-
-def _write_run_json(out_path: Path, records: list[dict[str, Any]]) -> None:
-    """Write the sweep document: the very records the ledger just received.
-
-    Sharing _ledger_record() output (rather than assembling a parallel
-    record) is what keeps `--format json` and ledger.ndjsonl
-    shape-identical by construction.
-    """
-    out_path.write_text(json.dumps(records, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
-
-def _write_run_junit(out_path: Path, completed: list[_CompletedAggregate]) -> None:
-    """Write JUnit XML: one testsuite per pack, one testcase per aggregate."""
-    import xml.etree.ElementTree as ET  # noqa: PLC0415
-
-    root = ET.Element("testsuites")
-    total_tests = len(completed)
-    total_failures = sum(1 for result in completed if _counts_as_gate_failure(result))
-    total_time = sum(_aggregate_time_seconds(result) for result in completed)
-    root.set("tests", str(total_tests))
-    root.set("failures", str(total_failures))
-    root.set("errors", "0")
-    root.set("time", _format_seconds(total_time))
-
-    by_pack: dict[str, list[_CompletedAggregate]] = {}
-    for result in completed:
-        by_pack.setdefault(str(getattr(result.pack, "name", "")), []).append(result)
-
-    for pack_name, pack_results in by_pack.items():
-        suite_failures = sum(1 for result in pack_results if _counts_as_gate_failure(result))
-        suite_time = sum(_aggregate_time_seconds(result) for result in pack_results)
-        suite = ET.SubElement(root, "testsuite", {
-            "name": pack_name,
-            "tests": str(len(pack_results)),
-            "failures": str(suite_failures),
-            "errors": "0",
-            "time": _format_seconds(suite_time),
-        })
-        for result in pack_results:
-            testcase = ET.SubElement(suite, "testcase", {
-                "classname": pack_name,
-                "name": str(getattr(result.scenario, "name", "")),
-                "time": _format_seconds(_aggregate_time_seconds(result)),
-            })
-            if _counts_as_gate_failure(result):
-                categories = _triage_categories(result)
-                failure_attrs = {
-                    "message": _junit_failure_message(result, categories),
-                    "type": f"windtunnel.{result.result.aggregate.verdict}",
-                }
-                if categories:
-                    failure_attrs["triage_category"] = ", ".join(categories)
-                failure = ET.SubElement(testcase, "failure", failure_attrs)
-                failure.text = _junit_failure_text(result, categories)
-
-    tree = ET.ElementTree(root)
-    ET.indent(tree, space="  ")
-    tree.write(out_path, encoding="utf-8", xml_declaration=True)
-
-
-def _junit_failure_message(completed: _CompletedAggregate, categories: list[str]) -> str:
-    """Return a compact failure summary for the JUnit failure attribute."""
-    agg = completed.result.aggregate
-    category = f" triage={', '.join(categories)}" if categories else ""
-    return (
-        f"{agg.verdict}: {agg.passed}/{agg.total} outcome pass"
-        f"{category}"
-    )
-
-
-def _junit_failure_text(completed: _CompletedAggregate, categories: list[str]) -> str:
-    """Return the escaped-by-ElementTree multi-line JUnit failure payload."""
-    agg = completed.result.aggregate
-    lines = [
-        f"scenario_id: {getattr(completed.scenario, 'name', '')}",
-        f"pack: {getattr(completed.pack, 'name', '')}",
-        f"verdict: {agg.verdict}",
-        f"outcome_pass_rate: {agg.outcome_pass_rate}",
-        f"trajectory_pass_rate: {agg.trajectory_pass_rate}",
-        f"constraint_pass_rate: {agg.constraint_pass_rate}",
-        f"robustness_pass_rate: {agg.robustness_pass_rate}",
-    ]
-    if categories:
-        lines.append(f"triage_category: {', '.join(categories)}")
-
-    for idx, run_result in enumerate(completed.result.runs, start=1):
-        run_id = getattr(run_result.trace, "run_id", "")
-        lines.append(f"run {idx}: {run_id}")
-        for layer_name in ("outcome", "trajectory", "constraint", "robustness"):
-            layer = getattr(run_result.score, layer_name)
-            status = "PASS" if layer.passed else "FAIL"
-            lines.append(f"  {layer_name}: {status} - {layer.detail}")
-    return "\n".join(lines)
-
-
-def _triage_categories(completed: _CompletedAggregate) -> list[str]:
-    """Return rule-based triage categories for failed runs when available."""
-    attached = getattr(completed.result, "triage_category", None)
-    if attached is None:
-        attached = getattr(completed.result.aggregate, "triage_category", None)
-    if attached:
-        if isinstance(attached, str):
-            return [attached]
-        return [str(category) for category in attached]
-
-    try:
-        from windtunnel.triage.rule_based import RuleBasedClassifier  # noqa: PLC0415
-    except Exception:
-        return []
-
-    classifier = RuleBasedClassifier()
-    categories: list[str] = []
-    for run_result in completed.result.runs:
-        if run_result.score.outcome.passed:
-            continue
-        try:
-            classification = classifier.classify(
-                completed.scenario,
-                run_result.trace,
-                run_result.score,
-            )
-        except Exception:
-            continue
-        category = getattr(classification, "category", None)
-        if category and category not in categories:
-            categories.append(str(category))
-    return categories
-
-
-def _aggregate_time_seconds(completed: _CompletedAggregate) -> float:
-    """Return total elapsed run time for one scenario aggregate, in seconds."""
-    total = 0.0
-    for run_result in completed.result.runs:
-        trace = run_result.trace
-        started_at = getattr(trace, "started_at", None)
-        finished_at = getattr(trace, "finished_at", None)
-        if started_at is None or finished_at is None:
-            continue
-        total += max(0.0, (finished_at - started_at).total_seconds())
-    return total
-
-
-def _format_seconds(value: float) -> str:
-    """Format JUnit time attributes as seconds."""
-    return f"{value:.6f}"
 
 
 # ─── rescore ─────────────────────────────────────────────────────────────────
@@ -1384,8 +659,7 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
             continue
 
         if args.scenario and not any(
-            fnmatch.fnmatchcase(trace.scenario_id, pattern)
-            for pattern in args.scenario
+            fnmatch.fnmatchcase(trace.scenario_id, pattern) for pattern in args.scenario
         ):
             skipped += 1
             continue
@@ -1431,11 +705,7 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
             written += 1
             write_note = " [sidecar written]"
 
-        print(
-            f"{trace_path}: scenario={trace.scenario_id} "
-            + " | ".join(layer_parts)
-            + write_note
-        )
+        print(f"{trace_path}: scenario={trace.scenario_id} " + " | ".join(layer_parts) + write_note)
 
     total = len(trace_paths)
     print(
@@ -1466,10 +736,7 @@ def _rescore_trace_paths(args: argparse.Namespace) -> list[Path] | None:
     if not runs_dir.is_dir():
         print(f"wt rescore: runs directory not found: {runs_dir}", file=sys.stderr)
         return None
-    trace_paths = sorted(
-        path for path in runs_dir.rglob("*.json")
-        if is_trace_json_path(path)
-    )
+    trace_paths = sorted(path for path in runs_dir.rglob("*.json") if is_trace_json_path(path))
     if not trace_paths:
         print(f"wt rescore: no trace files found under {runs_dir}", file=sys.stderr)
         return None
@@ -1550,6 +817,7 @@ def _score_layer_verdict(score: Score, layer_name: str) -> str:
 
 # ─── triage ──────────────────────────────────────────────────────────────────
 
+
 def _cmd_triage(args: argparse.Namespace) -> int:
     """Handle the `wt triage` subcommand.
 
@@ -1589,9 +857,11 @@ def _cmd_triage(args: argparse.Namespace) -> int:
     # Build classifier
     if classifier_name == "rule_based":
         from windtunnel.triage.rule_based import RuleBasedClassifier  # noqa: PLC0415
+
         clf: FailureClassifier = RuleBasedClassifier()
     elif classifier_name == "llm_judge":
         from windtunnel.triage.llm_judge import LLMJudgeClassifier  # noqa: PLC0415
+
         clf = LLMJudgeClassifier()
     else:
         print(f"wt triage: unknown classifier {classifier_name!r}", file=sys.stderr)
@@ -1659,17 +929,17 @@ def _cmd_triage(args: argparse.Namespace) -> int:
 
         classification = clf.classify(scenario, trace, score)
         cat = classification.category
-        by_category.setdefault(cat, []).append(
-            (scenario.name, trace.run_id[:8], classification)
-        )
+        by_category.setdefault(cat, []).append((scenario.name, trace.run_id[:8], classification))
 
     # Emit markdown report
     total_failed = sum(len(v) for v in by_category.values())
     print("# Wind Tunnel Triage Report\n")
-    print(f"**Failed runs:** {total_failed}  "
-          f"**Passed:** {passed}  "
-          f"**Skipped (no score):** {skipped}  "
-          f"**Classifier:** `{classifier_name}`\n")
+    print(
+        f"**Failed runs:** {total_failed}  "
+        f"**Passed:** {passed}  "
+        f"**Skipped (no score):** {skipped}  "
+        f"**Classifier:** `{classifier_name}`\n"
+    )
 
     if not by_category:
         print("No failures to triage.")
@@ -1708,6 +978,7 @@ def _cmd_triage(args: argparse.Namespace) -> int:
 
 
 # ─── replay ──────────────────────────────────────────────────────────────────
+
 
 def _cmd_replay(args: argparse.Namespace) -> int:
     """Handle the `wt replay` subcommand.
@@ -1766,6 +1037,7 @@ def _cmd_replay(args: argparse.Namespace) -> int:
 
 # ─── doctor ──────────────────────────────────────────────────────────────────
 
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     """Handle the `wt doctor` subcommand.
 
@@ -1801,7 +1073,9 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     # behavior on an unresolvable name — see _resolve_runtime_plugin).
     runtime = _build_runtime(runtime_name, label, soul_path=args.soul)
     config = AgentConfig(
-        agent_id="wt-doctor", variant_id=label, system_prompt=system_prompt,
+        agent_id="wt-doctor",
+        variant_id=label,
+        system_prompt=system_prompt,
     )
 
     print(
@@ -1824,6 +1098,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
 # ─── surface ─────────────────────────────────────────────────────────────────
 
+
 def _probe_runtime_surface(args: argparse.Namespace) -> dict[str, Any] | None:
     """Provision the runtime, probe its surface with the run-time timing
     (reset first, then probe), tear down. Returns the surface block, or
@@ -1842,7 +1117,9 @@ def _probe_runtime_surface(args: argparse.Namespace) -> dict[str, Any] | None:
 
     runtime = _build_runtime(args.runtime, label, soul_path=args.soul)
     config = AgentConfig(
-        agent_id="wt-surface", variant_id=label, system_prompt=system_prompt,
+        agent_id="wt-surface",
+        variant_id=label,
+        system_prompt=system_prompt,
     )
     handle = runtime.provision(config)
     try:
@@ -1899,7 +1176,8 @@ def _cmd_surface(args: argparse.Namespace) -> int:
             return 1
         golden_path.parent.mkdir(parents=True, exist_ok=True)
         golden_path.write_text(
-            json.dumps(golden, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
+            json.dumps(golden, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
         )
         mode = "hashes + full text (SENSITIVE)" if args.store_text else "hashes only"
         print(f"wt surface: golden recorded ({mode}): {golden_path}")
@@ -1912,8 +1190,7 @@ def _cmd_surface(args: argparse.Namespace) -> int:
     # diff / check share everything except the exit code.
     if not golden_path.is_file():
         print(
-            f"wt surface {action}: golden not found: {golden_path} "
-            "(run `wt surface record` first)",
+            f"wt surface {action}: golden not found: {golden_path} (run `wt surface record` first)",
             file=sys.stderr,
         )
         return 2
@@ -1941,6 +1218,7 @@ def _cmd_surface(args: argparse.Namespace) -> int:
 
 
 # ─── import ──────────────────────────────────────────────────────────────────
+
 
 def _cmd_import(args: argparse.Namespace) -> int:
     """Handle the `wt import` subcommand.
@@ -1982,6 +1260,7 @@ def _cmd_import(args: argparse.Namespace) -> int:
 
 
 # ─── validate ────────────────────────────────────────────────────────────────
+
 
 def _cmd_validate(args: argparse.Namespace) -> int:
     """Handle the `wt validate` subcommand.
@@ -2101,6 +1380,7 @@ def _cmd_skill(args: argparse.Namespace) -> int:
 
 # ─── main ────────────────────────────────────────────────────────────────────
 
+
 def _build_parser() -> argparse.ArgumentParser:
     """Build the wt argparse tree used by both the CLI and generated docs."""
     parser = argparse.ArgumentParser(
@@ -2111,70 +1391,153 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ── report ───────────────────────────────────────────────────────────────
     report_p = sub.add_parser("report", help="Generate a report from a runs/ directory.")
-    report_p.add_argument("--runs", default="runs", metavar="DIR",
-                          help="Path to the runs/ directory (default: ./runs)")
-    report_p.add_argument("--out", default=None, metavar="FILE",
-                          help="Output path for file formats (HTML default: report.html).")
-    report_p.add_argument("--format", default="html", choices=["html", "markdown", "json"],
-                          help="Output format: html (default), markdown, or json.")
+    report_p.add_argument(
+        "--runs",
+        default="runs",
+        metavar="DIR",
+        help="Path to the runs/ directory (default: ./runs)",
+    )
+    report_p.add_argument(
+        "--out",
+        default=None,
+        metavar="FILE",
+        help="Output path for file formats (HTML default: report.html).",
+    )
+    report_p.add_argument(
+        "--format",
+        default="html",
+        choices=["html", "markdown", "json"],
+        help="Output format: html (default), markdown, or json.",
+    )
 
     # ── compare ──────────────────────────────────────────────────────────────
     compare_p = sub.add_parser("compare", help="Compare results across variant labels.")
-    compare_p.add_argument("--labels", nargs="+", metavar="LABEL", default=[],
-                           help="Variant labels to compare (space-separated).")
-    compare_p.add_argument("--runs", default="runs", metavar="DIR", dest="runs",
-                           help="Path to the runs/ directory (default: ./runs)")
+    compare_p.add_argument(
+        "--labels",
+        nargs="+",
+        metavar="LABEL",
+        default=[],
+        help="Variant labels to compare (space-separated).",
+    )
+    compare_p.add_argument(
+        "--runs",
+        default="runs",
+        metavar="DIR",
+        dest="runs",
+        help="Path to the runs/ directory (default: ./runs)",
+    )
 
     # ── run ──────────────────────────────────────────────────────────────────
     run_p = sub.add_parser("run", help="Run scenarios against a runtime.")
-    run_p.add_argument("--scenario", action="append", metavar="S", default=None,
-                       help="Scenario name(s) to run. Repeat for multiple. "
-                            "Omit to run all registered scenarios (the built-in "
-                            "dims plus any pack installed under the "
-                            "'windtunnel.scenario_packs' entry-point group). "
-                            "Shell-style globs such as 'lookup_*' are supported.")
-    run_p.add_argument("--tag", action="append", metavar="TAG", default=None,
-                       help="Run scenarios carrying TAG. Repeat for OR matching "
-                            "within tags; composes with other selectors by AND.")
-    run_p.add_argument("--pack", action="append", metavar="PACK", default=None,
-                       help="Run scenarios from pack PACK. Repeat for OR matching "
-                            "within packs; composes with other selectors by AND.")
-    run_p.add_argument("--pack-source", action="append", metavar="SOURCE", default=None,
-                       help="Load an additional local scenario pack from module:attr "
-                            "or path/to/file.py:attr. Repeat for multiple sources; "
-                            "use --pack to select it by name.")
-    run_p.add_argument("--owner", action="append", metavar="OWNER", default=None,
-                       help="Run scenarios from packs whose owner matches OWNER. "
-                            "Repeat for OR matching within owners; composes with "
-                            "other selectors by AND.")
-    run_p.add_argument("--soul", default=None, metavar="PATH",
-                       help="Path to SOUL.md / persona doc to inject.")
-    run_p.add_argument("--agents", default=None, metavar="PATH",
-                       help="Path to an AGENTS.md operating-notes doc to inject "
-                            "(routed to set-docs --agents; does not touch agent code).")
-    run_p.add_argument("--runtime", default="in_memory", metavar="RUNTIME",
-                       help="Runtime to use (default: in_memory). Either the "
-                            "built-in 'in_memory' (zero-infrastructure scripted "
-                            "runtime — no network; useful for learning the "
-                            "scoring model and testing scenario definitions in "
-                            "CI), the name of an installed runtime plugin "
-                            "(discovered via the 'windtunnel.runtimes' entry-"
-                            "point group — e.g. 'acme' from a platform driver "
-                            "package), or a 'module:attr' "
-                            "dotted path to a RuntimePlugin instance or class.")
-    run_p.add_argument("--hook", action="append", metavar="HOOK", default=None,
-                       help="Lifecycle hook to activate for this run. Repeat for "
-                            "multiple hooks; built-ins include 'debrief'.")
-    run_p.add_argument("--label", default=None, metavar="LABEL",
-                       help="Variant label for this run (recorded in traces).")
-    run_p.add_argument("--runs", dest="n_runs", type=int, default=1, metavar="N",
-                       help="Number of runs per scenario (default: 1).")
-    run_p.add_argument("--runs-dir", default="runs", metavar="DIR",
-                       help="Directory to write trace files (default: ./runs).")
-    run_p.add_argument("--format", choices=["junit", "json"], default=None,
-                       help="Machine-readable run output format. Must be paired with --out.")
-    run_p.add_argument("--out", default=None, metavar="FILE",
-                       help="Path for --format junit/json output. Must be paired with --format.")
+    run_p.add_argument(
+        "--scenario",
+        action="append",
+        metavar="S",
+        default=None,
+        help="Scenario name(s) to run. Repeat for multiple. "
+        "Omit to run all registered scenarios (the built-in "
+        "dims plus any pack installed under the "
+        "'windtunnel.scenario_packs' entry-point group). "
+        "Shell-style globs such as 'lookup_*' are supported.",
+    )
+    run_p.add_argument(
+        "--tag",
+        action="append",
+        metavar="TAG",
+        default=None,
+        help="Run scenarios carrying TAG. Repeat for OR matching "
+        "within tags; composes with other selectors by AND.",
+    )
+    run_p.add_argument(
+        "--pack",
+        action="append",
+        metavar="PACK",
+        default=None,
+        help="Run scenarios from pack PACK. Repeat for OR matching "
+        "within packs; composes with other selectors by AND.",
+    )
+    run_p.add_argument(
+        "--pack-source",
+        action="append",
+        metavar="SOURCE",
+        default=None,
+        help="Load an additional local scenario pack from module:attr "
+        "or path/to/file.py:attr. Repeat for multiple sources; "
+        "use --pack to select it by name.",
+    )
+    run_p.add_argument(
+        "--owner",
+        action="append",
+        metavar="OWNER",
+        default=None,
+        help="Run scenarios from packs whose owner matches OWNER. "
+        "Repeat for OR matching within owners; composes with "
+        "other selectors by AND.",
+    )
+    run_p.add_argument(
+        "--soul", default=None, metavar="PATH", help="Path to SOUL.md / persona doc to inject."
+    )
+    run_p.add_argument(
+        "--agents",
+        default=None,
+        metavar="PATH",
+        help="Path to an AGENTS.md operating-notes doc to inject "
+        "(routed to set-docs --agents; does not touch agent code).",
+    )
+    run_p.add_argument(
+        "--runtime",
+        default="in_memory",
+        metavar="RUNTIME",
+        help="Runtime to use (default: in_memory). Either the "
+        "built-in 'in_memory' (zero-infrastructure scripted "
+        "runtime — no network; useful for learning the "
+        "scoring model and testing scenario definitions in "
+        "CI), the name of an installed runtime plugin "
+        "(discovered via the 'windtunnel.runtimes' entry-"
+        "point group — e.g. 'acme' from a platform driver "
+        "package), or a 'module:attr' "
+        "dotted path to a RuntimePlugin instance or class.",
+    )
+    run_p.add_argument(
+        "--hook",
+        action="append",
+        metavar="HOOK",
+        default=None,
+        help="Lifecycle hook to activate for this run. Repeat for "
+        "multiple hooks; built-ins include 'debrief'.",
+    )
+    run_p.add_argument(
+        "--label",
+        default=None,
+        metavar="LABEL",
+        help="Variant label for this run (recorded in traces).",
+    )
+    run_p.add_argument(
+        "--runs",
+        dest="n_runs",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Number of runs per scenario (default: 1).",
+    )
+    run_p.add_argument(
+        "--runs-dir",
+        default="runs",
+        metavar="DIR",
+        help="Directory to write trace files (default: ./runs).",
+    )
+    run_p.add_argument(
+        "--format",
+        choices=["junit", "json"],
+        default=None,
+        help="Machine-readable run output format. Must be paired with --out.",
+    )
+    run_p.add_argument(
+        "--out",
+        default=None,
+        metavar="FILE",
+        help="Path for --format junit/json output. Must be paired with --format.",
+    )
 
     # ── rescore ──────────────────────────────────────────────────────────────
     rescore_p = sub.add_parser(
@@ -2183,116 +1546,181 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     rescore_input = rescore_p.add_mutually_exclusive_group(required=True)
     rescore_input.add_argument(
-        "--runs", default=None, metavar="DIR",
+        "--runs",
+        default=None,
+        metavar="DIR",
         help="Walk a runs/ directory and re-score every saved trace.",
     )
     rescore_input.add_argument(
-        "--trace", nargs="+", metavar="PATH", default=None,
+        "--trace",
+        nargs="+",
+        metavar="PATH",
+        default=None,
         help="Explicit trace JSON path(s) to re-score.",
     )
     rescore_p.add_argument(
-        "--write", action="store_true",
+        "--write",
+        action="store_true",
         help="Update .score.json sidecars. Trace files are never modified.",
     )
     rescore_p.add_argument(
-        "--scenario", action="append", metavar="S", default=None,
+        "--scenario",
+        action="append",
+        metavar="S",
+        default=None,
         help="Only re-score traces whose scenario_id matches S. Repeat for multiple; "
-             "shell-style globs such as 'lookup_*' are supported.",
+        "shell-style globs such as 'lookup_*' are supported.",
     )
-    rescore_p.add_argument("--tag", action="append", metavar="TAG", default=None,
-                           help="Restrict scenario definitions to packs/scenarios carrying TAG.")
-    rescore_p.add_argument("--pack", action="append", metavar="PACK", default=None,
-                           help="Restrict scenario definitions to pack PACK.")
-    rescore_p.add_argument("--pack-source", action="append", metavar="SOURCE", default=None,
-                           help="Load an additional local scenario pack from module:attr "
-                                "or path/to/file.py:attr before resolving traces.")
-    rescore_p.add_argument("--owner", action="append", metavar="OWNER", default=None,
-                           help="Restrict scenario definitions to packs whose owner matches OWNER.")
+    rescore_p.add_argument(
+        "--tag",
+        action="append",
+        metavar="TAG",
+        default=None,
+        help="Restrict scenario definitions to packs/scenarios carrying TAG.",
+    )
+    rescore_p.add_argument(
+        "--pack",
+        action="append",
+        metavar="PACK",
+        default=None,
+        help="Restrict scenario definitions to pack PACK.",
+    )
+    rescore_p.add_argument(
+        "--pack-source",
+        action="append",
+        metavar="SOURCE",
+        default=None,
+        help="Load an additional local scenario pack from module:attr "
+        "or path/to/file.py:attr before resolving traces.",
+    )
+    rescore_p.add_argument(
+        "--owner",
+        action="append",
+        metavar="OWNER",
+        default=None,
+        help="Restrict scenario definitions to packs whose owner matches OWNER.",
+    )
 
     # ── replay ───────────────────────────────────────────────────────────────
     replay_p = sub.add_parser("replay", help="Replay a captured trace against a runtime.")
-    replay_p.add_argument("--trace", required=True, metavar="PATH",
-                          help="Path to the trace JSON file to replay.")
-    replay_p.add_argument("--runtime", default="in_memory", metavar="RUNTIME",
-                          help="Runtime to replay against: built-in 'in_memory', "
-                               "an installed plugin name (entry-point group "
-                               "'windtunnel.runtimes'), or a 'module:attr' "
-                               "dotted path to a RuntimePlugin.")
-    replay_p.add_argument("--runs-dir", default="runs", metavar="DIR",
-                          help="Directory to write replayed traces (default: ./runs).")
+    replay_p.add_argument(
+        "--trace", required=True, metavar="PATH", help="Path to the trace JSON file to replay."
+    )
+    replay_p.add_argument(
+        "--runtime",
+        default="in_memory",
+        metavar="RUNTIME",
+        help="Runtime to replay against: built-in 'in_memory', "
+        "an installed plugin name (entry-point group "
+        "'windtunnel.runtimes'), or a 'module:attr' "
+        "dotted path to a RuntimePlugin.",
+    )
+    replay_p.add_argument(
+        "--runs-dir",
+        default="runs",
+        metavar="DIR",
+        help="Directory to write replayed traces (default: ./runs).",
+    )
 
     # ── doctor ───────────────────────────────────────────────────────────────
     doctor_p = sub.add_parser(
         "doctor",
         help="Bring-up check: run the reset-isolation canary against a live runtime.",
     )
-    doctor_p.add_argument("--runtime", default="in_memory", metavar="RUNTIME",
-                          help="Runtime to check (default: in_memory). Resolved "
-                               "exactly like `wt run --runtime`: built-in "
-                               "'in_memory', an installed plugin name (entry-"
-                               "point group 'windtunnel.runtimes'), or a "
-                               "'module:attr' dotted path to a RuntimePlugin. "
-                               "Runs the canary in RECALL mode, which requires "
-                               "a live model behind the runtime — doctor is a "
-                               "bring-up tool, not a CI check. For CI runners "
-                               "without a live model, call "
-                               "run_reset_canary(..., probe_recall=False, "
-                               "state_probe=...) directly from pytest instead.")
-    doctor_p.add_argument("--soul", default=None, metavar="PATH",
-                          help="Path to SOUL.md / persona doc to inject "
-                               "(mirrors `wt run --soul`).")
-    doctor_p.add_argument("--label", default=None, metavar="LABEL",
-                          help="Variant label recorded for this check "
-                               "(default: wt_doctor).")
+    doctor_p.add_argument(
+        "--runtime",
+        default="in_memory",
+        metavar="RUNTIME",
+        help="Runtime to check (default: in_memory). Resolved "
+        "exactly like `wt run --runtime`: built-in "
+        "'in_memory', an installed plugin name (entry-"
+        "point group 'windtunnel.runtimes'), or a "
+        "'module:attr' dotted path to a RuntimePlugin. "
+        "Runs the canary in RECALL mode, which requires "
+        "a live model behind the runtime — doctor is a "
+        "bring-up tool, not a CI check. For CI runners "
+        "without a live model, call "
+        "run_reset_canary(..., probe_recall=False, "
+        "state_probe=...) directly from pytest instead.",
+    )
+    doctor_p.add_argument(
+        "--soul",
+        default=None,
+        metavar="PATH",
+        help="Path to SOUL.md / persona doc to inject (mirrors `wt run --soul`).",
+    )
+    doctor_p.add_argument(
+        "--label",
+        default=None,
+        metavar="LABEL",
+        help="Variant label recorded for this check (default: wt_doctor).",
+    )
 
     # ── surface ──────────────────────────────────────────────────────────────
     surface_p = sub.add_parser(
         "surface",
         help="Record or compare the agent's prompt-surface golden "
-             "(surface diff ⇒ bench run before merge).",
+        "(surface diff ⇒ bench run before merge).",
     )
     surface_sub = surface_p.add_subparsers(dest="surface_action")
 
     def _add_surface_args(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--runtime", default="in_memory", metavar="RUNTIME",
-                       help="Runtime to probe (default: in_memory). Resolved "
-                            "exactly like `wt run --runtime`. The probe "
-                            "provisions, resets, asks describe_surface(), and "
-                            "tears down — no scenarios run, no model calls.")
-        p.add_argument("--soul", default=None, metavar="PATH",
-                       help="Path to SOUL.md / persona doc to inject "
-                            "(mirrors `wt run --soul`).")
-        p.add_argument("--label", default=None, metavar="LABEL",
-                       help="Variant label for the probe (default: wt_surface).")
-        p.add_argument("--golden", default="surface.golden.json", metavar="PATH",
-                       help="Golden file path (default: surface.golden.json).")
+        p.add_argument(
+            "--runtime",
+            default="in_memory",
+            metavar="RUNTIME",
+            help="Runtime to probe (default: in_memory). Resolved "
+            "exactly like `wt run --runtime`. The probe "
+            "provisions, resets, asks describe_surface(), and "
+            "tears down — no scenarios run, no model calls.",
+        )
+        p.add_argument(
+            "--soul",
+            default=None,
+            metavar="PATH",
+            help="Path to SOUL.md / persona doc to inject (mirrors `wt run --soul`).",
+        )
+        p.add_argument(
+            "--label",
+            default=None,
+            metavar="LABEL",
+            help="Variant label for the probe (default: wt_surface).",
+        )
+        p.add_argument(
+            "--golden",
+            default="surface.golden.json",
+            metavar="PATH",
+            help="Golden file path (default: surface.golden.json).",
+        )
 
     surface_record_p = surface_sub.add_parser(
         "record",
         help="Probe the runtime's surface and write the golden "
-             "(per-segment hashes; no prompt text unless --store-text).",
+        "(per-segment hashes; no prompt text unless --store-text).",
     )
     _add_surface_args(surface_record_p)
     surface_record_p.add_argument(
-        "--store-text", action="store_true",
+        "--store-text",
+        action="store_true",
         help="ALSO store the full segment text in the golden. The text is a "
-             "human-facing sidecar — comparison only ever reads hashes — and "
-             "it embeds the complete prompt surface: treat the file as "
-             "sensitively as the system prompt itself.")
+        "human-facing sidecar — comparison only ever reads hashes — and "
+        "it embeds the complete prompt surface: treat the file as "
+        "sensitively as the system prompt itself.",
+    )
 
     surface_diff_p = surface_sub.add_parser(
         "diff",
         help="Show per-segment changes vs the golden. Informative: exits 0 "
-             "even when the surface changed.",
+        "even when the surface changed.",
     )
     _add_surface_args(surface_diff_p)
 
     surface_check_p = surface_sub.add_parser(
         "check",
         help="CI gate: exit 1 on ANY surface change (or an invalid/absent "
-             "surface where the golden promises one). A change means: bench "
-             "before merge. An unchanged surface proves nothing — never use "
-             "a passing check to skip runs.",
+        "surface where the golden promises one). A change means: bench "
+        "before merge. An unchanged surface proves nothing — never use "
+        "a passing check to skip runs.",
     )
     _add_surface_args(surface_check_p)
 
@@ -2301,25 +1729,40 @@ def _build_parser() -> argparse.ArgumentParser:
         "import",
         help="Generate a scenario skeleton from a Contract A *.wtin.json trace.",
     )
-    import_p.add_argument("--trace", required=True, metavar="PATH",
-                          help="Path to the Contract A *.wtin.json trace envelope.")
-    import_p.add_argument("--out", required=True, metavar="DIR",
-                          help="Directory to write scenario.py, scorer.py, "
-                               "fixture.universe.json, and IMPORTED.md.")
-    import_p.add_argument("--force", action="store_true",
-                          help="Allow writing into an existing non-empty directory.")
+    import_p.add_argument(
+        "--trace",
+        required=True,
+        metavar="PATH",
+        help="Path to the Contract A *.wtin.json trace envelope.",
+    )
+    import_p.add_argument(
+        "--out",
+        required=True,
+        metavar="DIR",
+        help="Directory to write scenario.py, scorer.py, fixture.universe.json, and IMPORTED.md.",
+    )
+    import_p.add_argument(
+        "--force", action="store_true", help="Allow writing into an existing non-empty directory."
+    )
 
     # ── validate ─────────────────────────────────────────────────────────────
     validate_p = sub.add_parser(
         "validate",
         help="Validate Contract A *.wtin.json interchange envelope(s).",
     )
-    validate_p.add_argument("paths", nargs="+", metavar="PATH",
-                            help="Path(s) to *.wtin.json envelope file(s) to validate.")
-    validate_p.add_argument("--strict", action="store_true",
-                            help="Exit 1 if any file produces a lint warning (e.g. "
-                                 "truncated/redacted values, unpaired tool_call_response "
-                                 "ids), not only on schema errors.")
+    validate_p.add_argument(
+        "paths",
+        nargs="+",
+        metavar="PATH",
+        help="Path(s) to *.wtin.json envelope file(s) to validate.",
+    )
+    validate_p.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit 1 if any file produces a lint warning (e.g. "
+        "truncated/redacted values, unpaired tool_call_response "
+        "ids), not only on schema errors.",
+    )
 
     # ── triage ───────────────────────────────────────────────────────────────
     triage_p = sub.add_parser(
@@ -2327,15 +1770,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Classify failed runs and emit a markdown report grouped by failure category.",
     )
     triage_p.add_argument(
-        "--runs", default="runs", metavar="DIR",
+        "--runs",
+        default="runs",
+        metavar="DIR",
         help="Path to the runs/ directory (default: ./runs). "
-             "Each trace must have a sibling .score.json file.",
+        "Each trace must have a sibling .score.json file.",
     )
     triage_p.add_argument(
-        "--classifier", default="rule_based",
+        "--classifier",
+        default="rule_based",
         choices=["rule_based", "llm_judge"],
         help="Classifier to use: rule_based (default, deterministic) or "
-             "llm_judge (stub — raises NotImplementedError until implemented).",
+        "llm_judge (stub — raises NotImplementedError until implemented).",
     )
 
     # ── skill ────────────────────────────────────────────────────────────────

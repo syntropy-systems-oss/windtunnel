@@ -59,9 +59,33 @@ import re
 from dataclasses import dataclass
 
 from windtunnel.api._evidence import mcp_evidence_state
+from windtunnel.api._matching import (
+    any_tool_name_matches as _any_tool_name_matches,
+)
+from windtunnel.api._matching import (
+    extract_server_tool_names as _extract_server_tool_names,
+)
+from windtunnel.api._matching import (
+    extract_tool_names as _extract_tool_names,
+)
+from windtunnel.api._matching import (
+    has_tool_calls as _has_tool_calls,
+)
+from windtunnel.api._matching import (
+    last_assistant_turn as _last_assistant_turn,
+)
+from windtunnel.api._matching import (
+    match_fact_group as _match_fact_group,
+)
+from windtunnel.api._matching import (
+    match_number_fact as _match_number_fact,
+)
+from windtunnel.api._matching import (
+    tool_name_matches as tool_name_matches,
+)
 from windtunnel.api.scenario import NumberFact, Scenario, TrajectoryCheck
 from windtunnel.api.score import LayerResult
-from windtunnel.api.trace import Trace, Turn
+from windtunnel.api.trace import Trace
 
 # ─── Negation-aware forbidden_facts gate ─────────────────────────────────────
 
@@ -127,102 +151,6 @@ def has_any_forbidden(text: str, forbidden: list[str]) -> bool:
                 return True  # asserted without negation → real false claim
             start = idx + len(f)
     return False
-
-
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-
-def _extract_tool_names(trace: Trace) -> list[str]:
-    """Return the ordered list of tool names the TRANSCRIPT claims were called."""
-    names: list[str] = []
-    for turn in trace.turns:
-        for tc in turn.tool_calls:
-            # OpenAI wire shape: {function: {name: ...}}
-            if "function" in tc and isinstance(tc["function"], dict):
-                name = tc["function"].get("name")
-            # Flat wire shape: {name: ...}
-            elif "name" in tc:
-                name = tc["name"]
-            else:
-                name = None
-            if name:
-                names.append(name)
-    return names
-
-
-def _extract_server_tool_names(trace: Trace) -> list[str]:
-    """Return tool names from the SERVER-witnessed call log, oldest first.
-
-    trace.mcp_calls dicts carry {"tool_name", "args", "result",
-    "timestamp_ms"} (see runner._collect_mcp_evidence). The runner already
-    sorts them, but re-sorting here keeps the ordering guarantee local —
-    hand-built or merged traces score correctly too.
-    """
-    ordered = sorted(trace.mcp_calls, key=lambda c: c.get("timestamp_ms") or 0.0)
-    return [c["tool_name"] for c in ordered if c.get("tool_name")]
-
-
-def _last_assistant_turn(trace: Trace) -> Turn | None:
-    """Return the actual last assistant turn, or None if none exists.
-
-    CRITICAL: returns the LAST turn with role=='assistant', regardless
-    of whether its content is empty. A stop-after-tool-call failure
-    produces an empty-content assistant turn that IS the final state.
-    Do NOT skip empty turns.
-    """
-    for turn in reversed(trace.turns):
-        if turn.role == "assistant":
-            return turn
-    return None
-
-
-def _has_tool_calls(trace: Trace) -> bool:
-    """Return tool-use truth from the strongest evidence available.
-
-    A known-empty server log is proof that no call reached the server and must
-    override transcript narration.  When evidence collection failed, fail
-    closed.  Traces without an evidence marker are historical/no-MCP traces and
-    retain transcript fallback compatibility.
-    """
-    state = mcp_evidence_state(trace.worker_warnings)
-    if state == "unavailable":
-        return False
-    if state == "available" or trace.mcp_calls:
-        return bool(trace.mcp_calls)
-    return any(turn.tool_calls for turn in trace.turns)
-
-
-def _match_number_fact(answer: str, nf: NumberFact) -> bool:
-    """Check if a NumberFact is satisfied in the answer string.
-
-    Uses word-boundary regex so '3' does not match 'B003CCC'.
-    When nf.unit is specified, also verifies the number appears within
-    30 characters of the unit word.
-    """
-    pattern = rf"\b{re.escape(str(nf.value))}\b"
-    match = re.search(pattern, answer)
-    if not match:
-        return False
-    if nf.unit is None:
-        return True
-    # Unit proximity check: find the unit word anywhere in the answer
-    # within 30 chars of the number match position
-    num_pos = match.start()
-    window_start = max(0, num_pos - 30)
-    window_end = min(len(answer), match.end() + 30)
-    window = answer[window_start:window_end]
-    unit_pattern = rf"\b{re.escape(nf.unit)}\b"
-    return bool(re.search(unit_pattern, window, re.IGNORECASE))
-
-
-def _match_fact_group(text: str, group: list[str]) -> bool:
-    """Return True when any fact in an AND-of-OR group appears in text.
-
-    This is the outcome layer's target_facts matcher factored out so custom
-    scorers can reuse the exact same case-insensitive substring semantics
-    against other evidence, such as server-witnessed tool results.
-    """
-    text_lc = text.lower()
-    return any(fact.lower() in text_lc for fact in group)
 
 
 # ─── Outcome evaluator ────────────────────────────────────────────────────────
@@ -305,44 +233,6 @@ def evaluate_outcome(trace: Trace, scenario: Scenario) -> LayerResult:
 
 
 # ─── Trajectory evaluator ─────────────────────────────────────────────────────
-
-def tool_name_matches(canonical: str, full: str) -> bool:
-    """Return True if a platform-decorated tool name matches a canonical name.
-
-    Public helper (exported from windtunnel.api) so custom TrajectoryCheck
-    implementations and pack-level predicates can compare observed tool
-    names against canonical bare names with prefix-chain awareness.
-
-    CONTRACT: ``canonical`` is the FULL bare tool name exactly as the MCP
-    server defines it (e.g. ``client_lookup``).  Platforms may decorate that
-    name with prefix chains before the model sees it — e.g. a platform prepends
-    the server prefix and its sanitizer flattens it
-    (``client_lookup`` → ``ops.client_lookup`` → ``mcp_acme_ops_client_lookup``);
-    other platforms keep dotted forms (``ops.client_lookup``).
-
-    A match is:
-      - exact:               full == canonical
-      - underscore-prefixed: full ends with "_" + canonical
-      - dot-prefixed:        full ends with "." + canonical
-
-    i.e. suffix-at-word-boundary.  KNOWN LIMITATION (by design): a canonical
-    name that is itself a suffix of ANOTHER tool's bare name will match both —
-    ``lookup`` matches ``client_lookup`` AND ``order_lookup`` (each via the
-    "_lookup" boundary).  Scenario authors must therefore use the FULL bare
-    tool name, never a fragment of one.
-    """
-    return (
-        full == canonical
-        or full.endswith("_" + canonical)
-        or full.endswith("." + canonical)
-    )
-
-
-def _any_tool_name_matches(canonical: str, full_names: list[str]) -> bool:
-    """True if any name in ``full_names`` matches ``canonical`` (see
-    tool_name_matches for the decoration contract)."""
-    return any(tool_name_matches(canonical, full) for full in full_names)
-
 
 def _must_call_alternatives(entry: str | list[str]) -> list[str]:
     """Normalise a must_call entry to a list of alternatives.
