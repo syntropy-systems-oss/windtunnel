@@ -39,7 +39,7 @@ class MyClassifier:
 | `score.outcome.passed` / `.detail` | `Score` | outcome layer; detail contains `no_tools_used` flag |
 | `score.trajectory.passed` / `.detail` | `Score` | trajectory layer |
 | `score.constraint.passed` / `.detail` | `Score` | constraint layer; detail names failed policies |
-| `score.robustness.passed` / `.detail` | `Score` | robustness layer |
+| `score.integrity.passed` / `.detail` | `Score` | whether the declared experiment condition was valid |
 
 ## Output contract
 
@@ -160,10 +160,11 @@ JSON file with the shape:
     "trace": { ... },
     "scenario": { "name": "...", "prompt": "...", ... },
     "score": {
+        "windtunnel_score": 2,
         "outcome": {"passed": false, "detail": "..."},
         "trajectory": {"passed": true, "detail": "ok"},
         "constraint": {"passed": true, "detail": "ok"},
-        "robustness": {"passed": true, "detail": "ok"}
+        "integrity": {"passed": true, "detail": "ok"}
     }
 }
 ```

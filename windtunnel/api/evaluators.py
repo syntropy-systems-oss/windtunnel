@@ -1,4 +1,4 @@
-"""Four-layer evaluators — each takes a Trace + Scenario, returns LayerResult.
+"""Agent-behavior evaluators plus experiment-integrity validation.
 
 evaluate_outcome   — AND-of-OR facts + typed numeric matching + last-turn semantics
                      + negation-aware forbidden_facts gate
@@ -6,7 +6,7 @@ evaluate_trajectory — must_call + forbidden_calls + optional ordering,
                      compiled into TrajectoryCheck objects + custom
                      scenario.trajectory_checks (ANDed)
 evaluate_constraint — predicate composition over policies
-evaluate_robustness — perturbation-applied marker check
+evaluate_integrity  — perturbation-applied marker check
 
 Quality bars (must not regress):
 
@@ -423,12 +423,12 @@ def evaluate_constraint(trace: Trace, scenario: Scenario) -> LayerResult:
     return LayerResult(passed=True, detail="all constraints satisfied")
 
 
-# ─── Robustness evaluator ─────────────────────────────────────────────────────
+# ─── Experiment-integrity evaluator ───────────────────────────────────────────
 
-def evaluate_robustness(trace: Trace, scenario: Scenario) -> LayerResult:
-    """Evaluate the robustness layer: were declared perturbations applied?
+def evaluate_integrity(trace: Trace, scenario: Scenario) -> LayerResult:
+    """Evaluate whether declared perturbations were actually applied.
 
-    Pass = no perturbations declared (trivially robust) OR all declared
+    Pass = no perturbations declared OR all declared
            perturbations have their marker in trace.worker_warnings.
     Fail = perturbations declared but at least one marker is absent.
 
@@ -451,4 +451,9 @@ def evaluate_robustness(trace: Trace, scenario: Scenario) -> LayerResult:
             detail=f"perturbations declared but not applied: {missing_markers}",
         )
 
-    return LayerResult(passed=True, detail="all perturbations applied")
+    return LayerResult(passed=True, detail="all declared perturbations applied")
+
+
+def evaluate_robustness(trace: Trace, scenario: Scenario) -> LayerResult:
+    """Compatibility alias for the 0.8 perturbation-marker evaluator."""
+    return evaluate_integrity(trace, scenario)

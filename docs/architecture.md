@@ -1,11 +1,11 @@
 ---
-description: "Architecture overview of Wind Tunnel's API/SPI split, runner data path, scoring layers, perturbations, and CLI surfaces."
+description: "Architecture overview of Wind Tunnel's API/SPI split, runner data path, behavior gates, experiment integrity, perturbations, and CLI surfaces."
 ---
 # Wind Tunnel — Architecture
 
 How Wind Tunnel is put together: the two-surface design, the data path of a
-scored run, the four-layer scoring model, perturbations, and the dimension
-catalog.
+scored run, behavior gates, experiment integrity, perturbations, and the
+dimension catalog.
 
 ---
 
@@ -94,7 +94,7 @@ minimum plugin contract.
    - Record a `Trace`: every `Turn` with role, content, tool calls/results
      (preserved in the wire shape they arrived in), latency, and — when the
      runtime can supply it — the exact rendered prompt with its hash.
-   - **Score** the trace on four layers (below).
+   - **Score** agent behavior and verify experiment integrity (below).
 4. **Aggregate** N scores into a verdict; `handle.teardown()` at batch end.
 
 The `Trace` is the unit of record: JSON-serializable, diff-able, replayable.
@@ -102,24 +102,36 @@ Reports, comparisons, and triage all consume saved traces — you never need to
 re-run a model to re-analyze a run (re-scoring saved traces is supported and
 cheap).
 
-## 3. The four-layer scoring model
+Persisted boundaries are explicitly versioned: native traces use
+`windtunnel_trace`, score sidecars use `windtunnel_score`, and ledger rows use
+`windtunnel_ledger`. Readers migrate unversioned 0.8 artifacts in memory and
+reject unknown future versions. Contract A interchange and Contract B universe
+files tolerate additive fields within their supported version but likewise
+reject unknown version numbers.
 
-A `Scenario` declares expectations across four independent layers; each run
-produces a `Score` of four `LayerResult`s.
+## 3. Behavior scores, gates, and experiment integrity
+
+A `Scenario` declares expectations across three independent agent-behavior
+layers. Each run also produces an integrity result about the test setup.
 
 | Layer | Checks | Evaluator |
 |---|---|---|
 | **outcome** | the user-visible answer is right | `evaluate_outcome` |
 | **trajectory** | right tools called, right order, none forbidden | `evaluate_trajectory` |
 | **constraint** | named policy predicates over the trace hold | `evaluate_constraint` |
-| **robustness** | declared perturbations were actually applied | `evaluate_robustness` |
+| **integrity** | declared perturbations were actually applied | `evaluate_integrity` |
 
-**The critical invariant: the per-run gate is the `outcome` layer ONLY.**
-Trajectory, constraint, and robustness are evaluated and recorded on every
-run, but they don't decide pass/fail — they surface as per-layer pass-rates
-in reports. This keeps the gate honest (users experience outcomes) while
-preserving the diagnostic signal (a pass with a wrong trajectory is a pass
-on borrowed time).
+The scenario's gate is inferred as `outcome` plus every trajectory or
+constraint layer for which the author declared an expectation. A required
+tool call or custom trajectory check therefore fails the scenario when it
+fails; so does a declared policy. Set `gate_layers` explicitly when a layer
+is intentionally diagnostic, for example `gate_layers=["outcome"]` while
+exploring a new trajectory assertion.
+
+Integrity is outside that configurable gate. A missing perturbation marker
+means the intended experiment did not happen, so the aggregate is `INVALID`
+rather than `PASS` or `FAIL`. This prevents both false confidence and false
+blame.
 
 `evaluate_outcome` encodes several hard-won rules:
 
@@ -137,13 +149,21 @@ on borrowed time).
 5. **Negation-aware `forbidden_facts`** — "the SKU is B003" fails, "there is
    no SKU B003" doesn't.
 
-**Aggregate verdict:** `PASS` iff **all N** runs' outcome bits pass;
+**Aggregate verdict:** `PASS` iff **all N** runs satisfy the declared gate;
 otherwise `FAIL` — unless the scenario sets `variance_allowed=True`
 (for sampler-sensitivity work), which yields `PASS_WITH_VARIANCE` with
-`pass_rate ± stddev`. Every scenario carries a `FailureCost`
-(severity / customer_visible / reversible / side_effect_performed) for reports
-and downstream policy. The built-in 0.8 aggregate records this annotation but
-does not use it to change the verdict.
+`pass_rate ± stddev`. No runs, or any integrity failure, yields `INVALID`.
+
+Every scenario carries a `FailureCost` (severity / customer_visible /
+reversible / side_effect_performed). Wind Tunnel converts it to a stable risk
+weight and reports `failure_risk = risk_weight × (1 - pass_rate)`. Comparisons
+rank regressions by this operational risk while every gated regression still
+fails.
+
+**Robustness** is not the integrity flag. It is gate performance on scenarios
+that declare perturbations, after integrity has established that those
+conditions were actually present. A suite with no perturbation scenarios has
+no robustness rate (`N/A`), not a synthetic 100%.
 
 ## 4. Trajectory truth: the MCP call log
 
@@ -179,7 +199,7 @@ corruption lands:
   malformed JSON, timeout, unexpectedly empty result.
 
 Every perturbation declares a `marker`; the runner ensures it lands in the
-trace, and `evaluate_robustness` verifies the contract was honoured. A
+trace, and `evaluate_integrity` verifies the contract was honoured. A
 perturbation that silently failed to apply cannot produce a false pass.
 Pre-send perturbations are injected before send and skip the post-hoc
 `apply()` — no double application.

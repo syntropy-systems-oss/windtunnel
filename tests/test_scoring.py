@@ -1,4 +1,4 @@
-"""Tests for the four-layer scoring framework.
+"""Tests for scoring, declared gates, integrity, and failure risk.
 
 TDD red phase — these tests define the contract. They must fail before
 any implementation exists.
@@ -6,12 +6,12 @@ any implementation exists.
 Coverage map:
   1. Score / LayerResult / FailureCost data types
   2. Scenario authoring (target_facts, target_numbers, trajectory, constraint,
-     robustness, failure_cost, requires_tool_use, variance_allowed)
+     integrity, failure_cost, requires_tool_use, variance_allowed)
   3. evaluate_outcome  — AND-of-OR facts, typed numeric matching, last-turn
      semantics, requires_tool_use gate
   4. evaluate_trajectory — must_call, forbidden, order_matters
   5. evaluate_constraint — predicate composition
-  6. evaluate_robustness — perturbation-applied check
+  6. evaluate_integrity — perturbation-applied check
   7. Perturbation library — corrupt_prior_assistant_turn, inject_stale_memory,
      tool_timeout, tool_returns_malformed
   8. aggregate — per-run-must-pass, pass_rate ± stddev
@@ -27,6 +27,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from windtunnel.api import tool_name_matches
 from windtunnel.api.aggregate import (
     AggregateResult,
@@ -35,6 +37,7 @@ from windtunnel.api.aggregate import (
 )
 from windtunnel.api.evaluators import (
     evaluate_constraint,
+    evaluate_integrity,
     evaluate_outcome,
     evaluate_robustness,
     evaluate_trajectory,
@@ -54,10 +57,14 @@ from windtunnel.api.scenario import (
 
 # ─── Import targets (will fail until implemented) ─────────────────────────────
 from windtunnel.api.score import (
+    SCORE_FORMAT_VERSION,
     FailureCost,
     LayerResult,
     Score,
+    ScoreFormatError,
     Verdict,
+    score_from_dict,
+    score_to_dict,
 )
 from windtunnel.api.state_reset import StateResetConfig, reset_state_db
 from windtunnel.api.trace import Trace, Turn, compute_hash
@@ -188,6 +195,7 @@ class TestScoreTypes:
         assert Verdict.PASS is not None
         assert Verdict.FAIL is not None
         assert Verdict.SKIP is not None
+        assert Verdict.INVALID is not None
 
     def test_layer_result_pass(self):
         r = LayerResult(passed=True, detail="all facts found")
@@ -198,18 +206,18 @@ class TestScoreTypes:
         r = LayerResult(passed=False, detail="missing: ['foo']")
         assert r.passed is False
 
-    def test_score_has_four_layers(self):
+    def test_score_has_three_agent_layers_plus_integrity(self):
         s = Score(
             outcome=LayerResult(passed=True, detail="ok"),
             trajectory=LayerResult(passed=False, detail="missing tool"),
             constraint=LayerResult(passed=True, detail="ok"),
-            robustness=LayerResult(passed=True, detail="ok"),
+            integrity=LayerResult(passed=True, detail="ok"),
             failure_cost=FailureCost(),
         )
         assert s.outcome.passed is True
         assert s.trajectory.passed is False
         assert s.constraint.passed is True
-        assert s.robustness.passed is True
+        assert s.integrity.passed is True
 
     def test_score_outcome_pass_trajectory_fail_distinct(self):
         """The key criterion: pass outcome + fail trajectory is representable."""
@@ -217,7 +225,7 @@ class TestScoreTypes:
             outcome=LayerResult(passed=True, detail="facts found"),
             trajectory=LayerResult(passed=False, detail="wrong tool order"),
             constraint=LayerResult(passed=True, detail="ok"),
-            robustness=LayerResult(passed=True, detail="ok"),
+            integrity=LayerResult(passed=True, detail="ok"),
             failure_cost=FailureCost(),
         )
         assert s.outcome.passed is True
@@ -225,12 +233,24 @@ class TestScoreTypes:
         # They are independent — not aggregated to a single bool
         assert s.outcome.passed != s.trajectory.passed
 
+    def test_legacy_robustness_keyword_maps_to_integrity(self):
+        marker = LayerResult(passed=True, detail="legacy marker")
+        score = Score(
+            outcome=LayerResult(True, "ok"),
+            trajectory=LayerResult(True, "ok"),
+            constraint=LayerResult(True, "ok"),
+            robustness=marker,
+        )
+        assert score.integrity is marker
+        assert score.robustness is marker
+
     def test_failure_cost_defaults(self):
         fc = FailureCost()
         assert fc.severity == "low"
         assert fc.customer_visible is False
         assert fc.reversible is True
         assert fc.side_effect_performed is False
+        assert fc.risk_weight == 1
 
     def test_failure_cost_custom(self):
         fc = FailureCost(
@@ -243,11 +263,31 @@ class TestScoreTypes:
         assert fc.customer_visible is True
         assert fc.reversible is False
         assert fc.side_effect_performed is True
+        assert fc.risk_weight == 78
+
+    def test_critical_risk_outweighs_ten_bare_low_failures(self):
+        assert FailureCost(severity="critical").risk_weight > 10 * FailureCost().risk_weight
 
     def test_failure_cost_severity_values(self):
         for s in ("low", "medium", "high", "critical"):
             fc = FailureCost(severity=s)  # type: ignore[arg-type]
             assert fc.severity == s
+
+    def test_failure_cost_rejects_unknown_severity(self):
+        with pytest.raises(ValueError, match="severity"):
+            FailureCost(severity="urgent")  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"customer_visible": "false"},
+            {"reversible": 1},
+            {"side_effect_performed": None},
+        ],
+    )
+    def test_failure_cost_rejects_non_boolean_flags(self, kwargs: dict[str, object]):
+        with pytest.raises(ValueError, match="boolean"):
+            FailureCost(**kwargs)  # type: ignore[arg-type]
 
     def test_score_attaches_failure_cost(self):
         fc = FailureCost(severity="high", customer_visible=True, reversible=False)
@@ -255,11 +295,72 @@ class TestScoreTypes:
             outcome=LayerResult(passed=True, detail="ok"),
             trajectory=LayerResult(passed=True, detail="ok"),
             constraint=LayerResult(passed=True, detail="ok"),
-            robustness=LayerResult(passed=True, detail="ok"),
+            integrity=LayerResult(passed=True, detail="ok"),
             failure_cost=fc,
         )
         assert s.failure_cost.severity == "high"
         assert s.failure_cost.customer_visible is True
+
+    def test_score_v2_round_trip(self):
+        score = Score(
+            outcome=LayerResult(True, "outcome"),
+            trajectory=LayerResult(False, "trajectory"),
+            constraint=LayerResult(True, "constraint"),
+            integrity=LayerResult(True, "integrity"),
+            failure_cost=FailureCost(severity="high"),
+        )
+        payload = score_to_dict(score)
+        loaded = score_from_dict(payload)
+        assert payload["windtunnel_score"] == SCORE_FORMAT_VERSION
+        assert loaded == score
+        assert payload["failure_cost"]["risk_weight"] == 16
+
+    def test_unversioned_v08_score_migrates_robustness_to_integrity(self):
+        payload = {
+            "outcome": {"passed": True, "detail": "outcome"},
+            "trajectory": {"passed": True, "detail": "trajectory"},
+            "constraint": {"passed": True, "detail": "constraint"},
+            "robustness": {"passed": False, "detail": "missing marker"},
+            "failure_cost": {"severity": "medium"},
+        }
+        loaded = score_from_dict(payload)
+        assert loaded.integrity == LayerResult(False, "missing marker")
+        assert loaded.failure_cost.risk_weight == 4
+
+    def test_future_score_version_is_rejected(self):
+        payload = score_to_dict(
+            Score(
+                LayerResult(True, ""),
+                LayerResult(True, ""),
+                LayerResult(True, ""),
+                integrity=LayerResult(True, ""),
+            )
+        )
+        payload["windtunnel_score"] = SCORE_FORMAT_VERSION + 1
+        with pytest.raises(ScoreFormatError, match="unsupported"):
+            score_from_dict(payload)
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("severity", "urgent"),
+            ("customer_visible", "false"),
+            ("reversible", 1),
+            ("side_effect_performed", None),
+        ],
+    )
+    def test_score_failure_cost_fields_are_not_coerced(self, field: str, value: object):
+        payload = score_to_dict(
+            Score(
+                LayerResult(True, ""),
+                LayerResult(True, ""),
+                LayerResult(True, ""),
+                integrity=LayerResult(True, ""),
+            )
+        )
+        payload["failure_cost"][field] = value
+        with pytest.raises(ScoreFormatError, match="failure_cost"):
+            score_from_dict(payload)
 
 
 # ─── 2. Scenario type ─────────────────────────────────────────────────────────
@@ -276,7 +377,8 @@ class TestScenarioType:
         assert sc.target_facts == [["joe@example.com"]]
 
     def test_scenario_defaults(self):
-        sc = Scenario(name="s", prompt="p", target_facts=[])
+        sc = Scenario(name="s", prompt="p")
+        assert sc.target_facts == []
         assert sc.target_numbers == []
         assert sc.must_call == []
         assert sc.forbidden_calls == []
@@ -288,6 +390,34 @@ class TestScenarioType:
         assert sc.failure_cost.severity == "low"
         assert sc.failure_cost.customer_visible is False
         assert sc.failure_cost.reversible is True
+        assert sc.resolved_gate_layers() == ("outcome",)
+
+    def test_user_turns_supply_scored_prompt_without_duplicate_prompt(self):
+        sc = Scenario(name="multi", user_turns=["first", "final question"])
+        assert sc.prompt == ""
+        assert sc.scored_prompt == "final question"
+
+    def test_declared_expectations_infer_gate_layers(self):
+        sc = Scenario(
+            name="gated",
+            prompt="p",
+            must_call=["lookup"],
+            policies=[Policy(name="safe", predicate=lambda _trace: True)],
+        )
+        assert sc.resolved_gate_layers() == ("outcome", "trajectory", "constraint")
+
+    def test_explicit_gate_layers_can_keep_diagnostics_non_gating(self):
+        sc = Scenario(
+            name="legacy",
+            prompt="p",
+            must_call=["lookup"],
+            gate_layers=["outcome"],
+        )
+        assert sc.resolved_gate_layers() == ("outcome",)
+
+    def test_invalid_gate_layer_is_rejected(self):
+        with pytest.raises(ValueError, match="unknown gate layers"):
+            Scenario(name="bad", prompt="p", gate_layers=["robustness"])  # type: ignore[list-item]
 
     def test_scenario_with_trajectory(self):
         sc = Scenario(
@@ -827,13 +957,13 @@ class TestEvaluateConstraint:
         assert p.effect_class == "external_send"
 
 
-# ─── 6. evaluate_robustness ───────────────────────────────────────────────────
+# ─── 6. evaluate_integrity ────────────────────────────────────────────────────
 
-class TestEvaluateRobustness:
+class TestEvaluateIntegrity:
     def test_no_perturbations_passes(self):
         sc = Scenario(name="s", prompt="p", target_facts=[])
         trace = _simple_trace("answer")
-        result = evaluate_robustness(trace, sc)
+        result = evaluate_integrity(trace, sc)
         assert result.passed is True
 
     def test_perturbation_marked_applied_passes(self):
@@ -852,7 +982,7 @@ class TestEvaluateRobustness:
             trace, "worker_warnings",
             ["perturbation_applied: corrupt_prior_assistant_turn idx=0 mode=empty"],
         )
-        result = evaluate_robustness(trace, sc)
+        result = evaluate_integrity(trace, sc)
         assert result.passed is True
 
     def test_perturbation_declared_but_not_applied_fails(self):
@@ -862,8 +992,13 @@ class TestEvaluateRobustness:
             perturbations=[CorruptPriorAssistantTurn(idx=0, mode="empty")],
         )
         trace = _simple_trace("answer")  # no perturbation marker
-        result = evaluate_robustness(trace, sc)
+        result = evaluate_integrity(trace, sc)
         assert result.passed is False
+
+    def test_legacy_evaluator_name_is_an_integrity_alias(self):
+        sc = Scenario(name="s", prompt="p")
+        trace = _simple_trace("answer")
+        assert evaluate_robustness(trace, sc) == evaluate_integrity(trace, sc)
 
 
 # ─── 7. Perturbation library ──────────────────────────────────────────────────
@@ -968,7 +1103,7 @@ class TestAggregate:
             outcome=LayerResult(passed=outcome_pass, detail=""),
             trajectory=LayerResult(passed=True, detail=""),
             constraint=LayerResult(passed=True, detail=""),
-            robustness=LayerResult(passed=True, detail=""),
+            integrity=LayerResult(passed=True, detail=""),
             failure_cost=fc or FailureCost(),
         )
 
@@ -1067,7 +1202,7 @@ class TestAggregate:
                 outcome=LayerResult(passed=True, detail=""),
                 trajectory=LayerResult(passed=False, detail=""),
                 constraint=LayerResult(passed=True, detail=""),
-                robustness=LayerResult(passed=True, detail=""),
+                integrity=LayerResult(passed=True, detail=""),
                 failure_cost=FailureCost(),
             ),
             trace=_simple_trace("a"),
@@ -1077,7 +1212,7 @@ class TestAggregate:
                 outcome=LayerResult(passed=True, detail=""),
                 trajectory=LayerResult(passed=True, detail=""),
                 constraint=LayerResult(passed=True, detail=""),
-                robustness=LayerResult(passed=True, detail=""),
+                integrity=LayerResult(passed=True, detail=""),
                 failure_cost=FailureCost(),
             ),
             trace=_simple_trace("a"),
@@ -1086,7 +1221,47 @@ class TestAggregate:
         assert result.outcome_pass_rate == 1.0
         assert result.trajectory_pass_rate == 0.5
         assert result.constraint_pass_rate == 1.0
-        assert result.robustness_pass_rate == 1.0
+        assert result.integrity_pass_rate == 1.0
+
+    def test_declared_trajectory_gate_changes_aggregate_verdict(self):
+        score = Score(
+            outcome=LayerResult(True, "ok"),
+            trajectory=LayerResult(False, "missing lookup"),
+            constraint=LayerResult(True, "ok"),
+            integrity=LayerResult(True, "valid"),
+        )
+        result = aggregate_runs(
+            [ScenarioRunResult(score=score, trace=_simple_trace("a"))],
+            gate_layers=("outcome", "trajectory"),
+        )
+        assert result.verdict == "FAIL"
+        assert result.outcome_pass_rate == 1.0
+        assert result.pass_rate == 0.0
+
+    def test_integrity_failure_is_invalid_not_agent_failure(self):
+        score = Score(
+            outcome=LayerResult(True, "ok"),
+            trajectory=LayerResult(True, "ok"),
+            constraint=LayerResult(True, "ok"),
+            integrity=LayerResult(False, "perturbation missing"),
+        )
+        result = aggregate_runs([ScenarioRunResult(score=score, trace=_simple_trace("a"))])
+        assert result.verdict == "INVALID"
+        assert result.failure_risk == 0.0
+
+    def test_failure_risk_scales_cost_by_miss_rate(self):
+        cost = FailureCost(severity="high")
+        runs = [
+            ScenarioRunResult(score=self._score(True, cost), trace=_simple_trace("a")),
+            ScenarioRunResult(score=self._score(False, cost), trace=_simple_trace("a")),
+        ]
+        result = aggregate_runs(runs, variance_allowed=True)
+        assert result.risk_weight == 16
+        assert result.failure_risk == 8.0
+
+    def test_empty_aggregate_still_validates_gate_names(self):
+        with pytest.raises(ValueError, match="unknown gate"):
+            aggregate_runs([], gate_layers=("robustness",))  # type: ignore[arg-type]
 
 
 # ─── 9. State-reset hook ──────────────────────────────────────────────────────
@@ -1294,8 +1469,8 @@ class TestPrototypeRoundTrip:
             assert sc.failure_cost.customer_visible is False
             assert sc.failure_cost.reversible is True
 
-    def test_prototype_scenarios_have_empty_trajectory_constraint_robustness(self):
-        """Migrated scenarios start with empty trajectory/constraint/robustness."""
+    def test_prototype_scenarios_have_no_path_policy_or_perturbation_expectations(self):
+        """Migrated scenarios retain only their original outcome expectations."""
         from windtunnel.scenarios.prototype import PROTOTYPE_SCENARIOS
 
         for sc in PROTOTYPE_SCENARIOS:

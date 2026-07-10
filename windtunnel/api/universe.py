@@ -13,9 +13,9 @@ authors can depend on the representation without pulling in a particular MCP
 transport.
 
 Forward tolerance follows ``Trace._from_dict`` discipline: required v1
-fields are validated, optional fields get stable defaults, and unknown
-future fields are ignored rather than making old Wind Tunnel builds unable
-to read newer fixtures.
+fields are validated, optional fields get stable defaults, and additive
+fields within v1 are ignored. Unknown format versions are rejected so an
+older reader never silently misinterprets a future contract.
 """
 from __future__ import annotations
 
@@ -325,8 +325,13 @@ class Universe:
     def _from_dict(cls, raw: Mapping[str, Any]) -> Universe:
         d = _require_mapping(raw, "universe")
         version = d.get("windtunnel_universe")
-        if not isinstance(version, int) or version < 1:
-            raise UniverseFormatError("windtunnel_universe must be a positive integer")
+        if type(version) is not int:
+            raise UniverseFormatError("windtunnel_universe must be an integer")
+        if version != UNIVERSE_VERSION:
+            raise UniverseFormatError(
+                f"unsupported windtunnel_universe version {version}; "
+                f"expected {UNIVERSE_VERSION}"
+            )
 
         tools = [UniverseTool._from_dict(t) for t in _require_list(d.get("tools"), "tools")]
         tool_names = [t.name for t in tools]

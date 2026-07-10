@@ -360,6 +360,22 @@ class TestRunMatrixAggregation:
         agg = result.cells[key]
         assert agg.stddev > 0.0
 
+    def test_declared_trajectory_expectation_is_part_of_matrix_gate(self):
+        from windtunnel.api.score import LayerResult, Score
+
+        key, runs = self._make_cell([True])
+        runs[0].score = Score(
+            outcome=LayerResult(True, "correct answer"),
+            trajectory=LayerResult(False, "missing client_lookup"),
+            constraint=LayerResult(True, "no policies"),
+            integrity=LayerResult(True, "valid"),
+        )
+
+        result = run_matrix_aggregation({key: runs})
+
+        assert result.cells[key].gate_layers == ("outcome", "trajectory")
+        assert result.cells[key].pass_rate == 0.0
+
     def test_stddev_calculation_correctness(self):
         """Verify population stddev for [1,1,1,0,0] = sqrt(0.6*0.4)."""
         key, runs = self._make_cell([True, True, True, False, False])

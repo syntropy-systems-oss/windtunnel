@@ -1,8 +1,8 @@
-<!-- GENERATED from agents/skill-template.md + docs/ at d582025dbd5d — do not edit; edit docs/ or agents/skill-template.md. -->
+<!-- GENERATED from agents/skill-template.md + docs/ at 2a2e82b74821 — do not edit; edit docs/ or agents/skill-template.md. -->
 # Wind Tunnel Agent Index
 
-Wind Tunnel is unittest for tool-using LLM agents: scenarios score outcome,
-trajectory, constraint, and robustness layers from reproducible traces.
+Wind Tunnel is unittest for tool-using LLM agents: scenarios gate declared
+behavior expectations and verify experiment integrity from reproducible traces.
 
 Installed skill: `wt skill path`
 

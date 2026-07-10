@@ -178,7 +178,10 @@ def _build_summary_html(
     outcome_pct = pct_fn(summary["outcome_pass_rate"])
     trajectory_pct = pct_fn(summary["trajectory_pass_rate"])
     constraint_pct = pct_fn(summary["constraint_pass_rate"])
-    robustness_pct = pct_fn(summary["robustness_pass_rate"])
+    integrity_pct = pct_fn(summary["integrity_pass_rate"])
+    robustness_rate = summary["robustness_pass_rate"]
+    robustness_pct = pct_fn(robustness_rate) if robustness_rate is not None else "N/A"
+    failure_risk = f"{float(summary['total_failure_risk']):.2f}"
 
     return f"""<h1>Agent Bench Report</h1>
     <div class="summary-grid">
@@ -203,8 +206,16 @@ def _build_summary_html(
         <div class="summary-value">{constraint_pct}</div>
       </div>
       <div class="summary-card">
-        <div class="summary-label">Robustness</div>
+        <div class="summary-label">Integrity</div>
+        <div class="summary-value">{integrity_pct}</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Robustness cases</div>
         <div class="summary-value">{robustness_pct}</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Failure risk</div>
+        <div class="summary-value">{failure_risk}</div>
       </div>
     </div>"""
 
@@ -336,6 +347,7 @@ _JS = r"""
         const verdictSpan = document.createElement('span');
         verdictSpan.textContent = verdict === 'PASS' ? '✓ PASS'
           : verdict.includes('VARIANCE') ? '~ VAR'
+          : verdict === 'INVALID' ? '! INVALID'
           : '✗ FAIL';
         verdictSpan.className = verdict === 'PASS' ? 'verdict-pass'
           : verdict.includes('VARIANCE') ? 'verdict-variance'
@@ -351,7 +363,7 @@ _JS = r"""
         // Layer pills — separate div
         const pills = document.createElement('div');
         pills.className = 'layer-pills';
-        ['outcome','trajectory','constraint','robustness'].forEach(layer => {
+        ['outcome','trajectory','constraint','integrity'].forEach(layer => {
           const pill = document.createElement('span');
           pill.className = 'layer-pill ' + (cell.layers[layer].passed ? 'layer-pass' : 'layer-fail');
           pill.title = layer + ': ' + cell.layers[layer].detail;
@@ -434,7 +446,7 @@ _JS = r"""
     scoreH4.textContent = 'Score';
     scoreDiv.appendChild(scoreH4);
 
-    ['outcome','trajectory','constraint','robustness'].forEach(layer => {
+    ['outcome','trajectory','constraint','integrity'].forEach(layer => {
       const row = document.createElement('div');
       row.className = 'score-row';
       const nameEl = document.createElement('span');
@@ -452,6 +464,22 @@ _JS = r"""
       scoreDiv.appendChild(row);
     });
 
+    if (cell.robustness.applicable) {
+      const robustRow = document.createElement('div');
+      robustRow.className = 'score-row';
+      const robustName = document.createElement('span');
+      robustName.className = 'score-layer-name';
+      robustName.textContent = 'robustness';
+      const robustValue = document.createElement('span');
+      robustValue.className = cell.robustness.passed ? 'verdict-pass' : 'verdict-fail';
+      robustValue.textContent = cell.robustness.pass_rate === null
+        ? 'invalid experiment'
+        : `${Math.round(cell.robustness.pass_rate * 100)}% gate pass`;
+      robustRow.appendChild(robustName);
+      robustRow.appendChild(robustValue);
+      scoreDiv.appendChild(robustRow);
+    }
+
     // failure_cost
     const fc = cell.failure_cost;
     const fcRow = document.createElement('div');
@@ -462,7 +490,7 @@ _JS = r"""
     fcLabel.textContent = 'failure_cost';
     const fcVal = document.createElement('span');
     fcVal.className = 'score-layer-detail';
-    fcVal.textContent = `severity=${fc.severity} customer_visible=${fc.customer_visible} reversible=${fc.reversible}`;
+    fcVal.textContent = `severity=${fc.severity} risk_weight=${fc.risk_weight} customer_visible=${fc.customer_visible} reversible=${fc.reversible}`;
     fcRow.appendChild(fcLabel);
     fcRow.appendChild(fcVal);
     scoreDiv.appendChild(fcRow);

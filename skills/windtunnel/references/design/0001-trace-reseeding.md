@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/design/0001-trace-reseeding.md at 89cadcbe4e2d — do not edit; edit docs/design/0001-trace-reseeding.md. -->
+<!-- GENERATED from docs/design/0001-trace-reseeding.md at cab9e52ba07e — do not edit; edit docs/design/0001-trace-reseeding.md. -->
 ---
 description: "Design spine for trace re-seeding, Contract A interchange, Contract B universes, import, scorer, ledger, and CI ergonomics."
 ---
@@ -6,6 +6,11 @@ description: "Design spine for trace re-seeding, Contract A interchange, Contrac
 
 **Status:** accepted · **Scope:** five upstream changes and the two format
 contracts they share.
+
+> Historical note: this document records the 0.8 outcome-only gate. Wind
+> Tunnel 0.9 supersedes that scoring policy with inferred declared gates,
+> experiment integrity, and robustness-under-perturbation semantics; see
+> [Migrating to 0.9](../migrating-to-0.9.md).
 
 This document is the design spine for making Wind Tunnel's core loop —
 *turn any production trace into a regression test* — a first-class,

@@ -50,13 +50,13 @@ def _score(
     *,
     trajectory_passed: bool = True,
     constraint_passed: bool = True,
-    robustness_passed: bool = True,
+    integrity_passed: bool = True,
 ) -> Score:
     return Score(
         outcome=LayerResult(passed=passed, detail="outcome detail"),
         trajectory=LayerResult(passed=trajectory_passed, detail="trajectory detail"),
         constraint=LayerResult(passed=constraint_passed, detail="constraint detail"),
-        robustness=LayerResult(passed=robustness_passed, detail="robustness detail"),
+        integrity=LayerResult(passed=integrity_passed, detail="integrity detail"),
     )
 
 
@@ -392,7 +392,7 @@ def test_debrief_artifact_schema_records_timeout(monkeypatch: pytest.MonkeyPatch
         "duration_ms",
         "error",
     }
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["tools_disabled"] is False
     assert payload["timed_out"] is True
     assert payload["error"]
@@ -511,7 +511,7 @@ def test_hooks_fire_on_synthetic_runner_errors() -> None:
     result = run_scenario(_scenario(), BrokenRuntime(), hooks=[ErrorHook()])
     run = result.runs[0]
 
-    assert result.aggregate.verdict == "FAIL"
+    assert result.aggregate.verdict == "INVALID"
     assert any(w.startswith("runner_error: send exploded") for w in run.trace.worker_warnings)
     assert events == [
         ("start", False, False),
@@ -718,13 +718,14 @@ def test_debrief_trajectory_only_failure_verdict_matches_score_sidecar(
             return {"content": "trajectory debrief"}
 
     scenario = _scenario("trajectory_only")
+    scenario.gate_layers = ["outcome", "trajectory"]
     trace = _trace("trajectory_only")
     score = _score(passed=True, trajectory_passed=False)
     trace_path = storage_path(trace, base_dir=tmp_path / "runs")
     save_trace(trace, trace_path)
     score_path = cli._write_score_sidecar(trace_path, score, scenario)
     sidecar = json.loads(score_path.read_text(encoding="utf-8"))
-    sidecar_verdict = "PASS" if sidecar["outcome"]["passed"] else "FAIL"
+    sidecar_verdict = sidecar["verdict"]
 
     ctx = HookContext(
         hook_name="debrief",
@@ -740,7 +741,7 @@ def test_debrief_trajectory_only_failure_verdict_matches_score_sidecar(
     DebriefHook().on_run_scored(ctx)
 
     payload = ctx.artifacts[0].payload
-    assert payload["verdict"] == sidecar_verdict == "PASS"
+    assert payload["verdict"] == sidecar_verdict == "FAIL"
     assert payload["failed_layers"] == ["trajectory"]
     assert payload["reply"] == "trajectory debrief"
 

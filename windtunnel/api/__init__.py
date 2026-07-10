@@ -11,6 +11,7 @@ from windtunnel.api.aggregate import AggregateResult, ScenarioRunResult, aggrega
 from windtunnel.api.canary import CanaryResult, run_reset_canary
 from windtunnel.api.evaluators import (
     evaluate_constraint,
+    evaluate_integrity,
     evaluate_outcome,
     evaluate_robustness,
     evaluate_trajectory,
@@ -18,6 +19,7 @@ from windtunnel.api.evaluators import (
 )
 from windtunnel.api.importer import ImportResult, write_imported_scenario
 from windtunnel.api.interchange import (
+    INTERCHANGE_VERSION,
     InterchangeFormatError,
     InterchangeMessage,
     InterchangePart,
@@ -65,7 +67,17 @@ from windtunnel.api.scenario import (
     Scenario,
     TrajectoryCheck,
 )
-from windtunnel.api.score import FailureCost, LayerResult, Score, Verdict
+from windtunnel.api.score import (
+    SCORE_FORMAT_VERSION,
+    FailureCost,
+    GateLayer,
+    LayerResult,
+    Score,
+    ScoreFormatError,
+    Verdict,
+    score_from_dict,
+    score_to_dict,
+)
 from windtunnel.api.scorers import (
     all_of,
     any_of,
@@ -76,8 +88,10 @@ from windtunnel.api.scorers import (
 )
 from windtunnel.api.state_reset import StateResetConfig, reset_state_db
 from windtunnel.api.trace import (
+    TRACE_FORMAT_VERSION,
     Hash,
     Trace,
+    TraceFormatError,
     Turn,
     compute_hash,
     load_trace,
@@ -85,6 +99,7 @@ from windtunnel.api.trace import (
     storage_path,
 )
 from windtunnel.api.universe import (
+    UNIVERSE_VERSION,
     SynthesizeHook,
     Universe,
     UniverseFormatError,
@@ -98,9 +113,11 @@ from windtunnel.api.universe import (
 
 __all__ = [
     # trace
-    "Hash", "Trace", "Turn", "compute_hash", "load_trace", "save_trace", "storage_path",
+    "TRACE_FORMAT_VERSION", "Hash", "Trace", "TraceFormatError", "Turn", "compute_hash",
+    "load_trace", "save_trace", "storage_path",
     # score
-    "FailureCost", "LayerResult", "Score", "Verdict",
+    "SCORE_FORMAT_VERSION", "FailureCost", "GateLayer", "LayerResult", "Score",
+    "ScoreFormatError", "Verdict", "score_from_dict", "score_to_dict",
     # scenario
     "NumberFact", "Perturbation", "Policy", "PreSendPerturbation", "Scenario",
     "TrajectoryCheck",
@@ -113,8 +130,8 @@ __all__ = [
     # pack
     "ScenarioPack",
     # evaluators
-    "evaluate_outcome", "evaluate_trajectory", "evaluate_constraint", "evaluate_robustness",
-    "tool_name_matches",
+    "evaluate_outcome", "evaluate_trajectory", "evaluate_constraint", "evaluate_integrity",
+    "evaluate_robustness", "tool_name_matches",
     # perturbations
     "CorruptPriorAssistantTurn", "InjectStaleMemory", "ToolTimeout", "ToolReturnsMalformed",
     "BlankAssistantContent", "FallbackRenderLeak", "MalformedToolCall",
@@ -131,11 +148,11 @@ __all__ = [
     # state_reset
     "StateResetConfig", "reset_state_db",
     # universe
-    "SynthesizeHook", "Universe", "UniverseFormatError", "UniverseMatching",
+    "UNIVERSE_VERSION", "SynthesizeHook", "Universe", "UniverseFormatError", "UniverseMatching",
     "UniverseRecording", "UniverseTool", "freeze_universe", "load_universe",
     "save_universe",
     # interchange/import
-    "InterchangeFormatError", "InterchangeMessage", "InterchangePart",
+    "INTERCHANGE_VERSION", "InterchangeFormatError", "InterchangeMessage", "InterchangePart",
     "InterchangeToolDefinition", "InterchangeTrace", "InterchangeWitnessedCall",
     "TextPart", "ToolCallPart", "ToolCallResponsePart", "build_envelope",
     "load_interchange", "parse_interchange", "ImportResult", "write_imported_scenario",

@@ -19,10 +19,14 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+import pytest
+
 from windtunnel.api.replay import replay
 from windtunnel.api.trace import (
+    TRACE_FORMAT_VERSION,
     Hash,
     Trace,
+    TraceFormatError,
     Turn,
     compute_hash,
     load_trace,
@@ -218,6 +222,28 @@ class TestHashHelpers:
 # ─── 4. JSON round-trip ───────────────────────────────────────────────────────
 
 class TestJsonRoundTrip:
+    def test_saved_trace_declares_schema_version(self, tmp_path):
+        path = tmp_path / "trace.json"
+        save_trace(_make_trace(), path)
+        assert json.loads(path.read_text(encoding="utf-8"))["windtunnel_trace"] == (
+            TRACE_FORMAT_VERSION
+        )
+
+    def test_unversioned_v08_trace_still_loads(self, tmp_path):
+        payload = _make_trace()._to_dict()
+        del payload["windtunnel_trace"]
+        path = tmp_path / "legacy.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        assert load_trace(path).scenario_id == payload["scenario_id"]
+
+    def test_future_trace_version_is_rejected(self, tmp_path):
+        payload = _make_trace()._to_dict()
+        payload["windtunnel_trace"] = TRACE_FORMAT_VERSION + 1
+        path = tmp_path / "future.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(TraceFormatError, match="unsupported"):
+            load_trace(path)
+
     def test_basic_round_trip(self, tmp_path):
         trace = _make_trace()
         path = tmp_path / "trace.json"

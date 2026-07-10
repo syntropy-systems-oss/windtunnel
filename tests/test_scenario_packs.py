@@ -414,6 +414,7 @@ class TestRunLedger:
 
         origin_record = by_scenario["ledger_origin"]
         assert set(origin_record) == {
+            "windtunnel_ledger",
             "ts",
             "scenario_id",
             "pack",
@@ -422,8 +423,15 @@ class TestRunLedger:
             "model",
             "quant",
             "verdict",
+            "gate_layers",
             "runs",
+            "passed",
+            "pass_rate",
+            "stddev",
             "layer_pass_rates",
+            "robustness_pass_rate",
+            "failure_cost",
+            "failure_risk",
             "run_ids",
             "origin",
             "git_sha",
@@ -435,13 +443,16 @@ class TestRunLedger:
         assert origin_record["model"] == "unknown"
         assert origin_record["quant"] == "unknown"
         assert origin_record["verdict"] == "PASS"
+        assert origin_record["gate_layers"] == ["outcome"]
         assert origin_record["runs"] == 1
         assert origin_record["layer_pass_rates"] == {
             "outcome": 1.0,
             "trajectory": 1.0,
             "constraint": 1.0,
-            "robustness": 1.0,
+            "integrity": 1.0,
         }
+        assert origin_record["failure_cost"]["risk_weight"] == 1
+        assert origin_record["failure_risk"] == 0.0
         assert len(origin_record["run_ids"]) == 1
         assert origin_record["origin"] == "incident-2026-06-30-412"
         assert origin_record["git_sha"] == "abc1234"

@@ -15,6 +15,8 @@ from windtunnel.api.scenario import Scenario
 from windtunnel.api.score import Score, score_to_dict
 from windtunnel.spi.hooks import HookArtifact
 
+LEDGER_FORMAT_VERSION = 1
+
 
 def _write_score_sidecar(
     trace_path: Path,
@@ -25,17 +27,28 @@ def _write_score_sidecar(
 ) -> Path:
     """Write the union report/triage score sidecar beside a trace."""
     flat = score_to_dict(score)
+    gate_layers = scenario.resolved_gate_layers()
+    gate_passed = score.gate_passed(gate_layers)
+    verdict = "INVALID" if not score.integrity.passed else ("PASS" if gate_passed else "FAIL")
     sidecar = {
         **flat,
+        "verdict": verdict,
+        "gate_layers": list(gate_layers),
+        "failure_risk": (
+            0.0 if verdict == "INVALID" or gate_passed else float(score.failure_cost.risk_weight)
+        ),
         "score": flat,
         "scenario": {
             "name": getattr(scenario, "name", ""),
-            "prompt": getattr(scenario, "prompt", ""),
+            "prompt": scenario.scored_prompt,
+            "user_turns": list(scenario.user_turns),
             "target_facts": getattr(scenario, "target_facts", []),
             "requires_tool_use": getattr(scenario, "requires_tool_use", False),
             "tags": list(getattr(scenario, "tags", []) or []),
             "must_call": getattr(scenario, "must_call", []),
             "forbidden_calls": getattr(scenario, "forbidden_calls", []),
+            "gate_layers": list(gate_layers),
+            "has_perturbations": bool(scenario.perturbations),
         },
     }
     if origin is not None:
@@ -190,6 +203,7 @@ def _ledger_record(
     aggregate = result.aggregate
     first_trace = result.runs[0].trace if result.runs else None
     return {
+        "windtunnel_ledger": LEDGER_FORMAT_VERSION,
         "ts": _ledger_timestamp(),
         "scenario_id": scenario.name,
         "pack": getattr(pack, "name", None),
@@ -198,13 +212,30 @@ def _ledger_record(
         "model": getattr(first_trace, "model", None),
         "quant": getattr(first_trace, "quant", None),
         "verdict": aggregate.verdict,
+        "gate_layers": list(aggregate.gate_layers),
         "runs": aggregate.total,
+        "passed": aggregate.passed,
+        "pass_rate": aggregate.pass_rate,
+        "stddev": aggregate.stddev,
         "layer_pass_rates": {
             "outcome": aggregate.outcome_pass_rate,
             "trajectory": aggregate.trajectory_pass_rate,
             "constraint": aggregate.constraint_pass_rate,
-            "robustness": aggregate.robustness_pass_rate,
+            "integrity": aggregate.integrity_pass_rate,
         },
+        "robustness_pass_rate": (
+            aggregate.pass_rate
+            if scenario.perturbations and aggregate.integrity_pass_rate == 1.0
+            else None
+        ),
+        "failure_cost": {
+            "severity": scenario.failure_cost.severity,
+            "customer_visible": scenario.failure_cost.customer_visible,
+            "reversible": scenario.failure_cost.reversible,
+            "side_effect_performed": scenario.failure_cost.side_effect_performed,
+            "risk_weight": scenario.failure_cost.risk_weight,
+        },
+        "failure_risk": aggregate.failure_risk,
         "run_ids": [run.trace.run_id for run in result.runs],
         "origin": _origin_from_tags(getattr(scenario, "tags", []) or []),
         "git_sha": git_sha,

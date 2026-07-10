@@ -80,7 +80,7 @@ lookup_before_action = Scenario(
     order_matters=True,
     # Constraint: none for this dim
     policies=[],
-    # Robustness: none for this dim
+    # Perturbations: none for this dim
     perturbations=[],
     failure_cost=FailureCost(
         severity="medium",

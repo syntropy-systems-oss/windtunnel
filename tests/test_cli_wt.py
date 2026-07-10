@@ -100,6 +100,7 @@ def _result(
     scenario,
     *,
     passed: bool,
+    integrity_passed: bool = True,
     run_id: str = "run-1",
     detail: str | None = None,
 ):
@@ -113,11 +114,15 @@ def _result(
         outcome=LayerResult(passed=passed, detail=outcome_detail),
         trajectory=LayerResult(passed=True, detail="trajectory ok"),
         constraint=LayerResult(passed=True, detail="constraint ok"),
-        robustness=LayerResult(passed=True, detail="robustness ok"),
+        integrity=LayerResult(passed=integrity_passed, detail="integrity ok"),
     )
     run = ScenarioRunResult(score=score, trace=_trace(scenario.name, run_id=run_id))
     return ScenarioResult(
-        aggregate=aggregate_runs([run], variance_allowed=getattr(scenario, "variance_allowed", False)),
+        aggregate=aggregate_runs(
+            [run],
+            variance_allowed=getattr(scenario, "variance_allowed", False),
+            gate_layers=scenario.resolved_gate_layers(),
+        ),
         runs=[run],
     )
 
@@ -503,6 +508,7 @@ class TestWtRunCiOutput:
         assert len(records) == 1
         record = records[0]
         assert list(record) == [
+            "windtunnel_ledger",
             "ts",
             "scenario_id",
             "pack",
@@ -511,8 +517,15 @@ class TestWtRunCiOutput:
             "model",
             "quant",
             "verdict",
+            "gate_layers",
             "runs",
+            "passed",
+            "pass_rate",
+            "stddev",
             "layer_pass_rates",
+            "robustness_pass_rate",
+            "failure_cost",
+            "failure_risk",
             "run_ids",
             "origin",
             "git_sha",
@@ -525,17 +538,42 @@ class TestWtRunCiOutput:
         assert record["model"] == "model-x"
         assert record["quant"] == "q4"
         assert record["verdict"] == "PASS"
+        assert record["gate_layers"] == ["outcome"]
         assert record["runs"] == 1
         assert record["layer_pass_rates"] == {
             "outcome": 1.0,
             "trajectory": 1.0,
             "constraint": 1.0,
-            "robustness": 1.0,
+            "integrity": 1.0,
         }
+        assert record["robustness_pass_rate"] is None
+        assert record["failure_cost"]["risk_weight"] == 1
+        assert record["failure_risk"] == 0.0
         assert record["run_ids"] == ["run-1"]
         assert record["origin"] == "incident-42"
         assert record["git_sha"] == "abc1234"
         assert record["wt_version"] == "0.3.0"
+
+    def test_invalid_perturbation_run_has_no_robustness_rate(self) -> None:
+        from windtunnel._cli.storage import _ledger_record
+
+        scenario = _scenario("invalid_perturbation")
+        scenario.perturbations = [object()]  # type: ignore[list-item]
+        pack = _pack("recovery", [scenario])
+        result = _result(scenario, passed=True, integrity_passed=False)
+
+        record = _ledger_record(
+            scenario=scenario,
+            pack=pack,
+            result=result,
+            label="candidate",
+            git_sha=None,
+            wt_version="0.9.0",
+        )
+
+        assert record["verdict"] == "INVALID"
+        assert record["robustness_pass_rate"] is None
+        assert record["failure_risk"] == 0.0
 
     def test_junit_has_suite_per_pack_case_per_aggregate_and_escaped_failure_details(
         self,
@@ -794,7 +832,7 @@ class TestWtRescore:
         out = capsys.readouterr().out
         assert rc == 1
         assert "outcome PASS -> FAIL" in out
-        assert "summary: traces=1 changed=1 new_outcome_failures=1" in out
+        assert "summary: traces=1 changed=1 new_gate_failures=1 invalid=0" in out
 
     def test_rescore_write_updates_sidecar_with_origin_marker(
         self,
@@ -886,17 +924,20 @@ class TestWtRunScoreSidecar:
         data = json.loads(sidecars[0].read_text(encoding="utf-8"))
 
         # Flat shape — report.load_runs/_cell_from_run consumers
-        for layer in ("outcome", "trajectory", "constraint", "robustness"):
+        assert data["windtunnel_score"] == 2
+        for layer in ("outcome", "trajectory", "constraint", "integrity"):
             assert "passed" in data[layer], f"flat {layer} missing 'passed'"
             assert "detail" in data[layer], f"flat {layer} missing 'detail'"
         assert "failure_cost" in data
         assert "severity" in data["failure_cost"]
 
         # Nested shape — wt triage consumer
-        for layer in ("outcome", "trajectory", "constraint", "robustness"):
+        for layer in ("outcome", "trajectory", "constraint", "integrity"):
             assert "passed" in data["score"][layer]
         assert data["scenario"]["name"] == "lookup_before_action"
         assert data["scenario"]["requires_tool_use"] is True
+        assert data["scenario"]["gate_layers"] == ["outcome", "trajectory"]
+        assert data["verdict"] == "FAIL"
 
     def test_load_runs_picks_up_run_output_with_verdict(self, tmp_path: Path) -> None:
         """report.load_runs() pairs the trace with its sidecar and the report

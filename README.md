@@ -45,24 +45,32 @@ fall apart at 0.7. It can handle a clean conversation and break the moment
 one corrupted turn appears in its history.
 
 Conventional evals score the final answer. Wind Tunnel scores the **whole
-flight**, on four independent layers:
+flight** across three independent behavior layers, then separately verifies
+that the experiment itself was valid:
 
 | Layer | Question |
 |---|---|
 | **outcome** | Was the user-visible answer right? |
 | **trajectory** | Were the right tools called, in the right order, none forbidden? |
 | **constraint** | Did named policy predicates over the trace hold? |
-| **robustness** | Were the declared perturbations actually applied? |
+| **integrity** | Were the declared perturbations actually applied? |
 
-The per-run deploy gate is **outcome only** — trajectory, constraint, and
-robustness are recorded on every run and surface as per-layer pass-rates in
-reports, so you can see *how* something passed, not just that it did.
+By default, the deploy gate includes outcome plus every trajectory and
+constraint expectation the scenario declares. An author can set
+`gate_layers` explicitly when a layer is intentionally diagnostic. Integrity
+is never optional: if a declared perturbation did not apply, the run is
+`INVALID`, not an agent pass or failure.
+
+Robustness is the behavior of the agent under adverse conditions. Reports
+therefore calculate robustness from gate performance on scenarios that
+actually declare perturbations; it is no longer a marker-presence score.
 
 A batch of N runs aggregates to a verdict: `PASS` only if **all** N runs
 pass (or `PASS_WITH_VARIANCE` for scenarios that explicitly allow sampler
-variance). Every scenario carries a `FailureCost` annotation (severity,
-customer-visible, reversible) for reports and downstream policy; in 0.8 it
-does not change the built-in aggregate verdict.
+variance). Every scenario carries a `FailureCost` annotation. Its stable risk
+weight combines severity, customer visibility, reversibility, and performed
+side effects; reports and comparisons use that weight to rank regressions
+without weakening the fail-closed verdict.
 
 How is this different from Inspect, promptfoo, or a hand-rolled pytest
 harness? The founding bet: **agent reliability bugs live in the seams** —
@@ -105,9 +113,10 @@ Two families, distinguished by *where* the corruption lands:
 - **Environment-shaping** — make the mock tool server misbehave live:
   malformed JSON, timeouts, unexpectedly empty results.
 
-Every perturbation declares a marker, and the robustness layer verifies the
+Every perturbation declares a marker, and the integrity check verifies the
 contract was honoured — a perturbation that silently failed to apply can't
-produce a false pass.
+produce a false pass. Once the condition is known to be valid, that
+scenario's ordinary gate result contributes to the robustness pass rate.
 
 ## Bring your own platform: the API/SPI split
 
@@ -219,7 +228,8 @@ dotted path.
 
 - [Getting started](docs/getting-started.md) — install, first scenario, first report
 - [CLI reference](docs/cli-reference.md) — every shipped `wt` command and option
-- [Architecture](docs/architecture.md) — the two-surface design and the four-layer scoring model
+- [Architecture](docs/architecture.md) — the two-surface design, gates, integrity, and robustness model
+- [Migrating to 0.9](docs/migrating-to-0.9.md) — intentional scoring and artifact changes
 - [Writing a scenario](docs/writing-a-scenario.md) — the `Scenario` schema, field by field
 - [Writing a runtime](docs/writing-a-runtime.md) — implement the SPI for your platform
 - [Importing a trace](docs/importing-a-trace.md) — turn a Contract A trace into a regression skeleton

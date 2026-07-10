@@ -294,11 +294,27 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     # itself a regression. Fail only when a later label moves to a worse
     # verdict, preserving PASS_WITH_VARIANCE ordering through compute_diff().
     baseline = labels[0]
-    any_regression = any(
-        item["direction"] == "regression"
+    changes = [
+        (candidate, item)
         for candidate in labels[1:]
         for item in compute_diff(runs_dir, baseline, candidate)
-    )
+    ]
+    any_regression = any(item["direction"] == "regression" for _, item in changes)
+    if changes:
+        print("\nRisk-ranked changes:")
+        for candidate, item in sorted(
+            changes,
+            key=lambda pair: (
+                0 if pair[1]["direction"] == "regression" else 1,
+                -float(pair[1]["risk_delta"]),
+                str(pair[1]["scenario_id"]),
+            ),
+        ):
+            print(
+                f"  {str(item['direction']).upper():<11} {item['scenario_id']} "
+                f"({baseline}={item['verdict_a']} -> {candidate}={item['verdict_b']}, "
+                f"risk {float(item['risk_a']):.2f} -> {float(item['risk_b']):.2f})"
+            )
     return 1 if any_regression else 0
 
 
@@ -611,7 +627,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 # ─── rescore ─────────────────────────────────────────────────────────────────
 
-_SCORE_LAYERS = ("outcome", "trajectory", "constraint", "robustness")
+_SCORE_LAYERS = ("outcome", "trajectory", "constraint", "integrity")
 
 
 def _cmd_rescore(args: argparse.Namespace) -> int:
@@ -619,8 +635,8 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
 
     Recomputes score layers from saved traces and current Scenario definitions.
     It never provisions a runtime and never modifies trace files.  Exit codes
-    mirror `wt run`: 0 when all newly-scored outcomes pass, 1 when any newly
-    scored outcome fails, and 2 for usage/configuration errors such as missing
+    mirror `wt run`: 0 when all newly-scored gates pass, 1 when any newly
+    scored gate fails or is invalid, and 2 for usage/configuration errors such as missing
     traces or unresolved scenario definitions.
     """
     from windtunnel.api.trace import load_trace  # noqa: PLC0415
@@ -648,6 +664,7 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
 
     changed = 0
     new_fail = 0
+    invalid = 0
     unresolved = 0
     errors = 0
     written = 0
@@ -689,7 +706,9 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
 
         if trace_changed:
             changed += 1
-        if not new_score.outcome.passed:
+        if not new_score.integrity.passed:
+            invalid += 1
+        elif not new_score.gate_passed(scenario.resolved_gate_layers()):
             new_fail += 1
 
         write_note = ""
@@ -713,13 +732,13 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
     total = len(trace_paths)
     print(
         "summary: "
-        f"traces={total} changed={changed} new_outcome_failures={new_fail} "
+        f"traces={total} changed={changed} new_gate_failures={new_fail} invalid={invalid} "
         f"unresolved={unresolved} errors={errors} written={written} skipped={skipped}"
     )
 
     if unresolved or errors:
         return 2
-    return 1 if new_fail else 0
+    return 1 if new_fail or invalid else 0
 
 
 def _rescore_trace_paths(args: argparse.Namespace) -> list[Path] | None:
@@ -774,8 +793,8 @@ def _score_saved_trace(trace: Trace, scenario: Scenario) -> Score:
     """Re-run all score layers derivable from a saved trace."""
     from windtunnel.api.evaluators import (  # noqa: PLC0415
         evaluate_constraint,
+        evaluate_integrity,
         evaluate_outcome,
-        evaluate_robustness,
         evaluate_trajectory,
     )
     from windtunnel.api.score import Score  # noqa: PLC0415
@@ -784,7 +803,7 @@ def _score_saved_trace(trace: Trace, scenario: Scenario) -> Score:
         outcome=evaluate_outcome(trace, scenario),
         trajectory=evaluate_trajectory(trace, scenario),
         constraint=evaluate_constraint(trace, scenario),
-        robustness=evaluate_robustness(trace, scenario),
+        integrity=evaluate_integrity(trace, scenario),
         failure_cost=scenario.failure_cost,
     )
 
@@ -804,10 +823,14 @@ def _old_layer_verdict(score_data: dict[str, Any] | None, layer_name: str) -> st
     if score_data is None:
         return "UNKNOWN"
     layer = score_data.get(layer_name)
+    if layer_name == "integrity" and not isinstance(layer, dict):
+        layer = score_data.get("robustness")
     if not isinstance(layer, dict):
         nested = score_data.get("score")
         if isinstance(nested, dict):
             layer = nested.get(layer_name)
+            if layer_name == "integrity" and not isinstance(layer, dict):
+                layer = nested.get("robustness")
     if not isinstance(layer, dict) or "passed" not in layer:
         return "UNKNOWN"
     return "PASS" if bool(layer["passed"]) else "FAIL"
@@ -837,7 +860,7 @@ def _cmd_triage(args: argparse.Namespace) -> int:
               "outcome": {"passed": ..., "detail": ...},
               "trajectory": {"passed": ..., "detail": ...},
               "constraint": {"passed": ..., "detail": ...},
-              "robustness": {"passed": ..., "detail": ...}
+              "integrity": {"passed": ..., "detail": ...}
           }
         }
     Traces without a sibling score.json are skipped.
@@ -847,7 +870,7 @@ def _cmd_triage(args: argparse.Namespace) -> int:
     import json
 
     from windtunnel.api.scenario import Scenario  # noqa: PLC0415
-    from windtunnel.api.score import LayerResult, Score  # noqa: PLC0415
+    from windtunnel.api.score import ScoreFormatError, score_from_dict  # noqa: PLC0415
     from windtunnel.api.trace import is_trace_json_path, load_trace  # noqa: PLC0415
 
     runs_dir = Path(args.runs)
@@ -878,6 +901,7 @@ def _cmd_triage(args: argparse.Namespace) -> int:
     by_category: dict[str, list[tuple[str, str, FailureClassification]]] = {}
     skipped = 0
     passed = 0
+    invalid = 0
 
     for trace_path in trace_files:
         score_path = trace_path.with_suffix(".score.json")
@@ -894,20 +918,9 @@ def _cmd_triage(args: argparse.Namespace) -> int:
 
         # Build Score
         try:
-            sd = score_data["score"]
-            score = Score(
-                outcome=LayerResult(**sd["outcome"]),
-                trajectory=LayerResult(**sd["trajectory"]),
-                constraint=LayerResult(**sd["constraint"]),
-                robustness=LayerResult(**sd["robustness"]),
-            )
-        except (KeyError, TypeError):
+            score = score_from_dict(score_data)
+        except ScoreFormatError:
             skipped += 1
-            continue
-
-        # Skip passing runs
-        if score.outcome.passed:
-            passed += 1
             continue
 
         # Build Scenario from stored data
@@ -916,14 +929,23 @@ def _cmd_triage(args: argparse.Namespace) -> int:
             scenario = Scenario(
                 name=sc_data["name"],
                 prompt=sc_data.get("prompt", ""),
+                user_turns=sc_data.get("user_turns", []),
                 target_facts=sc_data.get("target_facts", []),
                 requires_tool_use=sc_data.get("requires_tool_use", False),
                 tags=sc_data.get("tags", []),
                 must_call=sc_data.get("must_call", []),
                 forbidden_calls=sc_data.get("forbidden_calls", []),
+                gate_layers=sc_data.get("gate_layers"),
             )
-        except (KeyError, TypeError):
+        except (KeyError, TypeError, ValueError):
             skipped += 1
+            continue
+
+        if not score.integrity.passed:
+            invalid += 1
+            continue
+        if score.gate_passed(scenario.resolved_gate_layers()):
+            passed += 1
             continue
 
         classification = clf.classify(scenario, trace, score)
@@ -936,6 +958,7 @@ def _cmd_triage(args: argparse.Namespace) -> int:
     print(
         f"**Failed runs:** {total_failed}  "
         f"**Passed:** {passed}  "
+        f"**Invalid:** {invalid}  "
         f"**Skipped (no score):** {skipped}  "
         f"**Classifier:** `{classifier_name}`\n"
     )
