@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.1](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.9.0...v0.9.1) (2026-07-11)
+
+
+### Bug Fixes
+
+* accept order report recovery path ([#48](https://github.com/syntropy-systems-oss/windtunnel/issues/48)) ([dd1c426](https://github.com/syntropy-systems-oss/windtunnel/commit/dd1c426fc7f0ef339aa9c02aee0e137e1bc282f0))
+* expose evidence routes on canned MCP servers ([#49](https://github.com/syntropy-systems-oss/windtunnel/issues/49)) ([89242e7](https://github.com/syntropy-systems-oss/windtunnel/commit/89242e70c80036f1bf5dd99a30a18f0504cae6e9))
+
 ## [0.9.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.8.1...v0.9.0) (2026-07-10)
 
 

@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 # "windtunnel" is an empty squatted registration — a PEP 541 transfer
 # request is open; if granted, the dist may be renamed pre-1.0.
 name = "windtunnel-bench"
-version = "0.9.0"
+version = "0.9.1"
 description = "Wind Tunnel — unittest for agents. A controlled replica of production conditions for agent reliability testing."
 readme = "README.md"
 license = "Apache-2.0"
