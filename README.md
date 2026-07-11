@@ -210,6 +210,7 @@ Working on Wind Tunnel itself? See CONTRIBUTING.md for the dev setup
 
 ```bash
 wt run      --scenario lookup_before_action --runtime <your-runtime> --runs 3
+wt selftest --runtime <reference-capable-runtime> --format junit --out selftest.xml
 wt report   --runs runs/ --format html --out report.html
 wt compare  --labels baseline candidate
 wt replay   --trace runs/<trace>.json --runtime in_memory
@@ -220,6 +221,9 @@ wt triage   --runs runs/ --classifier rule_based
 ```
 
 `wt run` can also emit CI artifacts with `--format junit|json --out FILE`.
+`wt selftest` certifies scenario gates with live golden/poison references when
+the runtime implements the optional inference-substitution capability; its
+results do not enter ordinary pass-rate aggregates.
 The built-in runtimes are `in_memory` and `http_inject`; runtime plugins are
 discovered from the `windtunnel.runtimes` entry-point group or a `module:attr`
 dotted path.
@@ -232,6 +236,7 @@ dotted path.
 - [Migrating to 0.9](docs/migrating-to-0.9.md) — intentional scoring and artifact changes
 - [Writing a scenario](docs/writing-a-scenario.md) — the `Scenario` schema, field by field
 - [Writing a runtime](docs/writing-a-runtime.md) — implement the SPI for your platform
+- [Reference self-tests](docs/design/0004-reference-selftest.md) — certify gates through a live runtime seam
 - [Importing a trace](docs/importing-a-trace.md) — turn a Contract A trace into a regression skeleton
 - [Recording a universe](docs/recording-a-universe.md) — serve recorded tool calls as a hermetic upstream
 - [Agent quickstart](docs/agent-quickstart.md) — using a coding agent? Point it at this one file to integrate Wind Tunnel into your repo

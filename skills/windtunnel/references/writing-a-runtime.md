@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/writing-a-runtime.md at 7ddd04acc8fb — do not edit; edit docs/writing-a-runtime.md. -->
+<!-- GENERATED from docs/writing-a-runtime.md at e7e37a9c3069 — do not edit; edit docs/writing-a-runtime.md. -->
 ---
 description: "Guide to implementing Wind Tunnel runtime protocols or Contract C endpoints with reset isolation and tool-call evidence."
 ---
@@ -12,6 +12,11 @@ platform unchanged.
 The contracts live in `windtunnel/spi/agent_runtime.py`. They are
 `typing.Protocol`s: no base class to inherit, no framework registration —
 structural typing. If your class has the methods, it's a runtime.
+
+For harness certification, a runtime may additionally implement the optional
+`ReferenceCapableAgentRuntime` protocol. It declares one inference-substitution
+seam for the runtime service so `wt selftest` can drive golden and poison model
+decisions through the otherwise live stack.
 
 ## The contract at a glance
 
@@ -76,6 +81,29 @@ Called once before a batch of runs. Receives:
 
 Return an `AgentHandle`. Provisioning is the expensive step — containers,
 auth, registration — which is exactly why it's separated from `reset_state()`.
+
+## Optional `provision_reference()` — certify the harness
+
+```python
+from windtunnel.spi import AgentConfig, ReferenceCase
+
+class MyRuntime:
+    def provision_reference(self, config: AgentConfig, case: ReferenceCase, mcps=None):
+        self.inference_substitute.install(case.decisions)
+        return self._provision_normal_agent(config, mcps)
+```
+
+Implement this only if the runtime can substitute decisions at its genuine
+model-inference seam while leaving its normal agent loop, tools, fixtures,
+probes, and evidence path live. The seam is runtime-wide; scenarios do not
+declare endpoints or service-specific configuration. Wind Tunnel calls the
+method once per reference case, and `handle.teardown()` must remove the
+substitution so cases cannot contaminate each other.
+
+The built-in `in_memory` runtime is deliberately unsupported because it
+shortcuts the loop this capability is meant to certify. See
+[reference self-tests](design/0004-reference-selftest.md) for the complete
+contract, verdicts, and probe-wiring timing.
 
 ## `send(messages, session_id)` — one turn
 
@@ -204,6 +232,8 @@ class HttpRuntime:
 ## Checklist before trusting your runtime
 
 - [ ] Conformance tests pass (`test_runtime_conformance.py` pointed at your runtime).
+- [ ] If `provision_reference()` is implemented, golden and poison cases each
+      receive fresh handles and teardown removes the inference substitution.
 - [ ] A `must_call` scenario passes — proves intermediate tool calls surface.
 - [ ] Two scenarios run back-to-back with a deliberately stateful first
       scenario — proves `reset_state()` actually isolates runs. Automate

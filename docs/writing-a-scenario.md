@@ -328,6 +328,44 @@ perturbed conditions and is reported only for scenarios with perturbations.
 | `failure_cost` | `FailureCost` | safest profile | Stable operational risk metadata. Reports calculate a deterministic `risk_weight` and rank failing aggregates by weighted `failure_risk`; it never excuses a gated regression. |
 | `variance_allowed` | `bool` | `False` | If `True`, the deploy gate accepts sub-100% and reports `pass_rate ± stddev` (sampler-sensitivity dim). |
 | `tags` | `list[str]` | `[]` | Convention: `"dim:<name>"` groups regressions by dimension. |
+| `reference_cases` | `list[ReferenceCase]` | `[]` | Optional known-good golden and known-bad poison decision scripts used by `wt selftest` to certify this scenario's gate. |
+
+---
+
+## Certifying the gate with reference cases
+
+`reference_cases` test the test itself. A golden case must pass the scenario's
+declared gate; a poison case must fail it. The runtime substitutes only model
+decisions, while the real agent loop, tools, fixture, probe, evidence capture,
+and scorer remain live.
+
+```python
+from windtunnel.api import ReferenceCase, ReferenceDecision, ReferenceToolCall
+
+golden = ReferenceCase(
+    name="safe-write",
+    kind="golden",
+    decisions=(
+        ReferenceDecision(tool_calls=(
+            ReferenceToolCall("write_artifact", {"safe": True}),
+        )),
+        ReferenceDecision(content="artifact complete"),
+    ),
+)
+```
+
+Use fictional, non-sensitive fixture values. Case names must be unique within
+the scenario. Run them with a runtime that implements the optional
+`ReferenceCapableAgentRuntime` capability:
+
+```bash
+wt selftest --runtime <reference-capable-runtime> --scenario artifact_guard
+```
+
+The built-in `in_memory` runtime reports `UNSUPPORTED` because it does not
+exercise a real agent/tool loop. See
+[reference self-tests](design/0004-reference-selftest.md) for decision shape,
+isolation, probe timing, outputs, and runtime requirements.
 
 ---
 
@@ -477,6 +515,11 @@ What `wt run` does with it:
   `pre_run()` set it on your module-level `PACK` once the fixture is up —
   `pre_run` fires before any scenario, and the CLI reads the factory afterward.
   Add `StateProbeAvailable()` to every scenario that requires observations.
+  For both `wt run` and `wt selftest`, `pre_run()` happens before the CLI reads
+  the selected owning pack's factory. Only the probe returned by that factory
+  (or passed directly to the library API) populates
+  `PreconditionContext.state_probe`; a probe hidden in a plugin or scorer does
+  not satisfy `StateProbeAvailable()`.
 - **`transport_only=True`** marks a dim whose history-shaping perturbation is
   applied post-hoc to the trace (the live model never saw it): the scenario
   still runs and reports, but its model verdict doesn't flip the exit code.

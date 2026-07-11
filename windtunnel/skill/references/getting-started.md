@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/getting-started.md at d32a48ac777f — do not edit; edit docs/getting-started.md. -->
+<!-- GENERATED from docs/getting-started.md at 828023c27c81 — do not edit; edit docs/getting-started.md. -->
 ---
 description: "Step-by-step guide to install Wind Tunnel, run and report scenarios, gate CI, and triage failures."
 ---
@@ -169,6 +169,7 @@ Wind Tunnel ships the following `wt` commands:
 | Command | What it does |
 |---|---|
 | `wt run` | Execute scenarios against a runtime and write traces, score sidecars, ledger rows, and optional CI artifacts. |
+| `wt selftest` | Certify scenario gates with live golden and poison references through a capable runtime. |
 | `wt report` | Render saved runs as HTML, Markdown, or JSON. |
 | `wt compare` | Compare run labels. |
 | `wt replay` | Replay a saved trace's last user turn against a runtime. |
@@ -205,6 +206,7 @@ CI systems that want structure, not just an exit code:
 ```bash
 wt run --tag dim:recovery --runs 3 --format junit --out results.xml
 wt run --tag dim:recovery --runs 3 --format json  --out results.json
+wt selftest --runtime <reference-capable-runtime> --format junit --out selftest.xml
 ```
 
 JUnit output is one `<testsuite>` per pack and one `<testcase>` per
@@ -212,6 +214,9 @@ scenario, with failures carrying the per-layer details and triage category —
 GitHub Actions, GitLab, and Jenkins render it natively. The JSON document
 holds the same records the ledger gets, for anything that doesn't speak
 JUnit.
+
+`wt selftest` has its own golden/poison verdicts and does not change ordinary
+pass-rate aggregates. See [reference self-tests](design/0004-reference-selftest.md).
 
 ## 8. Triage failures
 

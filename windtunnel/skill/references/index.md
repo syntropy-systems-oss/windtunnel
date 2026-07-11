@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/index.md at 1e72a3d6c789 — do not edit; edit docs/index.md. -->
+<!-- GENERATED from docs/index.md at f0ae2f953219 — do not edit; edit docs/index.md. -->
 ---
 description: "Overview of Wind Tunnel's agent reliability gates, experiment integrity, import workflow, CLI, and starting points."
 ---
@@ -58,6 +58,7 @@ outcome gate, because a trace proves what happened, not what should pass. See
 | Command | Use it to |
 |---|---|
 | `wt run` | Execute scenarios against `in_memory`, `http_inject`, or a runtime plugin. |
+| `wt selftest` | Certify scenario gates with golden and poison references through a capable runtime. |
 | `wt report` | Render saved runs as HTML, Markdown, or JSON. |
 | `wt compare` | Diff variant labels such as `baseline` and `candidate`. |
 | `wt replay` | Re-run a saved trace's last user turn against a runtime. |
@@ -73,6 +74,7 @@ See the [CLI reference](cli-reference.md) for options and exit codes.
 - **[Getting started](getting-started.md)** — install, first scenario, first report.
 - **[Writing a scenario](writing-a-scenario.md)** — the `Scenario` schema, field by field.
 - **[Writing a runtime](writing-a-runtime.md)** — wire Wind Tunnel to your agent platform (four small methods).
+- **[Reference self-tests](design/0004-reference-selftest.md)** — certify the harness through a live inference-substitution seam.
 - **[Importing a trace](importing-a-trace.md)** — turn a Contract A trace into an authored regression test.
 - **[Recording a universe](recording-a-universe.md)** — serve recorded tool calls as a hermetic mock upstream.
 - **[CLI reference](cli-reference.md)** — every shipped `wt` command and option.

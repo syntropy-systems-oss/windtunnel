@@ -87,6 +87,12 @@ from windtunnel.api.scorers import (
     observation,
     substantiated_by_tools,
 )
+from windtunnel.api.selftest import (
+    SelfTestCaseResult,
+    SelfTestVerdict,
+    run_reference_case,
+    selftest_case_to_dict,
+)
 from windtunnel.api.state_reset import StateResetConfig, reset_state_db
 from windtunnel.api.trace import (
     TRACE_FORMAT_VERSION,
@@ -111,6 +117,12 @@ from windtunnel.api.universe import (
     load_universe,
     save_universe,
 )
+from windtunnel.spi.reference import (
+    ReferenceCase,
+    ReferenceDecision,
+    ReferenceKind,
+    ReferenceToolCall,
+)
 
 __all__ = [
     # trace
@@ -122,6 +134,7 @@ __all__ = [
     # scenario
     "NumberFact", "Perturbation", "Policy", "PreSendPerturbation", "Scenario",
     "TrajectoryCheck",
+    "ReferenceCase", "ReferenceDecision", "ReferenceKind", "ReferenceToolCall",
     # preconditions
     "Check", "FileExists", "Precondition", "PreconditionContext", "StateProbeAvailable",
     "ToolAvailable", "WorldMismatchError",
@@ -144,6 +157,9 @@ __all__ = [
     "CanaryResult", "run_reset_canary",
     # runner
     "ScenarioResult", "run_matrix", "run_scenario",
+    # self-test
+    "SelfTestCaseResult", "SelfTestVerdict", "run_reference_case",
+    "selftest_case_to_dict",
     # replay
     "GenerateFn", "replay",
     # state_reset

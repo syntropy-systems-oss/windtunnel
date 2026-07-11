@@ -59,6 +59,7 @@ from typing import Any, ClassVar
 from windtunnel.api.preconditions import Precondition
 from windtunnel.api.score import GATE_LAYER_ORDER, FailureCost, GateLayer, LayerResult
 from windtunnel.api.trace import Trace
+from windtunnel.spi.reference import ReferenceCase
 
 # ─── Numeric fact ─────────────────────────────────────────────────────────────
 
@@ -328,6 +329,13 @@ class Scenario:
     # Used by the failure taxonomy to group regressions by dimension.
     tags: list[str] = field(default_factory=list)
 
+    # reference_cases: deterministic golden/poison model-decision scripts for
+    # harness self-certification. Keyword-only so the additive 0.10 field cannot
+    # shift existing positional Scenario construction. A capable runtime injects
+    # these decisions at its real inference seam; core never replays them as a
+    # fabricated Trace.
+    reference_cases: list[ReferenceCase] = field(default_factory=list, kw_only=True)
+
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("scenario name must not be empty")
@@ -339,6 +347,9 @@ class Scenario:
             raise ValueError("order_matters requires at least one must_call entry")
         if self.gate_layers is not None:
             self._validate_gate_layers(self.gate_layers)
+        reference_names = [case.name for case in self.reference_cases]
+        if len(set(reference_names)) != len(reference_names):
+            raise ValueError("scenario reference case names must be unique")
 
     @property
     def scored_prompt(self) -> str:

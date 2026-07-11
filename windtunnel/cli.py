@@ -4,6 +4,8 @@ Subcommands:
     wt run      [--scenario S]... [--tag TAG]... [--pack PACK]...
                 [--owner OWNER]... [--soul PATH] [--runtime RUNTIME]
                 [--label LABEL] [--runs N] [--format junit|json --out FILE]
+    wt selftest [--scenario S]... [--tag TAG]... [--pack PACK]...
+                --runtime RUNTIME [--format junit|json --out FILE]
     wt rescore  (--runs DIR | --trace PATH...) [--write]
     wt report   [--runs DIR] [--out FILE] [--format html|markdown|json]
     wt compare  --labels L1 L2 ...
@@ -112,6 +114,7 @@ from windtunnel._cli.scenario_discovery import (
 from windtunnel._cli.scenario_discovery import (
     _select_scenarios as _select_scenarios_impl,
 )
+from windtunnel._cli.selftest import _cmd_selftest as _cmd_selftest_impl
 from windtunnel._cli.storage import (
     _append_ledger_records as _append_ledger_records_impl,
 )
@@ -180,6 +183,7 @@ _load_scenario_pack_source = _load_scenario_pack_source_impl
 _load_scenarios = _load_scenarios_impl
 _print_selection_warnings = _print_selection_warnings_impl
 _select_scenarios = _select_scenarios_impl
+_cmd_selftest = _cmd_selftest_impl
 _counts_as_gate_failure = _counts_as_gate_failure_impl
 _write_run_output = _write_run_output_impl
 _write_run_json = _write_run_json_impl
@@ -1533,6 +1537,89 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path for --format junit/json output. Must be paired with --format.",
     )
 
+    # ── selftest ────────────────────────────────────────────────────────────
+    selftest_p = sub.add_parser(
+        "selftest",
+        help="Certify scenario gates with live golden and poison references.",
+    )
+    selftest_p.add_argument(
+        "--scenario",
+        action="append",
+        metavar="S",
+        default=None,
+        help="Scenario name or glob to certify. Repeat for multiple; omit for all.",
+    )
+    selftest_p.add_argument(
+        "--tag",
+        action="append",
+        metavar="TAG",
+        default=None,
+        help="Certify scenarios carrying TAG. Repeat for OR matching within tags.",
+    )
+    selftest_p.add_argument(
+        "--pack",
+        action="append",
+        metavar="PACK",
+        default=None,
+        help="Certify scenarios from pack PACK. Repeat for multiple packs.",
+    )
+    selftest_p.add_argument(
+        "--pack-source",
+        action="append",
+        metavar="SOURCE",
+        default=None,
+        help="Load a local scenario pack from module:attr or path.py:attr.",
+    )
+    selftest_p.add_argument(
+        "--owner",
+        action="append",
+        metavar="OWNER",
+        default=None,
+        help="Certify scenarios from packs whose owner matches OWNER.",
+    )
+    selftest_p.add_argument(
+        "--runtime",
+        required=True,
+        metavar="RUNTIME",
+        help="Reference-capable runtime plugin to certify against.",
+    )
+    selftest_p.add_argument(
+        "--soul",
+        default=None,
+        metavar="PATH",
+        help="Path to SOUL.md / system instructions to inject.",
+    )
+    selftest_p.add_argument(
+        "--agents",
+        default=None,
+        metavar="PATH",
+        help="Path to an AGENTS.md operating-notes document to inject.",
+    )
+    selftest_p.add_argument(
+        "--label",
+        default=None,
+        metavar="LABEL",
+        help="Variant-label prefix for reference traces (default: selftest).",
+    )
+    selftest_p.add_argument(
+        "--runs-dir",
+        default="runs/selftest",
+        metavar="DIR",
+        help="Directory to write reference traces (default: ./runs/selftest).",
+    )
+    selftest_p.add_argument(
+        "--format",
+        choices=["junit", "json"],
+        default=None,
+        help="Machine-readable self-test output. Must be paired with --out.",
+    )
+    selftest_p.add_argument(
+        "--out",
+        default=None,
+        metavar="FILE",
+        help="Path for --format junit/json output. Must be paired with --format.",
+    )
+
     # ── rescore ──────────────────────────────────────────────────────────────
     rescore_p = sub.add_parser(
         "rescore",
@@ -1828,6 +1915,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_compare(args)
     if args.command == "run":
         return _cmd_run(args)
+    if args.command == "selftest":
+        return _cmd_selftest(args)
     if args.command == "rescore":
         return _cmd_rescore(args)
     if args.command == "replay":
