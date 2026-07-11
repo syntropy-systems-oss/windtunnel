@@ -41,13 +41,15 @@ class ScenarioPack:
         stale names fail loudly instead of silently mis-filtering a sweep.
 
     scenarios:   the Scenario objects this pack contributes to the selection
-        pool. `wt run` flattens every discovered pack's list (built-ins in
-        canonical order, then entry-point packs) and filters by --scenario.
+        pool. `wt run` and `wt selftest` flatten every discovered pack's list
+        (built-ins in canonical order, then entry-point packs) and filter by
+        --scenario.
 
     mcp_factory: builds the pack's mock MCPServer for a given scenario, or
         None when the pack needs no canned upstream tools. Called once per
-        scenario so each run_scenario() batch gets a FRESH, not-yet-started
-        server (the runner owns start-per-batch / stop-per-batch). The CLI
+        scenario batch by `wt run`, or once per reference case by `wt
+        selftest`, so each run_scenario() call gets a FRESH,
+        not-yet-started server (the runner owns start/stop). The CLI
         reads it from the selected scenario's owning pack, never from tags. It
         receives the selected Scenario so scenario-AWARE factories can
         specialize — silent_failure derives MOCK_MCP_FAILURE_MODE from the
@@ -58,16 +60,19 @@ class ScenarioPack:
 
     state_probe_factory: builds the pack's StateProbe for a given scenario,
         or returns None when that scenario needs no external-state capture.
-        The probe seam mirrors mcp_factory: called once per scenario, the
-        result is passed to run_scenario(state_probe=...), which resets it
+        The probe seam mirrors mcp_factory: called once per scenario batch or
+        reference case, the result is passed to
+        run_scenario(state_probe=...), which resets it
         before each run and freezes capture() into trace.observations
         before scoring (see windtunnel/spi/state_probe.py). A probe
         usually closes over a live bench fixture; when that fixture is
         started by a RuntimePlugin's pre_run() (the driver pattern), the
         pack ships with state_probe_factory=None and pre_run sets it on
         the pack's module-level PACK singleton after the fixture is up —
-        pre_run runs before any scenario, so the CLI's per-scenario
-        factory call sees the wired value. Scenarios that score observations
+        pre_run runs before any scenario, so the CLI's later factory call sees
+        the wired value. Only the probe returned here (or supplied directly to
+        the library API) populates PreconditionContext.state_probe; probes
+        hidden in plugins or scorers do not. Scenarios that score observations
         should declare a ``StateProbeAvailable`` world precondition so missing
         wiring fails before the agent runs. None (the default) = no external
         state to observe.

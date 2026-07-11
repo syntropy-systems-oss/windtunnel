@@ -20,12 +20,12 @@ Discovery (resolved by the CLI, in order):
   3. Dotted path — a --runtime value containing ":" is treated as
      "module:attr" and imported directly (same instance-or-class rule).
 
-Lifecycle (one `wt run` invocation):
+Lifecycle (one `wt run` or supported `wt selftest` invocation):
     plugin = resolve(runtime_name)
     runtime = plugin.build(runtime_name, label, soul_path)
     scenarios = load_scenarios(...)
     plugin.pre_run(runtime, scenarios, runtime_name)   # optional hook
-    ... run loop ...
+    ... run or reference-case loop ...
 
 The same plugin instance is retained for both calls. pre_run() is where
 platform-specific BENCH PREP lives — the glue that used to

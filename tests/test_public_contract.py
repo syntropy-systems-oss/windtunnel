@@ -11,7 +11,18 @@ from dataclasses import fields
 
 import windtunnel.api as api
 import windtunnel.spi as spi
-from windtunnel.api import Scenario, Score, Trace, run_matrix, run_scenario
+from windtunnel.api import (
+    ReferenceCase,
+    ReferenceDecision,
+    ReferenceToolCall,
+    Scenario,
+    Score,
+    SelfTestCaseResult,
+    Trace,
+    run_matrix,
+    run_reference_case,
+    run_scenario,
+)
 from windtunnel.spi import AgentConfig, SamplingConfig
 
 EXPECTED_API_EXPORTS = (
@@ -20,7 +31,8 @@ EXPECTED_API_EXPORTS = (
     "GateLayer", "LayerResult", "Score", "ScoreFormatError", "Verdict", "score_from_dict",
     "score_to_dict",
     "NumberFact", "Perturbation", "Policy", "PreSendPerturbation", "Scenario",
-    "TrajectoryCheck", "Check", "FileExists", "Precondition", "PreconditionContext",
+    "TrajectoryCheck", "ReferenceCase", "ReferenceDecision", "ReferenceKind",
+    "ReferenceToolCall", "Check", "FileExists", "Precondition", "PreconditionContext",
     "StateProbeAvailable", "ToolAvailable", "WorldMismatchError", "all_of", "any_of",
     "observation", "llm_judge",
     "substantiated_by_tools", "no_divergence", "ScenarioPack", "evaluate_outcome",
@@ -31,7 +43,8 @@ EXPECTED_API_EXPORTS = (
     "InjectWrongPriorToolCall", "InjectSchemaRejectedCall", "InjectPaginationTruncation",
     "ToolReturnsMalformedJson", "ToolTimeoutPerScenario", "ToolReturnsEmptyUnexpected",
     "AggregateResult", "ScenarioRunResult", "aggregate_runs", "CanaryResult",
-    "run_reset_canary", "ScenarioResult", "run_matrix", "run_scenario", "GenerateFn", "replay",
+    "run_reset_canary", "ScenarioResult", "run_matrix", "run_scenario", "SelfTestCaseResult",
+    "SelfTestVerdict", "run_reference_case", "selftest_case_to_dict", "GenerateFn", "replay",
     "StateResetConfig", "reset_state_db", "UNIVERSE_VERSION", "SynthesizeHook", "Universe",
     "UniverseFormatError", "UniverseMatching", "UniverseRecording", "UniverseTool",
     "freeze_universe", "load_universe", "save_universe", "INTERCHANGE_VERSION",
@@ -46,7 +59,8 @@ EXPECTED_SPI_EXPORTS = (
     "RunnerMCPConfigurableRuntime", "SamplingConfig", "SurfaceIntrospectableAgentHandle",
     "Hook", "HookArtifact", "HookContext", "FailureInjectableMCPHandle", "MCPCall",
     "MCPHandle", "MCPServer", "MCPSpec", "ToolDefinitionIntrospectableMCPHandle",
-    "ToolIntrospectableMCPHandle", "RuntimePlugin", "StateProbe",
+    "ToolIntrospectableMCPHandle", "RuntimePlugin", "ReferenceCapableAgentRuntime",
+    "ReferenceCase", "ReferenceDecision", "ReferenceKind", "ReferenceToolCall", "StateProbe",
 )
 
 EXPECTED_DATACLASS_FIELDS = {
@@ -55,6 +69,7 @@ EXPECTED_DATACLASS_FIELDS = {
         "forbidden_facts", "outcome_fn", "must_call", "forbidden_calls", "order_matters",
         "trajectory_checks", "user_turns", "preconditions", "requires_tools", "requires_files",
         "policies", "gate_layers", "perturbations", "failure_cost", "variance_allowed", "tags",
+        "reference_cases",
     ),
     Trace: (
         "scenario_id", "agent_id", "variant_id", "model", "quant", "sampler", "started_at",
@@ -67,6 +82,10 @@ EXPECTED_DATACLASS_FIELDS = {
         "model", "sampling",
     ),
     SamplingConfig: ("temperature", "top_p", "tool_choice", "max_tokens"),
+    ReferenceToolCall: ("name", "arguments"),
+    ReferenceDecision: ("content", "tool_calls"),
+    ReferenceCase: ("name", "kind", "decisions"),
+    SelfTestCaseResult: ("scenario_id", "case", "verdict", "detail", "trace", "score"),
 }
 
 
@@ -91,8 +110,12 @@ def test_runner_signature_shape() -> None:
     assert tuple(inspect.signature(run_matrix).parameters) == (
         "scenario", "runtime", "mcps", "base_config", "sampling_variants", "runs_per_cell",
     )
+    assert tuple(inspect.signature(run_reference_case).parameters) == (
+        "scenario", "runtime", "case", "mcps", "config", "state_probe",
+    )
     assert inspect.signature(run_scenario).parameters["config"].kind is inspect.Parameter.KEYWORD_ONLY
     assert inspect.signature(run_matrix).parameters["base_config"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert inspect.signature(run_reference_case).parameters["config"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 def test_fastmcp_has_a_supported_package_import() -> None:

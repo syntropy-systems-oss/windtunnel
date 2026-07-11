@@ -89,6 +89,19 @@ uv run wt run --runtime <your-driver> --runs 5 --label baseline
 uv run wt report --runs runs/ --format html --out report.html
 ```
 
+If scenarios declare golden/poison `reference_cases` and the driver implements
+`ReferenceCapableAgentRuntime`, certify the harness itself:
+
+```bash
+uv run wt selftest --runtime <your-driver> --format junit --out selftest.xml
+```
+
+This substitutes only model decisions; the real loop, tools, fixtures, probes,
+and scoring remain live. The built-in `in_memory` runtime is intentionally
+`UNSUPPORTED`. See
+[reference self-tests](design/0004-reference-selftest.md) before implementing
+the optional runtime seam.
+
 For CI, add `--format junit --out results.xml` to `wt run` (exit codes are
 already `go test`-shaped), and select subsets with `--tag`, `--pack`,
 `--owner`, or globs in `--scenario`. Every sweep appends per-scenario records
@@ -142,6 +155,15 @@ class AgentHandle(Protocol):
         """Release everything. Idempotent; must not raise."""
 ```
 
+Optional harness-certification capability:
+
+```python
+class ReferenceCapableAgentRuntime(AgentRuntime, Protocol):
+    def provision_reference(self, config: AgentConfig, case: ReferenceCase,
+                            mcps: list[MCPHandle] | None = None) -> AgentHandle:
+        """Substitute case decisions at inference; keep the agent loop live."""
+```
+
 Register it so `--runtime <name>` resolves, in your driver's `pyproject.toml`:
 
 ```toml
@@ -161,7 +183,9 @@ registered under the `windtunnel.scenario_packs` entry-point group — see
   [writing-a-scenario.md](writing-a-scenario.md). If it reads
   `trace.observations`, also declare `preconditions=[StateProbeAvailable()]`
   so missing probe wiring fails as a harness `WORLD` error before the agent
-  runs.
+  runs. The CLI calls `pre_run()` before reading the selected owning pack's
+  `state_probe_factory`; only the probe returned there populates
+  `PreconditionContext.state_probe`.
 - Instead of hand-writing the mock's canned data, a recorded
   `*.universe.json` fixture can serve frozen call/result pairs:
   `RecordedMCPServer("fixture.universe.json")` drops in where

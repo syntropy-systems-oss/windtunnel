@@ -1,18 +1,19 @@
-<!-- GENERATED from docs/cli-reference.md at 86e54f0e3074 — do not edit; edit docs/cli-reference.md. -->
+<!-- GENERATED from docs/cli-reference.md at 78c951a9f666 — do not edit; edit docs/cli-reference.md. -->
 ---
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at 2a0d8295a687 — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at 0b700752e8b3 — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
-The `wt` command ships 11 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
+The `wt` command ships 12 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
 
 | Command | Purpose |
 |---|---|
 | `wt report` | Generate a report from a runs/ directory. |
 | `wt compare` | Compare results across variant labels. |
 | `wt run` | Run scenarios against a runtime. |
+| `wt selftest` | Certify scenario gates with live golden and poison references. |
 | `wt rescore` | Re-score saved traces against current scenario definitions. |
 | `wt replay` | Replay a captured trace against a runtime. |
 | `wt doctor` | Bring-up check: run the reset-isolation canary against a live runtime. |
@@ -86,6 +87,33 @@ Arguments and options:
 | `--runs` | no | 1 | Number of runs per scenario (default: 1). |
 | `--runs-dir` | no | runs | Directory to write trace files (default: ./runs). |
 | `--format` | no |  | Machine-readable run output format. Must be paired with --out. Choices: junit, json. |
+| `--out` | no |  | Path for --format junit/json output. Must be paired with --format. |
+
+## `wt selftest`
+
+Certify scenario gates with live golden and poison references.
+
+Usage:
+
+```bash
+wt selftest [-h] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--owner OWNER] --runtime RUNTIME [--soul PATH] [--agents PATH] [--label LABEL] [--runs-dir DIR] [--format {junit,json}] [--out FILE]
+```
+
+Arguments and options:
+
+| Name | Required | Default | Help |
+|---|---:|---|---|
+| `--scenario` | no |  | Scenario name or glob to certify. Repeat for multiple; omit for all. |
+| `--tag` | no |  | Certify scenarios carrying TAG. Repeat for OR matching within tags. |
+| `--pack` | no |  | Certify scenarios from pack PACK. Repeat for multiple packs. |
+| `--pack-source` | no |  | Load a local scenario pack from module:attr or path.py:attr. |
+| `--owner` | no |  | Certify scenarios from packs whose owner matches OWNER. |
+| `--runtime` | yes |  | Reference-capable runtime plugin to certify against. |
+| `--soul` | no |  | Path to SOUL.md / system instructions to inject. |
+| `--agents` | no |  | Path to an AGENTS.md operating-notes document to inject. |
+| `--label` | no |  | Variant-label prefix for reference traces (default: selftest). |
+| `--runs-dir` | no | runs/selftest | Directory to write reference traces (default: ./runs/selftest). |
+| `--format` | no |  | Machine-readable self-test output. Must be paired with --out. Choices: junit, json. |
 | `--out` | no |  | Path for --format junit/json output. Must be paired with --format. |
 
 ## `wt rescore`

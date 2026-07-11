@@ -234,6 +234,10 @@ The `wt` CLI is the packaged workflow surface:
 
 - `wt run` executes scenarios, writes traces and score sidecars, appends the
   ledger, and can emit JUnit/JSON for CI.
+- `wt selftest` sends golden and poison decision scripts through a capable
+  runtime's inference-substitution seam while retaining live tools, probes,
+  evidence, and scoring. Its verdicts certify gates and stay out of ordinary
+  pass-rate aggregates.
 - `wt report` renders saved runs as HTML, Markdown, or JSON.
 - `wt compare` compares labeled run sets (model swap, prompt change,
   temperature pin).

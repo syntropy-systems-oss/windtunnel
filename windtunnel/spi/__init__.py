@@ -26,6 +26,13 @@ from windtunnel.spi.mcp_server import (
     ToolDefinitionIntrospectableMCPHandle,
     ToolIntrospectableMCPHandle,
 )
+from windtunnel.spi.reference import (
+    ReferenceCapableAgentRuntime,
+    ReferenceCase,
+    ReferenceDecision,
+    ReferenceKind,
+    ReferenceToolCall,
+)
 from windtunnel.spi.runtime_plugin import RuntimePlugin
 from windtunnel.spi.state_probe import StateProbe
 
@@ -37,5 +44,7 @@ __all__ = [
     "FailureInjectableMCPHandle", "MCPCall", "MCPHandle", "MCPServer", "MCPSpec",
     "ToolDefinitionIntrospectableMCPHandle", "ToolIntrospectableMCPHandle",
     "RuntimePlugin",
+    "ReferenceCapableAgentRuntime", "ReferenceCase", "ReferenceDecision",
+    "ReferenceKind", "ReferenceToolCall",
     "StateProbe",
 ]

@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/architecture.md at 2886997aba2e — do not edit; edit docs/architecture.md. -->
+<!-- GENERATED from docs/architecture.md at 60cb28f673b7 — do not edit; edit docs/architecture.md. -->
 ---
 description: "Architecture overview of Wind Tunnel's API/SPI split, runner data path, behavior gates, experiment integrity, perturbations, and CLI surfaces."
 ---
@@ -235,6 +235,10 @@ The `wt` CLI is the packaged workflow surface:
 
 - `wt run` executes scenarios, writes traces and score sidecars, appends the
   ledger, and can emit JUnit/JSON for CI.
+- `wt selftest` sends golden and poison decision scripts through a capable
+  runtime's inference-substitution seam while retaining live tools, probes,
+  evidence, and scoring. Its verdicts certify gates and stay out of ordinary
+  pass-rate aggregates.
 - `wt report` renders saved runs as HTML, Markdown, or JSON.
 - `wt compare` compares labeled run sets (model swap, prompt change,
   temperature pin).
