@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.9.2...v0.10.0) (2026-07-11)
+
+
+### Features
+
+* add live reference self-tests ([#58](https://github.com/syntropy-systems-oss/windtunnel/issues/58)) ([fdac05e](https://github.com/syntropy-systems-oss/windtunnel/commit/fdac05e429123aae3df5e724ae5db62e4519dfc2))
+
 ## [0.9.2](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.9.1...v0.9.2) (2026-07-11)
 
 
