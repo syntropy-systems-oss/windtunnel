@@ -72,9 +72,10 @@ wrong_tool_then_correct = Scenario(
     # Trajectory: must call order_query or order_report (the correct tools).
     # product_lookup is NOT in forbidden_calls: the perturbation injects a prior
     # wrong product_lookup into the trace history. The trajectory check only looks
-    # at what the model calls going forward — it must call order_query to recover.
+    # at what the model calls going forward — either order-data tool is a valid
+    # recovery path.
     must_call=[
-        "order_query",
+        ["order_query", "order_report"],
     ],
     forbidden_calls=[],
     order_matters=False,
