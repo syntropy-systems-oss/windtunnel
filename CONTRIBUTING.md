@@ -8,6 +8,22 @@ cd windtunnel
 uv sync                  # creates .venv, installs editable + the dev group
 ```
 
+## Contribution terms
+
+Unless explicitly stated otherwise, contributions intentionally submitted for
+inclusion in Wind Tunnel are licensed under the Apache License 2.0, consistent
+with section 5 of that license. Contributors retain ownership of their
+contributions.
+
+By submitting a contribution, you represent that you have the right to license
+it to the project. Do not submit confidential, proprietary, or improperly
+licensed material. AI-assisted development tools are permitted, but the
+contributor remains responsible for the contribution's correctness, security,
+and provenance.
+
+Please read the [Code of Conduct](CODE_OF_CONDUCT.md) and the project's
+[governance model](GOVERNANCE.md) before contributing.
+
 ## Running checks
 
 ```bash

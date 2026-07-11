@@ -12,7 +12,8 @@ version = "0.9.1"
 description = "Wind Tunnel — unittest for agents. A controlled replica of production conditions for agent reliability testing."
 readme = "README.md"
 license = "Apache-2.0"
-authors = [{ name = "Bryson Tang" }]
+authors = [{ name = "Syntropy Systems, Inc." }]
+maintainers = [{ name = "Bryson Tang" }]
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.27.1",
@@ -29,8 +30,11 @@ dependencies = [
 terminus = ["harbor>=0.17.1,<0.18; python_version >= '3.12'"]
 
 [project.urls]
-Homepage = "https://github.com/syntropy-systems-oss/windtunnel"
+Homepage = "https://syntropy-systems-oss.github.io/windtunnel/"
+Documentation = "https://syntropy-systems-oss.github.io/windtunnel/"
+Source = "https://github.com/syntropy-systems-oss/windtunnel"
 Issues = "https://github.com/syntropy-systems-oss/windtunnel/issues"
+Changelog = "https://github.com/syntropy-systems-oss/windtunnel/blob/main/CHANGELOG.md"
 
 [project.scripts]
 wt = "windtunnel.cli:main"

@@ -1,0 +1,56 @@
+name: Bug report
+description: Report reproducible incorrect behavior in Wind Tunnel
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Wind Tunnel. Remove credentials, customer data,
+        and private prompts or tool results from traces before attaching them.
+  - type: input
+    id: version
+    attributes:
+      label: Wind Tunnel version
+      placeholder: "0.9.1"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Python version, operating system, and runtime/plugin if applicable.
+      placeholder: "Python 3.12, Ubuntu 24.04, http_inject runtime"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include the smallest scenario, command, or code sample that reproduces it.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add sanitized logs, traces, or related links if useful.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I reproduced this on the latest Wind Tunnel release.
+          required: true
+        - label: I removed credentials and sensitive or customer-identifying data.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

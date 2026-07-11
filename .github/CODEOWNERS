@@ -1,0 +1,8 @@
+# Replace this user with an organization maintainer team when one exists.
+* @brysontang
+
+# Changes to release and security-sensitive automation always require an owner.
+/.github/workflows/ @brysontang
+/pyproject.toml @brysontang
+/release-please-config.json @brysontang
+/.release-please-manifest.json @brysontang

@@ -251,6 +251,14 @@ in the workspace, scored by Wind Tunnel itself. First live results are in
 that directory's README; the short version is that documentation bought
 *knowing when to stop* more than knowing what to type.
 
+## Stewardship and contributions
+
+Wind Tunnel is an open-source project developed and maintained by
+[Syntropy Systems, Inc.](https://syntropy.systems/). Community contributions
+are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for development and
+contribution terms and [GOVERNANCE.md](GOVERNANCE.md) for how project decisions
+are made.
+
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
