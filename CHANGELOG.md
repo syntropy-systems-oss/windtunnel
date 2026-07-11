@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.9.1...v0.9.2) (2026-07-11)
+
+
+### Bug Fixes
+
+* bind scenario execution to owning pack ([#52](https://github.com/syntropy-systems-oss/windtunnel/issues/52)) ([9033cf4](https://github.com/syntropy-systems-oss/windtunnel/commit/9033cf4367677234b9b6f7934e15fa6945c95e97))
+
 ## [0.9.1](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.9.0...v0.9.1) (2026-07-11)
 
 
