@@ -2,7 +2,7 @@
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at 28ac07b2978e — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at 2a0d8295a687 — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
 The `wt` command ships 11 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.

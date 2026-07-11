@@ -158,7 +158,10 @@ registered under the `windtunnel.scenario_packs` entry-point group — see
 - Success lives in an artifact or external state, not the prose? Set
   `outcome_fn` and compose it from `windtunnel.api.scorers` (`all_of`,
   `observation`, `llm_judge`, `substantiated_by_tools`) — see
-  [writing-a-scenario.md](writing-a-scenario.md).
+  [writing-a-scenario.md](writing-a-scenario.md). If it reads
+  `trace.observations`, also declare `preconditions=[StateProbeAvailable()]`
+  so missing probe wiring fails as a harness `WORLD` error before the agent
+  runs.
 - Instead of hand-writing the mock's canned data, a recorded
   `*.universe.json` fixture can serve frozen call/result pairs:
   `RecordedMCPServer("fixture.universe.json")` drops in where

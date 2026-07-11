@@ -17,7 +17,12 @@ from typing import Any
 
 import pytest
 
-from windtunnel.api.preconditions import Check, FileExists, WorldMismatchError
+from windtunnel.api.preconditions import (
+    Check,
+    FileExists,
+    StateProbeAvailable,
+    WorldMismatchError,
+)
 from windtunnel.api.runner import ScenarioResult, run_matrix, run_scenario
 from windtunnel.api.scenario import Policy, Scenario
 from windtunnel.runtimes.in_memory import InMemoryRuntime
@@ -537,6 +542,29 @@ class TestWorldPreconditions:
         assert "missing_tool" in message
         assert "not-seeded.txt" in message
         assert "custom fixture missing" in message
+
+    def test_state_probe_available_passes_when_probe_is_wired(self) -> None:
+        scenario = _scenario()
+        scenario.preconditions = [StateProbeAvailable()]
+        runtime = InMemoryRuntime(scripted_responses=["ok"])
+
+        result = run_scenario(scenario, runtime, state_probe=_StubStateProbe({}))
+
+        assert result.aggregate.verdict == "PASS"
+
+    def test_missing_required_state_probe_raises_before_reset_or_send(self) -> None:
+        scenario = _scenario()
+        scenario.preconditions = [StateProbeAvailable()]
+        runtime = InMemoryRuntime(scripted_responses=["ok"])
+
+        with pytest.raises(WorldMismatchError) as excinfo:
+            run_scenario(scenario, runtime)
+
+        assert "no state probe was wired" in str(excinfo.value)
+        _, handle = runtime.provisions[0]
+        assert handle.reset_count == 0
+        assert handle.calls == []
+        assert handle.teardown_count == 1
 
 
 # ─── StateProbe — external-state observations ─────────────────────────────────

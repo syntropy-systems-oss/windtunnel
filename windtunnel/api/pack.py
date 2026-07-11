@@ -3,11 +3,12 @@
 Runtimes are already pluggable: a driver package registers a RuntimePlugin
 under the "windtunnel.runtimes" entry-point group and `wt --runtime <name>`
 finds it without touching cli.py. ScenarioPack is the same seam for scenario
-DIMENSIONS: a pack bundles a dim's scenarios with the wiring the CLI used to
-hardcode per dim (the dim-tag → mock-MCP factory registry and the
-transport-only exemption set), so a third party ships a new dimension as a
-package registering the "windtunnel.scenario_packs" entry-point group
-instead of forking cli.py. Built-in dims expose a module-level PACK in their
+DIMENSIONS: a pack bundles a dim's scenarios with the runtime wiring the CLI
+used to hardcode per dim (mock-MCP factory, state probe, and transport-only
+policy). The selected pack is the operational authority; scenario tags remain
+descriptive/filtering metadata. A third party ships a new dimension as a package
+registering the "windtunnel.scenario_packs" entry-point group instead of
+forking cli.py. Built-in dims expose a module-level PACK in their
 windtunnel/scenarios/dim_*/__init__.py and are listed by
 windtunnel.scenarios.builtin_packs().
 
@@ -33,11 +34,11 @@ from windtunnel.spi.state_probe import StateProbe
 class ScenarioPack:
     """One dimension's scenarios plus the CLI wiring they need to run.
 
-    name:        the dim name WITHOUT the "dim:" prefix (e.g. "tool_affordance").
-        The CLI keys its mock registry and transport-only set by the derived
-        tag f"dim:{name}", matching the `tags=["dim:<name>"]` convention on
-        each Scenario — so a scenario finds its pack's mock by tag, exactly
-        as the old hand-built registry did.
+    name:        the pack name and scenario-selection identity (e.g.
+        "tool_affordance"). The CLI binds operational wiring directly from a
+        selected scenario's owning pack. ``dim:<name>`` scenario tags remain
+        descriptive/filtering metadata and are validated at pack discovery so
+        stale names fail loudly instead of silently mis-filtering a sweep.
 
     scenarios:   the Scenario objects this pack contributes to the selection
         pool. `wt run` flattens every discovered pack's list (built-ins in
@@ -46,7 +47,8 @@ class ScenarioPack:
     mcp_factory: builds the pack's mock MCPServer for a given scenario, or
         None when the pack needs no canned upstream tools. Called once per
         scenario so each run_scenario() batch gets a FRESH, not-yet-started
-        server (the runner owns start-per-batch / stop-per-batch). It
+        server (the runner owns start-per-batch / stop-per-batch). The CLI
+        reads it from the selected scenario's owning pack, never from tags. It
         receives the selected Scenario so scenario-AWARE factories can
         specialize — silent_failure derives MOCK_MCP_FAILURE_MODE from the
         scenario's perturbation; most factories ignore the argument. Only
@@ -65,8 +67,10 @@ class ScenarioPack:
         pack ships with state_probe_factory=None and pre_run sets it on
         the pack's module-level PACK singleton after the fixture is up —
         pre_run runs before any scenario, so the CLI's per-scenario
-        factory call sees the wired value. None (the default) = no
-        external state to observe.
+        factory call sees the wired value. Scenarios that score observations
+        should declare a ``StateProbeAvailable`` world precondition so missing
+        wiring fails before the agent runs. None (the default) = no external
+        state to observe.
 
     transport_only: True means this dim's history/context-shaping
         perturbation is applied POST-HOC to the recorded trace (see
