@@ -378,6 +378,68 @@ class TestWtRun:
         assert rc == 0
         assert len(instances) == 1
 
+    def test_operational_wiring_comes_from_owning_pack_not_dimension_tags(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        import windtunnel.api.runner as runner
+        import windtunnel.cli as cli
+        from windtunnel.api.pack import ScenarioPack
+
+        scenario = _scenario(
+            "direct_pack_wiring",
+            tags=["dim:decoy_pack", "dim:owning_pack"],
+        )
+        decoy_mcp = object()
+        owning_mcp = object()
+        decoy_probe = object()
+        owning_probe = object()
+        decoy_pack = ScenarioPack(
+            name="decoy_pack",
+            mcp_factory=lambda _scenario: decoy_mcp,
+            state_probe_factory=lambda _scenario: decoy_probe,
+            transport_only=True,
+        )
+        owning_pack = ScenarioPack(
+            name="owning_pack",
+            scenarios=[scenario],
+            mcp_factory=lambda _scenario: owning_mcp,
+            state_probe_factory=lambda _scenario: owning_probe,
+            transport_only=False,
+        )
+
+        class Runtime:
+            accepts_runner_managed_mcps = True
+
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [decoy_pack, owning_pack])
+        monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda _name: object())
+        monkeypatch.setattr(
+            cli,
+            "_build_runtime",
+            lambda runtime_name, label, soul_path, **_kwargs: Runtime(),
+        )
+
+        def fake_run_scenario(selected, runtime, *args, **kwargs):
+            captured["mcps"] = kwargs["mcps"]
+            captured["state_probe"] = kwargs["state_probe"]
+            return _result(selected, passed=False)
+
+        monkeypatch.setattr(runner, "run_scenario", fake_run_scenario)
+
+        rc = cli.main([
+            "run",
+            "--runtime", "fake",
+            "--scenario", scenario.name,
+            "--runs-dir", str(tmp_path / "runs"),
+        ])
+
+        assert captured == {"mcps": [owning_mcp], "state_probe": owning_probe}
+        assert rc == 1
+        assert "transport-only" not in capsys.readouterr().out
+
 
 class TestWtRunSelection:
     """Selection supports tag/pack/owner/glob and composes predictably."""

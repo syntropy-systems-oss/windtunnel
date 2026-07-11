@@ -128,6 +128,22 @@ class FileExists(Precondition):
         return f"required filesystem path does not exist: {self.path} (tried: {tried})"
 
 
+@dataclass(frozen=True)
+class StateProbeAvailable(Precondition):
+    """Require a StateProbe to be wired before the scenario runs.
+
+    Scenarios whose policies or outcome functions read ``trace.observations``
+    should declare this precondition. A missing probe is then a WORLD/harness
+    configuration error instead of a plausible-looking agent failure against
+    empty observations.
+    """
+
+    def check(self, ctx: PreconditionContext) -> str | None:
+        if ctx.state_probe is not None:
+            return None
+        return "required a StateProbe, but no state probe was wired"
+
+
 CheckFn = Callable[[PreconditionContext], str | None | bool]
 
 

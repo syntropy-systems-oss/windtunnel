@@ -54,6 +54,7 @@ from windtunnel.api.preconditions import (
     FileExists,
     Precondition,
     PreconditionContext,
+    StateProbeAvailable,
     ToolAvailable,
     WorldMismatchError,
 )
@@ -122,8 +123,8 @@ __all__ = [
     "NumberFact", "Perturbation", "Policy", "PreSendPerturbation", "Scenario",
     "TrajectoryCheck",
     # preconditions
-    "Check", "FileExists", "Precondition", "PreconditionContext", "ToolAvailable",
-    "WorldMismatchError",
+    "Check", "FileExists", "Precondition", "PreconditionContext", "StateProbeAvailable",
+    "ToolAvailable", "WorldMismatchError",
     # scorers
     "all_of", "any_of", "observation", "llm_judge", "substantiated_by_tools",
     "no_divergence",

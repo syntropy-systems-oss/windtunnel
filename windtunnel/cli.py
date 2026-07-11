@@ -419,24 +419,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
         persona_doc=persona_doc,
     )
 
-    # Dim-tag → MCPServer factory registry, derived from the packs. Scenarios
-    # are runtime-agnostic (import invariant: scenarios/ cannot statically
-    # import windtunnel.mcp.*), so the binding from dim to a concrete mock
-    # lives in each pack's mcp_factory (deferred import — see
-    # windtunnel/scenarios/_mock_factory.py); the CLI just keys factories by
-    # the f"dim:{name}" tag. Each factory is called once per scenario to
-    # produce a fresh server instance (lifecycle: start-per-batch,
-    # stop-per-batch inside run_scenario).
-    mcp_registry = {
-        f"dim:{pack.name}": pack.mcp_factory for pack in packs if pack.mcp_factory is not None
-    }
-
-    # NOTE: the probe registry is built LAZILY (inside the loop, below) rather
-    # than here like mcp_registry — pre_run() hasn't fired yet at this point,
-    # and the driver pattern is precisely that pre_run starts the bench fixture
-    # and THEN sets state_probe_factory on its pack (see windtunnel.api.pack).
-    # Snapshotting the factories pre-pre_run would always read None.
-
     # Platform-specific bench prep (runtime-pluggable seam): the resolved
     # plugin's OPTIONAL pre_run() hook runs once here — after _build_runtime
     # and scenario loading, before any scenario executes. Platform glue
@@ -447,12 +429,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if pre_run is not None:
         pre_run(runtime, scenarios, runtime_name)
 
-    # Dims whose MODEL verdict is counterfactual on the live path — the pack
-    # declares it via ScenarioPack.transport_only (see windtunnel/api/pack.py
-    # for the full semantics, and dim_memory_conflict/__init__.py for why that
-    # built-in pack is currently the only one setting it). This set replaces
-    # the old hardcoded _HISTORY_SHAPING_DIMS.
-    transport_only_dims = {f"dim:{pack.name}" for pack in packs if pack.transport_only}
     _ERROR_CIRCUIT_LIMIT = 3
 
     any_fail = False
@@ -496,31 +472,27 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     for selected_entry in selected:
         scenario = selected_entry.scenario
+        scenario_pack = selected_entry.pack
         # Wire the MCPServer only when the runtime can mount runner-managed
         # handles. Contract C, in_memory, and terminal-only runtimes own their
         # tool surfaces; an unused mock would create misleading empty evidence.
         scenario_mcps = None
         scenario_probe = None
-        if getattr(runtime, "accepts_runner_managed_mcps", True):
-            for tag in getattr(scenario, "tags", []):
-                if tag in mcp_registry:
-                    factory = mcp_registry[tag]
-                    # Pass the scenario so scenario-aware factories (silent_failure,
-                    # which injects MOCK_MCP_FAILURE_MODE per scenario) can specialize.
-                    scenario_mcps = [factory(scenario)]
-                    break
+        if (
+            getattr(runtime, "accepts_runner_managed_mcps", True)
+            and scenario_pack.mcp_factory is not None
+        ):
+            # Pass the scenario so scenario-aware factories (silent_failure,
+            # which injects MOCK_MCP_FAILURE_MODE per scenario) can specialize.
+            scenario_mcps = [scenario_pack.mcp_factory(scenario)]
 
         # External-state probes are independent of MCP mounting. Factories are
-        # read per scenario (not snapshotted above) because pre_run() may have
-        # set them after pack discovery.
-        for pack in packs:
-            if pack.state_probe_factory is None:
-                continue
-            if f"dim:{pack.name}" in getattr(scenario, "tags", []):
-                scenario_probe = pack.state_probe_factory(scenario)
-                break
+        # read from the owning pack after pre_run() because the runtime plugin
+        # may have wired its live fixture-backed factory during that hook.
+        if scenario_pack.state_probe_factory is not None:
+            scenario_probe = scenario_pack.state_probe_factory(scenario)
 
-        transport_only = any(t in transport_only_dims for t in getattr(scenario, "tags", []))
+        transport_only = scenario_pack.transport_only
 
         # Resilience: a single scenario's failure (e.g. a provision-time agent
         # readiness timeout, or a mock that won't start) MUST NOT abort a long

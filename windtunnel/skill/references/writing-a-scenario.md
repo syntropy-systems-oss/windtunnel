@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/writing-a-scenario.md at 50fa4ad1a639 — do not edit; edit docs/writing-a-scenario.md. -->
+<!-- GENERATED from docs/writing-a-scenario.md at c9651767941b — do not edit; edit docs/writing-a-scenario.md. -->
 ---
 description: "Reference for authoring backend-agnostic Scenario objects, scoring fields, perturbations, dimensions, and scenario packs."
 ---
@@ -43,7 +43,7 @@ or `send()` for the first run. All checks run, and every failure is reported
 together as `WorldMismatchError`.
 
 ```python
-from windtunnel.api import Check, FileExists, Scenario
+from windtunnel.api import Check, FileExists, Scenario, StateProbeAvailable
 
 def fixture_seeded(ctx):
     rows = (ctx.state_probe.capture() if ctx.state_probe else {}).get("db", {}).get("rows", [])
@@ -56,6 +56,7 @@ Scenario(
     requires_tools=["client_lookup"],  # sugar for ToolAvailable("client_lookup")
     preconditions=[
         FileExists("/tmp/windtunnel-fixture.db"),
+        StateProbeAvailable(),
         Check(fixture_seeded, "fixture contains seed rows"),
     ],
 )
@@ -70,6 +71,10 @@ Built-ins:
   the bench host. Relative paths resolve against a runtime workspace template
   when the driver exposes one, then the live workspace, then the current working
   directory.
+- `StateProbeAvailable()` requires the scenario's owning pack or library caller
+  to wire a `StateProbe`. Scenarios whose policies or `outcome_fn` read
+  `trace.observations` should declare it so missing observation plumbing is a
+  `WORLD` error rather than a plausible-looking agent failure.
 - `Check(fn, description)` wraps a custom function over `PreconditionContext`
   (`mcp_handles`, optional `state_probe`, and `agent_config`). Return `None` or
   `True` to pass, a string to fail with that detail, or `False` to fail with the
@@ -126,7 +131,14 @@ def _graded(trace: Trace) -> LayerResult:
         return LayerResult(False, "no report artifact produced")
     return LayerResult(art["rows"] == EXPECTED_ROWS, "report rows match expected")
 
-Scenario(name="...", prompt="...", target_facts=[], outcome_fn=_graded, requires_tool_use=True)
+Scenario(
+    name="...",
+    prompt="...",
+    target_facts=[],
+    outcome_fn=_graded,
+    requires_tool_use=True,
+    preconditions=[StateProbeAvailable()],
+)
 ```
 
 Like `policies`/`trajectory_checks`, `outcome_fn` is a callable, so it isn't
@@ -393,9 +405,10 @@ Spinners), `ACC-PORT-001` (Portland Pickles), `ACC-CHIC-001` (Chicago Cubs); SKU
    exported list (e.g. `SILENT_FAILURE_SCENARIOS`).
 3. If it needs tools, define them in the dim's `mock_mcp/server.py` (FastMCP,
    **bare** tool names — the platform adds its integration prefix, e.g. `ops.`) backed by `synthetic_db.py`.
-4. Tag it `dim:<name>`; the dim's `PACK` (a `ScenarioPack` in the dim's
-   `__init__.py`) binds that tag to the dim's `MCPServer` factory so the runner
-   provisions the right mock. New dim? Build a `PACK` and add it to
+4. Tag it `dim:<name>` for selection and reporting; the dim's owning `PACK` (a
+   `ScenarioPack` in the dim's `__init__.py`) directly supplies its runtime
+   wiring. Discovery validates the tag against that pack, so a stale rename
+   fails loudly. New dim? Build a `PACK` and add it to
    `windtunnel/scenarios/__init__.py`'s `builtin_packs()` list.
 5. Run it: `uv run wt run --runtime in_memory --scenario <name> --runs 1`
    (or with your platform runtime).
@@ -415,7 +428,7 @@ change to the framework:
 from windtunnel.api import Scenario, ScenarioPack
 
 PACK = ScenarioPack(
-    name="invoice_hygiene",          # scenarios carry tags=["dim:invoice_hygiene"]
+    name="invoice_hygiene",          # owning pack and --pack identity
     scenarios=[Scenario(...), ...],
     mcp_factory=None,                # or Callable[[Scenario], MCPServer], see below
     state_probe_factory=None,        # or Callable[[Scenario], StateProbe | None]
@@ -439,26 +452,32 @@ What `wt run` does with it:
   first, entry-point packs after); `--scenario` (exact or glob), `--tag`,
   `--pack`, and `--owner` filter across all packs, and omitting them runs
   everything.
+- **Dimension metadata.** `dim:<name>` tags remain available to `--tag`
+  filters, but they do not control runtime wiring. At discovery, any scenario
+  that declares `dim:` tags must include `dim:<owning-pack-name>`, and every
+  named dimension must be a registered pack. Tagless packs remain valid.
 - **Ownership.** `owner` is carried into every ledger record and drives
   `wt run --owner <owner>` selection. Wind Tunnel attaches no other
   semantics — what ownership *means* (routing, gating, paging) is yours.
 - **Mock tools.** If your dim needs canned upstream tools, set
   `mcp_factory` to a callable that takes the selected `Scenario` and returns
   a fresh, **not-yet-started** `MCPServer` (the runner owns start/stop per
-  batch). It's matched to your scenarios by the `dim:<name>` tag, and only
-  invoked for plugin runtimes — the built-in `in_memory` runtime is scripted
-  and ignores mocks. Most factories ignore the scenario argument; take it
-  when the mock must specialize per scenario (the built-in `silent_failure`
-  pack derives its failure mode from the scenario's perturbation).
+  batch). It is read directly from the selected scenario's owning pack, never
+  inferred from tags, and is only invoked for runtimes that accept
+  runner-managed MCP servers — the built-in `in_memory` runtime is scripted
+  and ignores mocks. Most factories ignore the scenario argument; take it when
+  the mock must specialize per scenario (the built-in `silent_failure` pack
+  derives its failure mode from the scenario's perturbation).
 - **External-state evidence.** If your dim verifies world state (see
   "Verifying external state" above), set `state_probe_factory` to a callable
   that takes the selected `Scenario` and returns a `StateProbe` (or `None`
-  for scenarios it doesn't observe). Same `dim:<name>`-tag dispatch and
-  plugin-runtime-only invocation as `mcp_factory`. When the probe's fixture
-  is started by your runtime plugin's `pre_run()` (the usual driver shape),
-  ship the pack with `state_probe_factory=None` and have `pre_run()` set it
-  on your module-level `PACK` once the fixture is up — `pre_run` fires before
-  any scenario, and the CLI reads the factory per scenario, not at discovery.
+  for scenarios it doesn't observe). It is also read directly from the owning
+  pack and is independent of whether the runtime mounts runner-managed MCPs.
+  When the probe's fixture is started by your runtime plugin's `pre_run()` (the
+  usual driver shape), ship the pack with `state_probe_factory=None` and have
+  `pre_run()` set it on your module-level `PACK` once the fixture is up —
+  `pre_run` fires before any scenario, and the CLI reads the factory afterward.
+  Add `StateProbeAvailable()` to every scenario that requires observations.
 - **`transport_only=True`** marks a dim whose history-shaping perturbation is
   applied post-hoc to the trace (the live model never saw it): the scenario
   still runs and reports, but its model verdict doesn't flip the exit code.
