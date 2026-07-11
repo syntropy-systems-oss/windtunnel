@@ -404,6 +404,44 @@ class TestWrongToolThenCorrect:
             _turn(role="assistant", content="There are 2 products for Bluewing Logistics in the catalog."),
         )
 
+    def _passing_order_report_trace(self) -> Trace:
+        """Model recovers through the summary-oriented order_report tool."""
+        return _make_trace(
+            _turn(
+                role="user",
+                content="What's the total order quantity Bluewing Logistics has on file?",
+            ),
+            _turn(role="assistant", content="", tool_calls=[
+                _tool_call("mcp_acme_ops_product_lookup", {"sku": "B001AAA"})
+            ]),
+            _turn(
+                role="tool",
+                content='{"result": "{\"found\": true, \"product\": '
+                '{\"name\": \"Bluewing Jersey - Home\"}}"}',
+            ),
+            _turn(role="assistant", content="", tool_calls=[
+                _tool_call("mcp_acme_ops_client_lookup", {"query": "Bluewing Logistics"})
+            ]),
+            _turn(
+                role="tool",
+                content='{"result": "{\"matches\": [{\"id\": \"ACC-BLWG-001\"}]}"}',
+            ),
+            _turn(role="assistant", content="", tool_calls=[
+                _tool_call("mcp_acme_ops_order_report", {"client": "ACC-BLWG-001"})
+            ]),
+            _turn(
+                role="tool",
+                content='{"result": "{\"total\": {\"count\": 2, \"quantity\": 20}}"}',
+            ),
+            _turn(
+                role="assistant",
+                content=(
+                    "Bluewing Logistics (ACC-BLWG-001) has a total order "
+                    "quantity of 20 on file."
+                ),
+            ),
+        )
+
     def _failing_trace_hallucinates(self) -> Trace:
         """Model hallucinates an order count from the wrong-tool result."""
         return _make_trace(
@@ -431,6 +469,10 @@ class TestWrongToolThenCorrect:
         result = evaluate_trajectory(self._passing_trace(), wrong_tool_then_correct)
         assert result.passed, f"Expected trajectory pass but got: {result.detail}"
 
+    def test_order_report_recovery_trajectory_passes(self):
+        result = evaluate_trajectory(self._passing_order_report_trace(), wrong_tool_then_correct)
+        assert result.passed, f"Expected trajectory pass but got: {result.detail}"
+
     def test_failing_doubles_down_trajectory_fails(self):
         """product_lookup is the wrong tool — must call order_query or order_report."""
         result = evaluate_trajectory(self._failing_trace_doubles_down(), wrong_tool_then_correct)
@@ -440,9 +482,7 @@ class TestWrongToolThenCorrect:
         assert wrong_tool_then_correct.requires_tool_use is True
 
     def test_scenario_must_call_correct_tool(self):
-        called = wrong_tool_then_correct.must_call
-        has_inv = any("order_query" in t or "order_report" in t for t in called)
-        assert has_inv, f"Expected order_query or order_report in must_call, got: {called}"
+        assert wrong_tool_then_correct.must_call == [["order_query", "order_report"]]
 
     def test_scenario_no_forbidden_calls(self):
         """Recovery scenarios don't use forbidden_calls for the wrong tool.
@@ -450,7 +490,7 @@ class TestWrongToolThenCorrect:
         The perturbation injects the prior wrong-tool call into history.
         The trajectory check looks at what the model calls going FORWARD.
         forbidden_calls would incorrectly fire on the injected history.
-        Recovery is gated by must_call (order_query) + outcome (total=20).
+        Recovery is gated by must_call (order_query or order_report) + outcome (total=20).
         """
         # product_lookup is injected by the perturbation, not forbidden going forward
         assert "product_lookup" not in wrong_tool_then_correct.forbidden_calls
