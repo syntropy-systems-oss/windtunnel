@@ -65,11 +65,12 @@ server exposes two HTTP endpoints on the same port as the MCP server:
 These are injected via LoggingFastMCP.build_app() which appends them to
 FastMCP's _custom_starlette_routes before run().  _SubprocessMCPHandle stores
 the calls_url ("http://<host>:<port>/calls") and fetches from it in call_log()
-/ reset_call_log().  On HTTP error or connection failure call_log() returns []
-(not raises) so transient start-up windows don't crash the bench.
+/ reset_call_log(). Evidence transport errors raise so the bench never confuses
+"zero calls witnessed" with "witness unavailable".
 """
 from __future__ import annotations
 
+import functools
 import threading
 import time
 from dataclasses import dataclass, field
@@ -152,6 +153,7 @@ class LoggingFastMCP:
                 if tool_name not in self._served_tools:
                     self._served_tools.append(tool_name)
 
+            @functools.wraps(fn)
             def wrapped(*args: Any, **fkwargs: Any) -> Any:
                 # Check failure mode before calling the real tool
                 mode = self._call_log.get_failure_mode()
@@ -196,7 +198,6 @@ class LoggingFastMCP:
         """
         if self._mcp is None:
             return None
-
 
         from starlette.requests import Request
         from starlette.responses import JSONResponse, Response
@@ -249,19 +250,38 @@ class LoggingFastMCP:
         """Alias for build_app() — satisfies the hasattr check in tests."""
         return self.build_app()
 
-    def run(self, host: str = "0.0.0.0", port: int = 8080) -> None:
+    @property
+    def settings(self) -> Any:
+        """Expose FastMCP settings for compatibility with shipped mock modules."""
+        if self._mcp is None:
+            raise RuntimeError("mcp package not installed; settings are unavailable")
+        return self._mcp.settings
+
+    def run(
+        self,
+        host: str | None = None,
+        port: int | None = None,
+        *,
+        transport: str = "streamable-http",
+    ) -> None:
         """Start the FastMCP server (blocking) with /calls endpoint injected.
 
         B4: uses build_app() to ensure /calls and /calls/reset are available
         on the same port as the MCP server so subprocess call readback works.
         """
         if self._mcp is not None:
+            if transport != "streamable-http":
+                raise ValueError(
+                    "LoggingFastMCP subprocess evidence requires streamable-http transport"
+                )
             import uvicorn
 
             app = self.build_app()
-            self._mcp.settings.host = host
-            self._mcp.settings.port = port
-            uvicorn.run(app, host=host, port=port)
+            resolved_host = host or self._mcp.settings.host
+            resolved_port = port or self._mcp.settings.port
+            self._mcp.settings.host = resolved_host
+            self._mcp.settings.port = resolved_port
+            uvicorn.run(app, host=resolved_host, port=resolved_port)
         else:
             raise RuntimeError("mcp package not installed; cannot run LoggingFastMCP server")
 

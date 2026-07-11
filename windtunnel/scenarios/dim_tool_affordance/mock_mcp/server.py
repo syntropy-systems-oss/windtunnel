@@ -42,7 +42,7 @@ import os
 import sys
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from windtunnel.scenarios._mock_factory import build_logging_fastmcp
 
 # Add parent dir so we can import synthetic_db whether run directly or via docker
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -72,7 +72,7 @@ TOOL_PREFIX: str = os.environ.get("TOOL_PREFIX", "ops_")
 # Platforms decorate bare tool names before the model sees them (Acme
 # example: `client_lookup` → `mcp_acme_ops_client_lookup`). Scenarios
 # declare BARE names; the trajectory evaluator matches decorated variants.
-mcp = FastMCP("windtunnel")
+mcp = build_logging_fastmcp("windtunnel")
 
 
 def _envelope(
