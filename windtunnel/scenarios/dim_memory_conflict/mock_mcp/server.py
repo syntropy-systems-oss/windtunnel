@@ -32,7 +32,7 @@ import os
 import sys
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from windtunnel.scenarios._mock_factory import build_logging_fastmcp
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from synthetic_db import find_clients  # type: ignore[import-not-found]
@@ -41,7 +41,7 @@ from synthetic_db import find_clients  # type: ignore[import-not-found]
 # Platforms decorate bare tool names before the model sees them (Acme
 # example: `client_lookup` → `mcp_acme_ops_client_lookup`). Scenarios
 # declare BARE names; the trajectory evaluator matches decorated variants.
-mcp = FastMCP("windtunnel")
+mcp = build_logging_fastmcp("windtunnel")
 TOOL_PREFIX = os.environ.get("TOOL_PREFIX", "ops_")
 
 
