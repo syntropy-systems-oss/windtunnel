@@ -441,6 +441,159 @@ class TestWtRun:
         assert "transport-only" not in capsys.readouterr().out
 
 
+class TestHeadlineHonorsEveryGatedLayer:
+    """The printed headline, its pass/total counts, and the exit code must
+    agree with every layer this scenario actually has a check for — a
+    scenario whose constraint policies fail on every run can never headline
+    PASS just because the outcome layer happened to pass.
+
+    These run the REAL scoring pipeline (run_scenario against the in_memory
+    runtime, no mocked aggregate) so the assertions exercise the same
+    resolved_gate_layers()/aggregate_runs() wiring `wt run` uses, not a
+    hand-built fixture that could hide a regression.
+    """
+
+    def _run_via_cli(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        scenario,
+    ):
+        import windtunnel.api.runner as runner
+        import windtunnel.cli as cli
+        from windtunnel.runtimes.in_memory import InMemoryRuntime
+
+        real_result = runner.run_scenario(
+            scenario,
+            InMemoryRuntime(scripted_responses=["ok"]),
+            runs_per_scenario=3,
+        )
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [_pack("local", [scenario])])
+        monkeypatch.setattr(
+            runner, "run_scenario", lambda *_args, **_kwargs: real_result
+        )
+        rc = cli.main([
+            "run",
+            "--scenario", scenario.name,
+            "--runs-dir", str(tmp_path / "runs"),
+        ])
+        return rc, real_result
+
+    def test_constraint_failure_headlines_fail_not_pass(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A scenario whose constraint policy fails on every run, with no
+        explicit gate_layers override, must headline FAIL at 0% — this was
+        already correct before the fix (the auto-declared gate always
+        covered constraint here); kept as a no-regression sanity check
+        alongside test_stale_explicit_gate_layers_headlines_fail_not_pass
+        below, which covers the shape that WAS broken."""
+        from windtunnel.api.scenario import Policy, Scenario
+
+        scenario = Scenario(
+            name="constraint_always_fails",
+            prompt="say ok",
+            target_facts=[["ok"]],
+            policies=[Policy(name="never_ok", predicate=lambda _trace: False)],
+        )
+        rc, real_result = self._run_via_cli(monkeypatch, tmp_path, scenario)
+        out = capsys.readouterr().out
+
+        assert real_result.aggregate.outcome_pass_rate == 1.0
+        assert real_result.aggregate.constraint_pass_rate == 0.0
+        assert real_result.aggregate.verdict == "FAIL"
+        assert "FAIL" in out
+        assert "PASS" not in out
+        assert "(0/3 pass, rate=0%)" in out
+        assert rc == 1
+
+    def test_stale_explicit_gate_layers_headlines_fail_not_pass(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Regression: this is the shape actually observed — a scenario
+        authored with an explicit gate_layers=["outcome"] (e.g. copied from
+        a template, or written before a constraint policy was added later)
+        used to headline PASS at 100% even though its policy failed on
+        every run, because the explicit list silently overrode the
+        declared constraint check. It must now headline FAIL at 0%."""
+        from windtunnel.api.scenario import Policy, Scenario
+
+        scenario = Scenario(
+            name="stale_explicit_gate_layers",
+            prompt="say ok",
+            target_facts=[["ok"]],
+            policies=[Policy(name="never_ok", predicate=lambda _trace: False)],
+            gate_layers=["outcome"],
+        )
+        rc, real_result = self._run_via_cli(monkeypatch, tmp_path, scenario)
+        out = capsys.readouterr().out
+
+        assert real_result.aggregate.outcome_pass_rate == 1.0
+        assert real_result.aggregate.constraint_pass_rate == 0.0
+        assert real_result.aggregate.verdict == "FAIL"
+        assert "FAIL" in out
+        assert "PASS" not in out
+        assert "(0/3 pass, rate=0%)" in out
+        assert rc == 1
+
+    def test_fully_passing_scenario_still_headlines_pass(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A scenario whose outcome AND constraint both pass on every run
+        keeps headlining PASS at 100% — the stricter gate must not produce
+        false negatives for a genuinely clean run."""
+        from windtunnel.api.scenario import Policy, Scenario
+
+        scenario = Scenario(
+            name="everything_passes",
+            prompt="say ok",
+            target_facts=[["ok"]],
+            policies=[Policy(name="always_ok", predicate=lambda _trace: True)],
+        )
+        rc, real_result = self._run_via_cli(monkeypatch, tmp_path, scenario)
+        out = capsys.readouterr().out
+
+        assert real_result.aggregate.verdict == "PASS"
+        assert "PASS" in out
+        assert "(3/3 pass, rate=100%)" in out
+        assert rc == 0
+
+    def test_scenario_without_policies_or_trajectory_checks_is_unaffected(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A scenario with no policies/must_call/forbidden_calls/
+        trajectory_checks only ever had an outcome layer to begin with —
+        the stricter default gate must not fail it on layers it never
+        configured (trajectory/constraint default to passed=True absent any
+        declared check)."""
+        from windtunnel.api.scenario import Scenario
+
+        scenario = Scenario(
+            name="outcome_only",
+            prompt="say ok",
+            target_facts=[["ok"]],
+        )
+        rc, real_result = self._run_via_cli(monkeypatch, tmp_path, scenario)
+        out = capsys.readouterr().out
+
+        assert scenario.resolved_gate_layers() == ("outcome",)
+        assert real_result.aggregate.verdict == "PASS"
+        assert "PASS" in out
+        assert rc == 0
+
+
 class TestWtRunSelection:
     """Selection supports tag/pack/owner/glob and composes predictably."""
 

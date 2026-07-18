@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 from windtunnel.api.aggregate import AggregateResult, ScenarioRunResult, aggregate_runs
 from windtunnel.api.scenario import Scenario
+from windtunnel.api.score import GATE_LAYER_ORDER
 
 # ─── Matrix configuration ─────────────────────────────────────────────────────
 
@@ -146,7 +147,7 @@ def run_matrix_aggregation(
         aggregated[key] = aggregate_runs(
             runs,
             variance_allowed=True,
-            gate_layers=gates_by_scenario.get(key.scenario, ("outcome",)),
+            gate_layers=gates_by_scenario.get(key.scenario, GATE_LAYER_ORDER),
         )
 
     scenario_names = sorted({key.scenario for key in cells})

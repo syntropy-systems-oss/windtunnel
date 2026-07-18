@@ -406,12 +406,29 @@ class TestScenarioType:
         )
         assert sc.resolved_gate_layers() == ("outcome", "trajectory", "constraint")
 
-    def test_explicit_gate_layers_can_keep_diagnostics_non_gating(self):
+    def test_explicit_gate_layers_alone_cannot_narrow_a_declared_layer(self):
+        """strict_gates defaults True: a declared check always gates, even
+        when an explicit gate_layers omits it — closes the silent-advisory
+        trap where a policy/must_call added after gate_layers was written
+        would otherwise stop mattering to the verdict without any signal."""
         sc = Scenario(
             name="legacy",
             prompt="p",
             must_call=["lookup"],
             gate_layers=["outcome"],
+        )
+        assert sc.resolved_gate_layers() == ("outcome", "trajectory")
+
+    def test_explicit_gate_layers_can_keep_diagnostics_non_gating_when_opted_in(self):
+        """strict_gates=False is the explicit opt-in that restores the old
+        lenient behavior: gate_layers alone decides, and can narrow below a
+        declared layer."""
+        sc = Scenario(
+            name="legacy",
+            prompt="p",
+            must_call=["lookup"],
+            gate_layers=["outcome"],
+            strict_gates=False,
         )
         assert sc.resolved_gate_layers() == ("outcome",)
 
@@ -1262,6 +1279,99 @@ class TestAggregate:
     def test_empty_aggregate_still_validates_gate_names(self):
         with pytest.raises(ValueError, match="unknown gate"):
             aggregate_runs([], gate_layers=("robustness",))  # type: ignore[arg-type]
+
+    def test_default_gate_layers_requires_every_layer_not_just_outcome(self):
+        """Regression: aggregate_runs() used to default to gate_layers=
+        ("outcome",), so a run whose constraint layer failed on every
+        attempt could still aggregate to PASS as long as outcome passed.
+        The default must now require every layer to pass — a layer no
+        scenario configured a check for always reports passed=True (see
+        test_no_default_gate_layers_penalizes_a_not_configured_layer below),
+        so this can never punish a scenario for a layer it never declared."""
+        score = Score(
+            outcome=LayerResult(True, "ok"),
+            trajectory=LayerResult(True, "ok"),
+            constraint=LayerResult(False, "policy violated on every attempt"),
+            integrity=LayerResult(True, "valid"),
+        )
+        runs = [ScenarioRunResult(score=score, trace=_simple_trace("a")) for _ in range(3)]
+
+        result = aggregate_runs(runs)  # no explicit gate_layers — the default
+
+        assert result.outcome_pass_rate == 1.0
+        assert result.constraint_pass_rate == 0.0
+        assert result.verdict == "FAIL"
+        assert result.passed == 0
+        assert result.pass_rate == 0.0
+
+    def test_no_default_gate_layers_penalizes_a_not_configured_layer(self):
+        """A scenario with no trajectory/constraint checks configured scores
+        those layers passed=True by construction — the strict default gate
+        must still report PASS, not fail a scenario for layers it never
+        declared an expectation for."""
+        score = self._score(True)  # trajectory/constraint default to passed=True
+        runs = [ScenarioRunResult(score=score, trace=_simple_trace("a"))]
+
+        result = aggregate_runs(runs)
+
+        assert result.verdict == "PASS"
+        assert result.passed == 1
+
+
+class TestResolvedGateLayersCannotBeSilentlyNarrowed:
+    """A scenario's explicit gate_layers must never silently drop a layer
+    it has a real, active check for (must_call/forbidden_calls/
+    trajectory_checks -> trajectory; policies -> constraint) — the
+    strict_gates default folds the declared set into any explicit override.
+    """
+
+    def test_explicit_narrow_gate_layers_still_gates_a_failing_declared_constraint(self):
+        """Regression: a scenario that authored gate_layers=["outcome"]
+        before adding a constraint policy — or copied it from a template —
+        used to headline PASS even while its policy failed on every run,
+        because the explicit list silently overrode the declared check.
+        strict_gates defaults True, so the declared check now always gates."""
+        sc = Scenario(
+            name="stale_explicit_gate",
+            prompt="p",
+            target_facts=[["ok"]],
+            policies=[Policy(name="never_ok", predicate=lambda _trace: False)],
+            gate_layers=["outcome"],
+        )
+        assert sc.resolved_gate_layers() == ("outcome", "constraint")
+
+    def test_strict_gates_false_restores_the_old_narrowing_behavior(self):
+        """The explicit, opt-in escape hatch: strict_gates=False makes the
+        author's gate_layers authoritative again, for scenarios that
+        genuinely want a layer to be diagnostic-only."""
+        sc = Scenario(
+            name="deliberately_advisory",
+            prompt="p",
+            target_facts=[["ok"]],
+            policies=[Policy(name="never_ok", predicate=lambda _trace: False)],
+            gate_layers=["outcome"],
+            strict_gates=False,
+        )
+        assert sc.resolved_gate_layers() == ("outcome",)
+
+    def test_gate_passed_and_exit_code_input_agree_with_resolved_gate_layers(self):
+        """score.gate_passed(scenario.resolved_gate_layers()) is what feeds
+        the CLI's exit-code decision (_counts_as_gate_failure) — verify the
+        same silent-narrowing regression at that exact call shape."""
+        sc = Scenario(
+            name="stale_explicit_gate_exit_code",
+            prompt="p",
+            target_facts=[["ok"]],
+            policies=[Policy(name="never_ok", predicate=lambda _trace: False)],
+            gate_layers=["outcome"],
+        )
+        score = Score(
+            outcome=LayerResult(True, "ok"),
+            trajectory=LayerResult(True, "ok"),
+            constraint=LayerResult(False, "policy violated"),
+            integrity=LayerResult(True, "valid"),
+        )
+        assert score.gate_passed(sc.resolved_gate_layers()) is False
 
 
 # ─── 9. State-reset hook ──────────────────────────────────────────────────────

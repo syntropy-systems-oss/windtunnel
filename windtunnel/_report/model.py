@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from windtunnel._report.load import load_runs
-from windtunnel.api.score import FailureCost
+from windtunnel.api.score import GATE_LAYER_ORDER, FailureCost
+
+_DEFAULT_GATE_LAYERS = list(GATE_LAYER_ORDER)
 
 
 def _tool_call_count(trace_data: dict[str, Any]) -> int:
@@ -36,9 +38,14 @@ def _cell_from_run(
         aggregate = None
     layer_pass_rates = aggregate.get("layer_pass_rates", {}) if aggregate else {}
 
-    gate_layers = scenario_data.get("gate_layers", ["outcome"])
+    # Default to every layer, not just outcome: a sidecar with no recorded
+    # gate_layers (pre-declared-gates format) still scored trajectory/
+    # constraint, and a not-configured layer always reports passed=True, so
+    # gating on it costs nothing while a genuine failure recorded there no
+    # longer gets silently waved through as a legacy artifact.
+    gate_layers = scenario_data.get("gate_layers", _DEFAULT_GATE_LAYERS)
     if not isinstance(gate_layers, list):
-        gate_layers = ["outcome"]
+        gate_layers = _DEFAULT_GATE_LAYERS
     raw_layers = {
         "outcome": outcome,
         "trajectory": trajectory,

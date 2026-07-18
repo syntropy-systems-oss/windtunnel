@@ -63,7 +63,7 @@ class AggregateResult:
     integrity_pass_rate: float
 
     # Gate/risk metadata
-    gate_layers: tuple[GateLayer, ...] = ("outcome",)
+    gate_layers: tuple[GateLayer, ...] = GATE_LAYER_ORDER
     risk_weight: int = 0
     failure_risk: float = 0.0
 
@@ -76,7 +76,7 @@ class AggregateResult:
 def aggregate_runs(
     runs: list[ScenarioRunResult],
     variance_allowed: bool = False,
-    gate_layers: Sequence[GateLayer] = ("outcome",),
+    gate_layers: Sequence[GateLayer] = GATE_LAYER_ORDER,
 ) -> AggregateResult:
     """Aggregate N ScenarioRunResults into a single AggregateResult.
 
@@ -85,7 +85,14 @@ def aggregate_runs(
         variance_allowed: if True, sub-100% gate pass rate is
                           PASS_WITH_VARIANCE rather than FAIL.
         gate_layers:      agent-behavior layers that determine each run's gate.
-                          Integrity is always required separately.
+                          Defaults to every layer (outcome, trajectory,
+                          constraint) — strict by default. A layer no scenario
+                          configured a check for always scores passed=True, so
+                          including it here costs nothing; a caller with a
+                          real scenario should still pass
+                          scenario.resolved_gate_layers() so an explicit,
+                          narrower selection is honored. Integrity is always
+                          required separately, regardless of this argument.
 
     Returns:
         AggregateResult with verdict, counts, pass_rate, stddev, and
