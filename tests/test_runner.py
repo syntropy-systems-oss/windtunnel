@@ -92,13 +92,34 @@ class TestRunScenario:
         assert result.aggregate.gate_layers == ("outcome", "trajectory")
         assert result.aggregate.verdict == "FAIL"
 
-    def test_explicit_outcome_only_gate_preserves_diagnostic_trajectory(self) -> None:
+    def test_explicit_outcome_only_gate_still_gates_a_declared_trajectory_check(self) -> None:
+        """Regression: an explicit gate_layers=["outcome"] used to silently
+        override a real must_call expectation, so a failing trajectory
+        layer could not fail the run. strict_gates defaults True, so the
+        declared trajectory check keeps gating even under a narrower
+        explicit gate_layers."""
         scenario = Scenario(
             name="diagnostic_trajectory",
             prompt="hello",
             target_facts=[["ok"]],
             must_call=["lookup"],
             gate_layers=["outcome"],
+        )
+        result = run_scenario(scenario, InMemoryRuntime(scripted_responses=["ok"]))
+        assert result.runs[0].score.trajectory.passed is False
+        assert result.aggregate.verdict == "FAIL"
+
+    def test_strict_gates_false_restores_explicit_outcome_only_gate(self) -> None:
+        """The explicit, opt-in escape hatch: strict_gates=False makes the
+        author's narrower gate_layers authoritative again, for a scenario
+        that genuinely wants trajectory to be diagnostic-only."""
+        scenario = Scenario(
+            name="diagnostic_trajectory_opt_in",
+            prompt="hello",
+            target_facts=[["ok"]],
+            must_call=["lookup"],
+            gate_layers=["outcome"],
+            strict_gates=False,
         )
         result = run_scenario(scenario, InMemoryRuntime(scripted_responses=["ok"]))
         assert result.runs[0].score.trajectory.passed is False

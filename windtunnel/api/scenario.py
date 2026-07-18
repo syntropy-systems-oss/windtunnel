@@ -311,7 +311,21 @@ class Scenario:
     # declared trajectory/constraint expectation. [] creates a diagnostic-only
     # scenario (integrity still must hold). Use ["outcome"] for legacy 0.8
     # outcome-only behavior.
+    #
+    # strict_gates governs how an EXPLICIT gate_layers interacts with layers
+    # this scenario actually has checks for (must_call/forbidden_calls/
+    # trajectory_checks -> trajectory; policies -> constraint). Left at its
+    # default, an explicit gate_layers can only ADD layers beyond those
+    # declared checks — it can never silently drop one, so a policy added
+    # to a scenario after gate_layers was written still gates the verdict
+    # instead of quietly becoming advisory-only. Set strict_gates=False to
+    # opt in to the old lenient behavior, where gate_layers is authoritative
+    # and can narrow the gate below a layer with an active check — the
+    # escape hatch for genuinely-diagnostic layers or replaying legacy
+    # sidecars, now something a scenario must ask for explicitly rather
+    # than fall into by omission.
     gate_layers: list[GateLayer] | None = None
+    strict_gates: bool = True
 
     # ── Experiment conditions ──────────────────────────────────────────────────
     perturbations: list[Perturbation] = field(default_factory=list)
@@ -357,18 +371,31 @@ class Scenario:
         return self.user_turns[-1] if self.user_turns else self.prompt
 
     def resolved_gate_layers(self) -> tuple[GateLayer, ...]:
-        """Return the canonical gate layers for this scenario."""
-        if self.gate_layers is not None:
-            self._validate_gate_layers(self.gate_layers)
-            selected = set(self.gate_layers)
-            return tuple(layer for layer in GATE_LAYER_ORDER if layer in selected)
+        """Return the canonical gate layers for this scenario.
 
+        declared is which layers this scenario actually has checks for —
+        outcome always, trajectory when must_call/forbidden_calls/
+        trajectory_checks are set, constraint when policies are set. With no
+        explicit gate_layers, declared IS the gate. With an explicit
+        gate_layers and strict_gates=True (the default), declared is folded
+        in — the explicit list can widen the gate but never quietly narrow
+        it below a layer with a real check. strict_gates=False restores the
+        old behavior where the explicit list is authoritative.
+        """
         declared: set[GateLayer] = {"outcome"}
         if self.must_call or self.forbidden_calls or self.trajectory_checks:
             declared.add("trajectory")
         if self.policies:
             declared.add("constraint")
-        return tuple(layer for layer in GATE_LAYER_ORDER if layer in declared)
+
+        if self.gate_layers is None:
+            return tuple(layer for layer in GATE_LAYER_ORDER if layer in declared)
+
+        self._validate_gate_layers(self.gate_layers)
+        selected = set(self.gate_layers)
+        if self.strict_gates:
+            selected |= declared
+        return tuple(layer for layer in GATE_LAYER_ORDER if layer in selected)
 
     @staticmethod
     def _validate_gate_layers(gate_layers: list[GateLayer]) -> None:

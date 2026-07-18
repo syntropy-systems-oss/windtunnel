@@ -68,8 +68,8 @@ EXPECTED_DATACLASS_FIELDS = {
         "name", "prompt", "target_facts", "target_numbers", "requires_tool_use",
         "forbidden_facts", "outcome_fn", "must_call", "forbidden_calls", "order_matters",
         "trajectory_checks", "user_turns", "preconditions", "requires_tools", "requires_files",
-        "policies", "gate_layers", "perturbations", "failure_cost", "variance_allowed", "tags",
-        "reference_cases",
+        "policies", "gate_layers", "strict_gates", "perturbations", "failure_cost",
+        "variance_allowed", "tags", "reference_cases",
     ),
     Trace: (
         "scenario_id", "agent_id", "variant_id", "model", "quant", "sampler", "started_at",
