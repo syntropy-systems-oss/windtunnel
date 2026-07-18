@@ -26,6 +26,7 @@ Lifecycle (one `wt run` or supported `wt selftest` invocation):
     scenarios = load_scenarios(...)
     plugin.pre_run(runtime, scenarios, runtime_name)   # optional hook
     ... run or reference-case loop ...
+    plugin.post_run(runtime, scenarios, runtime_name)   # optional hook — wt run only, see below
 
 The same plugin instance is retained for both calls. pre_run() is where
 platform-specific BENCH PREP lives — the glue that used to
@@ -36,10 +37,30 @@ decide applicability themselves by inspecting scenario tags (e.g. only start
 a bench fixture server when a matching dim is selected) — the CLI never
 special-cases a platform.
 
-pre_run is OPTIONAL: the CLI invokes it via getattr(plugin, "pre_run", None),
-so a minimal plugin may omit it entirely. RuntimePlugin therefore declares
-only the required build() method; implementations may add pre_run without a
-second registration contract.
+post_run() is pre_run()'s symmetric counterpart: bench TEARDOWN for whatever
+pre_run() stood up for the WHOLE sweep — a subprocess, a mock server, a
+container, anything scoped to the batch rather than to one scenario. Without
+it, a plugin's only teardown seam was AgentHandle.teardown() (per-runtime,
+torn down inside run_scenario's own finally), which a bench fixture started
+in pre_run() never goes through — nothing ever released it, and it leaked
+for the lifetime of the `wt run` process. `wt run` wraps its whole sweep (the
+scenario loop, its circuit breaker, and final exit-code accounting) in a
+try/finally so post_run() runs exactly once: on a clean finish, on the
+sweep's own circuit-breaker abort, and on any exception that escapes the loop
+itself — never only the happy path. It receives the same (runtime, scenarios,
+runtime_name) arguments as pre_run() so a plugin can find whatever it started
+there without needing extra module-level state. `wt selftest`'s reference-case
+loop does not call post_run() yet — a plugin whose bench prep needs
+whole-process teardown should still release it there some other way (e.g. an
+atexit hook) until that command grows the same symmetric wiring.
+
+Both hooks are OPTIONAL: the CLI invokes each via getattr(plugin, name, None),
+so a minimal plugin may omit either or both entirely. RuntimePlugin therefore
+declares only the required build() method; implementations may add pre_run
+and/or post_run without a second registration contract. A plugin that defines
+one without the other is well-formed — e.g. a plugin whose bench prep needs
+no teardown (or vice versa, one that only needs to clean up a resource
+started somewhere other than pre_run) never has to stub the unused half.
 
 Like the rest of spi/, this is a structural Protocol — implementers don't
 subclass anything, they just provide matching methods.

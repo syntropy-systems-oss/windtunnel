@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from collections.abc import Callable
 from typing import cast
 
+from windtunnel._cli.module_identity import load_module_by_dotted_path
 from windtunnel.spi.agent_runtime import AgentRuntime
 from windtunnel.spi.runtime_plugin import RuntimePlugin
 
@@ -58,7 +58,12 @@ def _resolve_runtime_plugin(runtime_name: str) -> RuntimePlugin:
     if ":" in runtime_name:
         module_name, _, attr = runtime_name.partition(":")
         try:
-            obj = getattr(importlib.import_module(module_name), attr)
+            # Reuses an already-loaded module for this exact resolved file
+            # (e.g. one `--pack-source path/to/file.py:PACK` already
+            # imported it) instead of executing it a second time under this
+            # plain dotted name — see module_identity.py's own docstring for
+            # the two-copies hazard this prevents.
+            obj = getattr(load_module_by_dotted_path(module_name), attr)
         except (ImportError, AttributeError) as exc:
             print(
                 f"wt run: could not load runtime plugin {runtime_name!r}: {exc}",

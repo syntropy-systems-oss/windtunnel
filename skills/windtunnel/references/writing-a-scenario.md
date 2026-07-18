@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/writing-a-scenario.md at 554ebbb366f0 — do not edit; edit docs/writing-a-scenario.md. -->
+<!-- GENERATED from docs/writing-a-scenario.md at 4173c7192a4c — do not edit; edit docs/writing-a-scenario.md. -->
 ---
 description: "Reference for authoring backend-agnostic Scenario objects, scoring fields, perturbations, dimensions, and scenario packs."
 ---
@@ -508,7 +508,6 @@ What `wt run` does with it:
   derives its failure mode from the scenario's perturbation).
 - **External-state evidence.** If your dim verifies world state (see
   "Verifying external state" above), set `state_probe_factory` to a callable
-  that takes the selected `Scenario` and returns a `StateProbe` (or `None`
   for scenarios it doesn't observe). It is also read directly from the owning
   pack and is independent of whether the runtime mounts runner-managed MCPs.
   When the probe's fixture is started by your runtime plugin's `pre_run()` (the
@@ -520,7 +519,10 @@ What `wt run` does with it:
   the selected owning pack's factory. Only the probe returned by that factory
   (or passed directly to the library API) populates
   `PreconditionContext.state_probe`; a probe hidden in a plugin or scorer does
-  not satisfy `StateProbeAvailable()`.
+  not satisfy `StateProbeAvailable()`. If that same fixture needs teardown (a
+  subprocess, a container), release it in the plugin's `post_run()` — for
+  `wt run`, `pre_run`'s symmetric counterpart, called once at sweep end
+  (success, abort, or exception) in a `finally`.
 - **`transport_only=True`** marks a dim whose history-shaping perturbation is
   applied post-hoc to the trace (the live model never saw it): the scenario
   still runs and reports, but its model verdict doesn't flip the exit code.

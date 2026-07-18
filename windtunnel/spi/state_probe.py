@@ -30,12 +30,16 @@ still contains run 1's mutations (the PR the agent opened, the rows it
 inserted) unless the probe wipes it — the same cross-run contamination
 class reset_call_log() exists for.
 
-Wiring: ScenarioPack.state_probe_factory builds the probe per scenario
-(mirroring mcp_factory), and run_scenario accepts state_probe= directly
-for library callers. A probe usually closes over a live fixture started
-elsewhere (e.g. a RuntimePlugin's pre_run starting a fake-GitHub server);
-when the fixture is born in pre_run, pre_run is also the natural place to
-set the pack's state_probe_factory — see ScenarioPack for the pattern.
+Wiring: ScenarioPack.state_probe_factory builds the probe per scenario —
+the CLI reads it directly from the scenario's OWNING pack (no scan over
+other packs, no activating tag required); the factory's own return value
+is what decides whether that scenario gets a probe. run_scenario also
+accepts state_probe= directly for library callers. A probe usually closes
+over a live fixture started elsewhere (e.g. a RuntimePlugin's pre_run
+starting a fake-GitHub server); when the fixture is born in pre_run,
+pre_run is also the natural place to set the pack's state_probe_factory —
+see ScenarioPack for the pattern. If that fixture needs teardown too,
+pre_run's symmetric post_run hook is the place — see RuntimePlugin.
 
 Like the rest of spi/, this is a structural Protocol — implementers don't
 subclass anything, they just provide matching methods.

@@ -474,131 +474,148 @@ def _cmd_run(args: argparse.Namespace) -> int:
             return 1
         return rc
 
-    for selected_entry in selected:
-        scenario = selected_entry.scenario
-        scenario_pack = selected_entry.pack
-        # Wire the MCPServer only when the runtime can mount runner-managed
-        # handles. Contract C, in_memory, and terminal-only runtimes own their
-        # tool surfaces; an unused mock would create misleading empty evidence.
-        scenario_mcps = None
-        scenario_probe = None
-        if (
-            getattr(runtime, "accepts_runner_managed_mcps", True)
-            and scenario_pack.mcp_factory is not None
-        ):
-            # Pass the scenario so scenario-aware factories (silent_failure,
-            # which injects MOCK_MCP_FAILURE_MODE per scenario) can specialize.
-            scenario_mcps = [scenario_pack.mcp_factory(scenario)]
+    post_run = getattr(plugin, "post_run", None)
 
-        # External-state probes are independent of MCP mounting. Factories are
-        # read from the owning pack after pre_run() because the runtime plugin
-        # may have wired its live fixture-backed factory during that hook.
-        if scenario_pack.state_probe_factory is not None:
-            scenario_probe = scenario_pack.state_probe_factory(scenario)
+    def _run_sweep() -> int:
+        nonlocal any_fail, consecutive_errors, first_error_logged
+        for selected_entry in selected:
+            scenario = selected_entry.scenario
+            scenario_pack = selected_entry.pack
+            # Wire the MCPServer only when the runtime can mount runner-managed
+            # handles. Contract C, in_memory, and terminal-only runtimes own their
+            # tool surfaces; an unused mock would create misleading empty evidence.
+            scenario_mcps = None
+            scenario_probe = None
+            if (
+                getattr(runtime, "accepts_runner_managed_mcps", True)
+                and scenario_pack.mcp_factory is not None
+            ):
+                # Pass the scenario so scenario-aware factories (silent_failure,
+                # which injects MOCK_MCP_FAILURE_MODE per scenario) can specialize.
+                scenario_mcps = [scenario_pack.mcp_factory(scenario)]
 
-        transport_only = scenario_pack.transport_only
+            # External-state probes are independent of MCP mounting. Factories are
+            # read from the owning pack after pre_run() because the runtime plugin
+            # may have wired its live fixture-backed factory during that hook.
+            if scenario_pack.state_probe_factory is not None:
+                scenario_probe = scenario_pack.state_probe_factory(scenario)
 
-        # Resilience: a single scenario's failure (e.g. a provision-time agent
-        # readiness timeout, or a mock that won't start) MUST NOT abort a long
-        # multi-dim sweep. run_scenario tears down in its own finally, so the next
-        # scenario re-provisions from a clean slate. BUT a SYSTEMIC outage (a dead
-        # queue or inference worker) would otherwise burn the full readiness timeout per
-        # scenario across the whole sweep — so a circuit breaker aborts after N
-        # consecutive errors, and the FIRST error logs a full traceback (the
-        # per-scenario lines clip the message to 120 chars).
-        try:
-            result = run_scenario(
-                scenario,
-                runtime,
-                mcps=scenario_mcps,
-                config=config,
-                runs_per_scenario=n_runs,
-                state_probe=scenario_probe,
-                hooks=hooks,
-            )
-        except WorldMismatchError as exc:
-            any_fail = True
-            consecutive_errors = 0
-            print(f"  WORLD   {scenario.name:<40}  preconditions failed")
-            print(f"wt run: {exc}", file=sys.stderr)
-            continue
-        except Exception as exc:  # noqa: BLE001 — sweep-level isolation, detail printed
-            any_fail = True
-            consecutive_errors += 1
-            print(f"  ERROR   {scenario.name:<40}  ({type(exc).__name__}: {str(exc)[:120]})")
-            if not first_error_logged:
-                first_error_logged = True
-                traceback.print_exc()
-            if consecutive_errors >= _ERROR_CIRCUIT_LIMIT:
-                print(
-                    f"wt run: aborting after {consecutive_errors} consecutive scenario "
-                    f"errors — likely a systemic outage (e.g. the bench inference worker "
-                    f"is down), not per-scenario flakiness. Fix the root cause and re-run "
-                    f"rather than churning the remaining scenarios.",
-                    file=sys.stderr,
+            transport_only = scenario_pack.transport_only
+
+            # Resilience: a single scenario's failure (e.g. a provision-time agent
+            # readiness timeout, or a mock that won't start) MUST NOT abort a long
+            # multi-dim sweep. run_scenario tears down in its own finally, so the next
+            # scenario re-provisions from a clean slate. BUT a SYSTEMIC outage (a dead
+            # queue or inference worker) would otherwise burn the full readiness timeout per
+            # scenario across the whole sweep — so a circuit breaker aborts after N
+            # consecutive errors, and the FIRST error logs a full traceback (the
+            # per-scenario lines clip the message to 120 chars).
+            try:
+                result = run_scenario(
+                    scenario,
+                    runtime,
+                    mcps=scenario_mcps,
+                    config=config,
+                    runs_per_scenario=n_runs,
+                    state_probe=scenario_probe,
+                    hooks=hooks,
                 )
-                return _finish(1)
-            continue
+            except WorldMismatchError as exc:
+                any_fail = True
+                consecutive_errors = 0
+                print(f"  WORLD   {scenario.name:<40}  preconditions failed")
+                print(f"wt run: {exc}", file=sys.stderr)
+                continue
+            except Exception as exc:  # noqa: BLE001 — sweep-level isolation, detail printed
+                any_fail = True
+                consecutive_errors += 1
+                print(f"  ERROR   {scenario.name:<40}  ({type(exc).__name__}: {str(exc)[:120]})")
+                if not first_error_logged:
+                    first_error_logged = True
+                    traceback.print_exc()
+                if consecutive_errors >= _ERROR_CIRCUIT_LIMIT:
+                    print(
+                        f"wt run: aborting after {consecutive_errors} consecutive scenario "
+                        f"errors — likely a systemic outage (e.g. the bench inference worker "
+                        f"is down), not per-scenario flakiness. Fix the root cause and re-run "
+                        f"rather than churning the remaining scenarios.",
+                        file=sys.stderr,
+                    )
+                    return _finish(1)
+                continue
 
-        consecutive_errors = 0  # a successful scenario resets the breaker
-        agg = result.aggregate
-        for warning in getattr(result, "worker_warnings", []) or []:
-            print(f"wt run: warning: {warning}", file=sys.stderr)
+            consecutive_errors = 0  # a successful scenario resets the breaker
+            agg = result.aggregate
+            for warning in getattr(result, "worker_warnings", []) or []:
+                print(f"wt run: warning: {warning}", file=sys.stderr)
 
-        # Save traces + score sidecars (so `wt report/compare/triage` can
-        # consume the run output directly, without a re-scoring pass).
-        for run_result in result.runs:
-            path = storage_path(run_result.trace, base_dir=runs_dir)
-            save_trace(run_result.trace, path)
-            _write_score_sidecar(path, run_result.score, scenario)
-            for artifact in getattr(run_result, "hook_artifacts", []) or []:
-                _write_hook_artifact_sidecar(path, artifact)
-        for artifact in getattr(result, "hook_artifacts", []) or []:
-            _write_scenario_hook_artifact(
-                runs_dir,
-                sweep_timestamp,
-                artifact,
-                scenario.name,
+            # Save traces + score sidecars (so `wt report/compare/triage` can
+            # consume the run output directly, without a re-scoring pass).
+            for run_result in result.runs:
+                path = storage_path(run_result.trace, base_dir=runs_dir)
+                save_trace(run_result.trace, path)
+                _write_score_sidecar(path, run_result.score, scenario)
+                for artifact in getattr(run_result, "hook_artifacts", []) or []:
+                    _write_hook_artifact_sidecar(path, artifact)
+            for artifact in getattr(result, "hook_artifacts", []) or []:
+                _write_scenario_hook_artifact(
+                    runs_dir,
+                    sweep_timestamp,
+                    artifact,
+                    scenario.name,
+                )
+
+            # Note: run_scenario catches a send-time/runtime error INTERNALLY and
+            # returns a failed aggregate carrying a `runner_error: …` worker_warning
+            # (it does NOT raise). The transport-only exemption must cover only the
+            # counterfactual MODEL VERDICT — a real EXECUTION error means no valid
+            # model turn ran, so it must still fail the sweep even for these dims.
+            had_runner_error = any(
+                str(w).startswith("runner_error:")
+                for run_result in result.runs
+                for w in (getattr(run_result.trace, "worker_warnings", None) or [])
+            )
+            completed.append(
+                _CompletedAggregate(
+                    pack=selected_entry.pack,
+                    scenario=scenario,
+                    result=result,
+                    transport_only=transport_only,
+                    had_runner_error=had_runner_error,
+                )
             )
 
-        # Note: run_scenario catches a send-time/runtime error INTERNALLY and
-        # returns a failed aggregate carrying a `runner_error: …` worker_warning
-        # (it does NOT raise). The transport-only exemption must cover only the
-        # counterfactual MODEL VERDICT — a real EXECUTION error means no valid
-        # model turn ran, so it must still fail the sweep even for these dims.
-        had_runner_error = any(
-            str(w).startswith("runner_error:")
-            for run_result in result.runs
-            for w in (getattr(run_result.trace, "worker_warnings", None) or [])
-        )
-        completed.append(
-            _CompletedAggregate(
-                pack=selected_entry.pack,
-                scenario=scenario,
-                result=result,
-                transport_only=transport_only,
-                had_runner_error=had_runner_error,
+            status = agg.verdict
+            if had_runner_error:
+                note = "  ✗ EXECUTION ERROR (runner_error in trace — counts as a real failure)"
+            elif transport_only:
+                note = "  ⚠ transport-only (history-shaping perturbation post-hoc; not model signal)"
+            else:
+                note = ""
+            print(
+                f"  {status:<6}  {scenario.name:<40}  "
+                f"({agg.passed}/{agg.total} pass, rate={agg.pass_rate:.0%}){note}"
             )
-        )
+            # transport-only dims run faithfully but their MODEL verdict is not a
+            # model-quality signal, so it doesn't flip the exit code — UNLESS the run
+            # hit a real execution error (no valid model turn happened).
+            if _counts_as_gate_failure(completed[-1]):
+                any_fail = True
 
-        status = agg.verdict
-        if had_runner_error:
-            note = "  ✗ EXECUTION ERROR (runner_error in trace — counts as a real failure)"
-        elif transport_only:
-            note = "  ⚠ transport-only (history-shaping perturbation post-hoc; not model signal)"
-        else:
-            note = ""
-        print(
-            f"  {status:<6}  {scenario.name:<40}  "
-            f"({agg.passed}/{agg.total} pass, rate={agg.pass_rate:.0%}){note}"
-        )
-        # transport-only dims run faithfully but their MODEL verdict is not a
-        # model-quality signal, so it doesn't flip the exit code — UNLESS the run
-        # hit a real execution error (no valid model turn happened).
-        if _counts_as_gate_failure(completed[-1]):
-            any_fail = True
+        return _finish(1 if any_fail else 0)
 
-    return _finish(1 if any_fail else 0)
+    try:
+        return _run_sweep()
+    finally:
+        # Symmetric counterpart to pre_run(): a plugin that provisioned
+        # bench-wide resources there (a subprocess, a mock server, anything
+        # scoped to the WHOLE sweep rather than one scenario) gets exactly
+        # one chance to release them here — on a clean finish, on
+        # circuit-breaker abort, AND on any exception escaping the sweep
+        # loop itself, never just the happy path. See RuntimePlugin's own
+        # docstring for the full pre_run/post_run contract.
+        if post_run is not None:
+            post_run(runtime, scenarios, runtime_name)
 
 
 # ─── rescore ─────────────────────────────────────────────────────────────────

@@ -850,6 +850,155 @@ class TestWtRunCiOutput:
         assert "Traceback" not in combined
 
 
+class TestWtRunPostRunHook:
+    """RuntimePlugin.post_run is pre_run's teardown counterpart: a plugin
+    that provisions bench-wide resources (a subprocess, a mock server) in
+    pre_run() previously had no seam to release them — nothing ever called
+    it back. post_run() closes that gap, wrapped in try/finally around the
+    whole sweep so it fires on a clean finish, on circuit-breaker abort, and
+    even when an exception escapes the sweep loop itself."""
+
+    @staticmethod
+    def _plugin_with_post_run() -> tuple[object, list[tuple[object, tuple[str, ...], str]]]:
+        calls: list[tuple[object, tuple[str, ...], str]] = []
+
+        class _Plugin:
+            def build(self, runtime_name: str, label: str, soul_path: str | None) -> object:
+                return object()
+
+            def post_run(self, runtime: object, scenarios: list, runtime_name: str) -> None:
+                calls.append((runtime, tuple(s.name for s in scenarios), runtime_name))
+
+        return _Plugin(), calls
+
+    def test_post_run_called_once_on_clean_finish(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import windtunnel.api.runner as runner
+        import windtunnel.cli as cli
+
+        scenario = _scenario("passes", tags=["dim:custom"])
+        pack = _pack("custom", [scenario])
+        plugin, calls = self._plugin_with_post_run()
+
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [pack])
+        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path, **_kwargs: object())
+        monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda runtime_name: plugin)
+        monkeypatch.setattr(
+            runner, "run_scenario", lambda s, r, *a, **k: _result(s, passed=True)
+        )
+
+        rc = cli.main([
+            "run",
+            "--scenario", scenario.name,
+            "--runtime", "some_plugin_runtime",
+            "--runs-dir", str(tmp_path / "runs"),
+        ])
+
+        assert rc == 0
+        assert len(calls) == 1
+        _runtime, scenario_names, runtime_name = calls[0]
+        assert scenario_names == (scenario.name,)
+        assert runtime_name == "some_plugin_runtime"
+
+    def test_post_run_called_on_circuit_breaker_abort(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import windtunnel.api.runner as runner
+        import windtunnel.cli as cli
+
+        scenarios = [_scenario(f"fails_{i}", tags=["dim:custom"]) for i in range(5)]
+        pack = _pack("custom", scenarios)
+        plugin, calls = self._plugin_with_post_run()
+
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [pack])
+        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path, **_kwargs: object())
+        monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda runtime_name: plugin)
+
+        def always_raise(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(runner, "run_scenario", always_raise)
+
+        rc = cli.main([
+            "run",
+            "--runtime", "some_plugin_runtime",
+            "--runs-dir", str(tmp_path / "runs"),
+        ])
+
+        assert rc == 1
+        assert len(calls) == 1
+
+    def test_post_run_called_even_when_sweep_loop_raises(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An exception OUTSIDE run_scenario's own per-scenario try/except
+        (e.g. a bug persisting a score sidecar) must still trigger post_run
+        before propagating — proving the wrapping is a real try/finally
+        around the whole sweep, not a call bolted onto the success path."""
+        import windtunnel.api.runner as runner
+        import windtunnel.cli as cli
+
+        scenario = _scenario("passes", tags=["dim:custom"])
+        pack = _pack("custom", [scenario])
+        plugin, calls = self._plugin_with_post_run()
+
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [pack])
+        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path, **_kwargs: object())
+        monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda runtime_name: plugin)
+        monkeypatch.setattr(
+            runner, "run_scenario", lambda s, r, *a, **k: _result(s, passed=True)
+        )
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("sidecar write exploded")
+
+        monkeypatch.setattr(cli, "_write_score_sidecar", _boom)
+
+        with pytest.raises(RuntimeError, match="sidecar write exploded"):
+            cli.main([
+                "run",
+                "--scenario", scenario.name,
+                "--runtime", "some_plugin_runtime",
+                "--runs-dir", str(tmp_path / "runs"),
+            ])
+
+        assert len(calls) == 1
+
+    def test_post_run_is_optional(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A plugin without post_run (every driver written before this hook
+        existed) keeps working unchanged."""
+        import windtunnel.api.runner as runner
+        import windtunnel.cli as cli
+
+        scenario = _scenario("passes", tags=["dim:custom"])
+        pack = _pack("custom", [scenario])
+
+        class _PluginWithoutPostRun:
+            def build(self, runtime_name: str, label: str, soul_path: str | None) -> object:
+                return object()
+
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [pack])
+        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path, **_kwargs: object())
+        monkeypatch.setattr(
+            cli, "_resolve_runtime_plugin", lambda runtime_name: _PluginWithoutPostRun()
+        )
+        monkeypatch.setattr(
+            runner, "run_scenario", lambda s, r, *a, **k: _result(s, passed=True)
+        )
+
+        rc = cli.main([
+            "run",
+            "--scenario", scenario.name,
+            "--runtime", "some_plugin_runtime",
+            "--runs-dir", str(tmp_path / "runs"),
+        ])
+
+        assert rc == 0
+
+
 class TestWtRescore:
     def test_rescore_help_exits_zero(self) -> None:
         result = _wt("rescore", "--help")

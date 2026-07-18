@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import fnmatch
-import hashlib
-import importlib
-import importlib.util
 import sys
 from pathlib import Path
 
 from windtunnel._cli.models import _SelectedScenario, _SelectionResult
+from windtunnel._cli.module_identity import load_module_by_dotted_path, load_module_from_file
 from windtunnel.api.pack import ScenarioPack
 from windtunnel.api.scenario import Scenario
 
@@ -107,16 +105,14 @@ def _load_scenario_pack_source(source: str) -> ScenarioPack:
             path = Path(module_or_path)
             if not path.is_file():
                 raise FileNotFoundError(path)
-            digest = hashlib.sha1(str(path.resolve()).encode("utf-8")).hexdigest()[:12]
-            module_name = f"_windtunnel_pack_{digest}"
-            spec = importlib.util.spec_from_file_location(module_name, path)
-            if spec is None or spec.loader is None:
-                raise ImportError(f"could not load module spec for {path}")
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = module
-            spec.loader.exec_module(module)
+            # Reuses an already-loaded module for this exact resolved file
+            # (e.g. one `--runtime path/to/file:Plugin` already imported it)
+            # instead of executing it a second time under a fresh synthetic
+            # name — see module_identity.py's own docstring for the
+            # two-copies hazard this prevents.
+            module = load_module_from_file(path, "_windtunnel_pack")
         else:
-            module = importlib.import_module(module_or_path)
+            module = load_module_by_dotted_path(module_or_path)
         obj = getattr(module, attr)
     except Exception as exc:  # noqa: BLE001 - source load failures are usage errors
         print(f"wt run: could not load scenario pack source {source!r}: {exc}", file=sys.stderr)
