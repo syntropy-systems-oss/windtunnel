@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.2](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.10.1...v0.10.2) (2026-07-18)
+
+
+### Bug Fixes
+
+* **scoring:** headline verdict now requires every declared gate layer ([#63](https://github.com/syntropy-systems-oss/windtunnel/issues/63)) ([346d3f9](https://github.com/syntropy-systems-oss/windtunnel/commit/346d3f9f8cc99b7ef0d7d2126566ba09cccc29f7))
+
 ## [0.10.1](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.10.0...v0.10.1) (2026-07-18)
 
 
