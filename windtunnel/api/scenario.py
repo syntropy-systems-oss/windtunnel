@@ -5,7 +5,7 @@ scenarios. It carries:
   - Outcome:     target_facts (AND-of-OR) + target_numbers (typed numeric)
   - Trajectory:  must_call, forbidden_calls, order_matters + trajectory_checks
   - Constraint:  policies (predicate list over Trace)
-  - Robustness:  perturbations (transform list applied before run)
+  - Integrity:   perturbations (test conditions verified after the run)
   - Multi-turn:  user_turns (ordered user-turn sequence; empty = single-turn)
 
 Design decisions captured here:
@@ -15,9 +15,9 @@ Design decisions captured here:
    extractor requires a number-parser that handles "12 units", "12.0",
    "twelve" etc. — a fragile NLP problem. Word-boundary regex is simple,
    deterministic, and solves the known false-positive ("3" matching B003CCC)
-   without over-engineering. Unit matching is advisory: when unit is
-   specified, the regex also checks that the number appears near the unit
-   word (within 30 chars), but the number alone is sufficient to pass.
+   without over-engineering. When a unit is specified, the matcher requires
+   that unit to appear near the number (within 30 chars) without requiring an
+   exact ``"3 units"`` phrase.
 
 2. Policy is a named predicate over a Trace. The effect_class field is
    a forward-compat hook for the side-effect-safety dim — it
@@ -40,7 +40,7 @@ Design decisions captured here:
    scenario opts in to a variance budget.
 
 6. TrajectoryCheck is the trajectory layer's extension point — the
-   counterpart to Policy (constraint) and Perturbation (robustness).
+   counterpart to Policy (constraint) and Perturbation (integrity).
    The sugar fields (must_call/forbidden_calls/order_matters) compile
    into built-in checks inside evaluate_trajectory; custom checks in
    Scenario.trajectory_checks run after them and are ANDed in.
@@ -57,8 +57,9 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from windtunnel.api.preconditions import Precondition
-from windtunnel.api.score import FailureCost, LayerResult
+from windtunnel.api.score import GATE_LAYER_ORDER, FailureCost, GateLayer, LayerResult
 from windtunnel.api.trace import Trace
+from windtunnel.spi.reference import ReferenceCase
 
 # ─── Numeric fact ─────────────────────────────────────────────────────────────
 
@@ -71,8 +72,8 @@ class NumberFact:
     BATCH-2026.
 
     unit: when specified, evaluator also checks that the number appears
-    within 30 characters of the unit string in the answer (advisory —
-    tightens the check but doesn't require exact "3 units" phrasing).
+    within 30 characters of the unit string in the answer. This tightens the
+    check without requiring exact "3 units" phrasing.
     """
     value: int
     unit: str | None = None
@@ -104,7 +105,7 @@ class Perturbation(ABC):
     Concrete implementations live in perturbations.py. Each apply()
     returns a NEW Trace (original is never mutated) with a
     'perturbation_applied: <name> ...' entry in worker_warnings so the
-    robustness evaluator can verify the perturbation was applied.
+    integrity evaluator can verify the perturbation was applied.
     """
 
     @abstractmethod
@@ -138,7 +139,7 @@ class PreSendPerturbation(Perturbation):
        PreSendPerturbation instances — the corruption already happened
        live, and re-mutating the recorded trace would falsify what the
        model actually saw and did. Instead the runner appends ``marker``
-       to trace.worker_warnings directly, so evaluate_robustness still
+       to trace.worker_warnings directly, so evaluate_integrity still
        verifies the perturbation was applied.
 
     apply() must still be implemented (the Perturbation contract): it is
@@ -173,7 +174,7 @@ class TrajectoryCheck(ABC):
     """A verifier over the path the agent actually took.
 
     This is the trajectory layer's counterpart to Policy (constraint) and
-    Perturbation (robustness): an open extension point for path
+    Perturbation (integrity): an open extension point for path
     expectations the sugar fields (must_call / forbidden_calls /
     order_matters) can't express — "paginate at most twice", "never call
     a write tool before a read tool", etc.
@@ -212,19 +213,26 @@ class TrajectoryCheck(ABC):
 
 @dataclass
 class Scenario:
-    """Per-scenario authoring of all four layer expectations.
+    """Per-scenario authoring of outcome, path, policy, and test conditions.
 
-    Minimal required fields: name, prompt, target_facts.
-    Everything else defaults to "no expectation" (empty lists, False flags).
+    Minimal required fields: ``name`` plus either ``prompt`` or ``user_turns``.
+    ``target_facts`` defaults to an empty list so a custom ``outcome_fn`` does
+    not require placeholder data.
+
+    By default the gate includes outcome plus every trajectory/constraint
+    layer for which this scenario declares an expectation. Set ``gate_layers``
+    explicitly to make selected layers diagnostic-only. Experiment integrity
+    is not configurable: a run whose declared perturbations were not applied
+    is INVALID rather than an agent pass or failure.
     """
     # Identity
     name: str
-    prompt: str
+    prompt: str = ""
 
     # ── Outcome layer ──────────────────────────────────────────────────────────
     # target_facts: AND-of-OR groups. Every outer group must have at least one
     # member present in the last assistant turn's content.
-    target_facts: list[list[str]]
+    target_facts: list[list[str]] = field(default_factory=list)
 
     # target_numbers: typed numeric facts checked with word-boundary regex.
     # All must be satisfied (AND semantics, like outer target_facts groups).
@@ -299,7 +307,13 @@ class Scenario:
     # ── Constraint layer ───────────────────────────────────────────────────────
     policies: list[Policy] = field(default_factory=list)
 
-    # ── Robustness layer ───────────────────────────────────────────────────────
+    # gate_layers: explicit gate selection. None infers outcome plus every
+    # declared trajectory/constraint expectation. [] creates a diagnostic-only
+    # scenario (integrity still must hold). Use ["outcome"] for legacy 0.8
+    # outcome-only behavior.
+    gate_layers: list[GateLayer] | None = None
+
+    # ── Experiment conditions ──────────────────────────────────────────────────
     perturbations: list[Perturbation] = field(default_factory=list)
 
     # ── Metadata ───────────────────────────────────────────────────────────────
@@ -314,3 +328,52 @@ class Scenario:
     # Convention: "dim:<name>" for the failure dimension (e.g. "dim:tool_affordance").
     # Used by the failure taxonomy to group regressions by dimension.
     tags: list[str] = field(default_factory=list)
+
+    # reference_cases: deterministic golden/poison model-decision scripts for
+    # harness self-certification. Keyword-only so the additive 0.10 field cannot
+    # shift existing positional Scenario construction. A capable runtime injects
+    # these decisions at its real inference seam; core never replays them as a
+    # fabricated Trace.
+    reference_cases: list[ReferenceCase] = field(default_factory=list, kw_only=True)
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("scenario name must not be empty")
+        if not self.prompt.strip() and not self.user_turns:
+            raise ValueError("scenario requires prompt or user_turns")
+        if any(not turn.strip() for turn in self.user_turns):
+            raise ValueError("scenario user_turns must not contain empty turns")
+        if self.order_matters and not self.must_call:
+            raise ValueError("order_matters requires at least one must_call entry")
+        if self.gate_layers is not None:
+            self._validate_gate_layers(self.gate_layers)
+        reference_names = [case.name for case in self.reference_cases]
+        if len(set(reference_names)) != len(reference_names):
+            raise ValueError("scenario reference case names must be unique")
+
+    @property
+    def scored_prompt(self) -> str:
+        """Return the user question represented by authoring/report surfaces."""
+        return self.user_turns[-1] if self.user_turns else self.prompt
+
+    def resolved_gate_layers(self) -> tuple[GateLayer, ...]:
+        """Return the canonical gate layers for this scenario."""
+        if self.gate_layers is not None:
+            self._validate_gate_layers(self.gate_layers)
+            selected = set(self.gate_layers)
+            return tuple(layer for layer in GATE_LAYER_ORDER if layer in selected)
+
+        declared: set[GateLayer] = {"outcome"}
+        if self.must_call or self.forbidden_calls or self.trajectory_checks:
+            declared.add("trajectory")
+        if self.policies:
+            declared.add("constraint")
+        return tuple(layer for layer in GATE_LAYER_ORDER if layer in declared)
+
+    @staticmethod
+    def _validate_gate_layers(gate_layers: list[GateLayer]) -> None:
+        invalid = [layer for layer in gate_layers if layer not in GATE_LAYER_ORDER]
+        if invalid:
+            raise ValueError(f"unknown gate layers: {invalid}")
+        if len(set(gate_layers)) != len(gate_layers):
+            raise ValueError("gate_layers must not contain duplicates")

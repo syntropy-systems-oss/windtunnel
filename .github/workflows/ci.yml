@@ -28,6 +28,22 @@ jobs:
       - name: Unit tests (no infrastructure required)
         run: uv run pytest -m "not integration" -q --timeout=120
 
+  python-compatibility:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: uv sync
+      - name: Unit tests
+        run: uv run pytest -m "not integration" -q --timeout=120
+
   docs:
     runs-on: ubuntu-latest
     steps:

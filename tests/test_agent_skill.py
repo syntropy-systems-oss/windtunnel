@@ -78,7 +78,8 @@ def test_reference_files_have_provenance_headers() -> None:
 def test_generated_cli_reference_names_all_subcommands() -> None:
     text = (DOCS_DIR / "cli-reference.md").read_text(encoding="utf-8")
     for name in [
-        "run",
+            "run",
+            "selftest",
         "report",
         "compare",
         "rescore",
@@ -91,7 +92,7 @@ def test_generated_cli_reference_names_all_subcommands() -> None:
         "skill",
     ]:
         assert f"`wt {name}`" in text
-    assert "The `wt` command ships 11 subcommands." in text
+    assert "The `wt` command ships 12 subcommands." in text
 
 
 def test_skill_index_has_one_description_per_reference() -> None:

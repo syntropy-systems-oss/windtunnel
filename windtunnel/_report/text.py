@@ -37,9 +37,13 @@ def generate_markdown(
     lines.append("")
     lines.append("| Layer | Pass Rate |")
     lines.append("|-------|-----------|")
-    for layer in ("outcome", "trajectory", "constraint", "robustness"):
+    for layer in ("outcome", "trajectory", "constraint", "integrity"):
         rate = summary[f"{layer}_pass_rate"]
         lines.append(f"| {layer.capitalize()} | {rate * 100:.1f}% |")
+    robustness_rate = summary["robustness_pass_rate"]
+    robustness_text = "N/A" if robustness_rate is None else f"{robustness_rate * 100:.1f}%"
+    lines.append(f"| Robustness cases | {robustness_text} |")
+    lines.append(f"| Failure risk | {summary['total_failure_risk']:.2f} |")
     lines.append("")
     lines.append("## Scenario Matrix")
     lines.append("")
@@ -65,11 +69,16 @@ def generate_markdown(
             else:
                 verdict = cell["verdict"]
                 tool_count = cell["tool_call_count"]
-                icon = "PASS" if verdict == "PASS" else ("VAR" if "VARIANCE" in verdict else "FAIL")
+                icon = (
+                    "PASS" if verdict == "PASS"
+                    else "VAR" if "VARIANCE" in verdict
+                    else "INVALID" if verdict == "INVALID"
+                    else "FAIL"
+                )
                 severity = cell["failure_cost"]["severity"]
                 severity_tag = f"[{severity}]" if severity != "low" else ""
                 row.append(f"{icon} n={tool_count}{(' ' + severity_tag) if severity_tag else ''}")
-                if verdict != "FAIL":
+                if verdict == "PASS" or "VARIANCE" in verdict:
                     pass_counts[variant] += 1
         lines.append("| " + " | ".join(row) + " |")
 
@@ -85,7 +94,7 @@ def generate_markdown(
         ("outcome", "Outcome"),
         ("trajectory", "Trajectory"),
         ("constraint", "Constraint"),
-        ("robustness", "Robustness"),
+        ("integrity", "Integrity"),
     ]
     layer_header = ["Layer"] + variants
     lines.append("| " + " | ".join(layer_header) + " |")

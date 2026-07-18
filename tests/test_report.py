@@ -29,7 +29,9 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
-from windtunnel.api.score import FailureCost, LayerResult, Score
+import pytest
+
+from windtunnel.api.score import FailureCost, LayerResult, Score, score_to_dict
 from windtunnel.api.trace import Trace, Turn, compute_hash, save_trace
 
 # ─── Fixture helpers ─────────────────────────────────────────────────────────
@@ -93,7 +95,7 @@ def _make_score(
     outcome_pass: bool = True,
     trajectory_pass: bool = True,
     constraint_pass: bool = True,
-    robustness_pass: bool = True,
+    integrity_pass: bool = True,
     severity: str = "low",
     customer_visible: bool = False,
     reversible: bool = True,
@@ -102,7 +104,7 @@ def _make_score(
         outcome=LayerResult(passed=outcome_pass, detail="outcome detail"),
         trajectory=LayerResult(passed=trajectory_pass, detail="trajectory detail"),
         constraint=LayerResult(passed=constraint_pass, detail="constraint detail"),
-        robustness=LayerResult(passed=robustness_pass, detail="robustness detail"),
+        integrity=LayerResult(passed=integrity_pass, detail="integrity detail"),
         failure_cost=FailureCost(
             severity=severity,  # type: ignore[arg-type]
             customer_visible=customer_visible,
@@ -117,6 +119,7 @@ def _write_run(
     score: Score,
     *,
     base_runs: Path | None = None,
+    has_perturbations: bool = False,
 ) -> Path:
     """Write a trace JSON + sidecar score JSON into the runs/ layout.
 
@@ -130,19 +133,13 @@ def _write_run(
     save_trace(trace, p)
     # Write score sidecar
     score_path = p.with_suffix(".score.json")
+    payload = score_to_dict(score)
+    payload["scenario"] = {
+        "gate_layers": ["outcome"],
+        "has_perturbations": has_perturbations,
+    }
     score_path.write_text(
-        json.dumps({
-            "outcome": {"passed": score.outcome.passed, "detail": score.outcome.detail},
-            "trajectory": {"passed": score.trajectory.passed, "detail": score.trajectory.detail},
-            "constraint": {"passed": score.constraint.passed, "detail": score.constraint.detail},
-            "robustness": {"passed": score.robustness.passed, "detail": score.robustness.detail},
-            "failure_cost": {
-                "severity": score.failure_cost.severity,
-                "customer_visible": score.failure_cost.customer_visible,
-                "reversible": score.failure_cost.reversible,
-                "side_effect_performed": score.failure_cost.side_effect_performed,
-            },
-        }, indent=2),
+        json.dumps(payload, indent=2),
         encoding="utf-8",
     )
     return p
@@ -361,7 +358,7 @@ class TestHTMLHeader:
         # Some form of pass rate / percent
         assert "pass" in content.lower() or "%" in content
 
-    def test_header_mentions_four_layers(self, tmp_path: Path):
+    def test_header_mentions_behavior_integrity_and_robustness(self, tmp_path: Path):
         """Header or summary must mention the four scoring layers."""
         content = self._gen_html(tmp_path)
         lower = content.lower()
@@ -411,7 +408,7 @@ class TestHTMLScenarioMatrix:
         assert "tool_call_count" in cell
         assert isinstance(cell["tool_call_count"], int)
 
-    def test_cell_has_four_layer_breakdown(self, tmp_path: Path):
+    def test_cell_has_behavior_and_integrity_breakdown(self, tmp_path: Path):
         """Each cell must carry per-layer pass/fail info."""
         data = self._gen_data(tmp_path)
         sc = next(s for s in data["scenarios"] if s["scenario_id"] == "sc_alpha")
@@ -421,7 +418,7 @@ class TestHTMLScenarioMatrix:
         assert "outcome" in layers
         assert "trajectory" in layers
         assert "constraint" in layers
-        assert "robustness" in layers
+        assert "integrity" in layers
 
     def test_cell_known_pass(self, tmp_path: Path):
         """sc_alpha/baseline is PASS in our fixture."""
@@ -463,6 +460,8 @@ class TestHTMLScenarioMatrix:
         fc = cell["failure_cost"]
         assert "severity" in fc
         assert fc["severity"] in ("low", "medium", "high", "critical")
+        assert isinstance(fc["risk_weight"], int)
+        assert "failure_risk" in cell
 
 
 # ─── 5. HTML — failure_cost annotations ──────────────────────────────────────
@@ -650,6 +649,30 @@ class TestDiffView:
             assert "direction" in item  # "regression" | "improvement"
             assert "verdict_a" in item
             assert "verdict_b" in item
+            assert "risk_a" in item
+            assert "risk_b" in item
+            assert "risk_delta" in item
+
+    def test_regressions_are_ranked_by_operational_risk(self, tmp_path: Path) -> None:
+        runs_dir = tmp_path / "runs"
+        for scenario_id, severity in (("low_risk", "low"), ("critical_risk", "critical")):
+            _write_run(
+                tmp_path,
+                _make_trace(scenario_id=scenario_id, variant_id="baseline"),
+                _make_score(outcome_pass=True, severity=severity),
+                base_runs=runs_dir,
+            )
+            _write_run(
+                tmp_path,
+                _make_trace(scenario_id=scenario_id, variant_id="candidate"),
+                _make_score(outcome_pass=False, severity=severity),
+                base_runs=runs_dir,
+            )
+
+        diff = self._get_diff(tmp_path, runs_dir, "baseline", "candidate")
+
+        assert [item["scenario_id"] for item in diff] == ["critical_risk", "low_risk"]
+        assert diff[0]["risk_delta"] > diff[1]["risk_delta"]
 
     def test_diff_json_island_present_in_html(self, tmp_path: Path):
         """The HTML must contain enough JS data to drive the diff view client-side."""
@@ -709,7 +732,7 @@ class TestMarkdownFormat:
         )
         assert has_verdicts
 
-    def test_markdown_four_layer_scores(self, tmp_path: Path):
+    def test_markdown_score_breakdown(self, tmp_path: Path):
         """Markdown summary must show 4-layer pass rates (outcome/trajectory/etc)."""
         md = self._gen_md(tmp_path)
         lower = md.lower()
@@ -856,7 +879,7 @@ class TestDrillDown:
         data = self._gen_data(tmp_path)
         sc = next(s for s in data["scenarios"] if s["scenario_id"] == "sc_alpha")
         cell = sc["cells"]["baseline"]
-        for layer in ("outcome", "trajectory", "constraint", "robustness"):
+        for layer in ("outcome", "trajectory", "constraint", "integrity"):
             assert layer in cell["layers"]
             assert "passed" in cell["layers"][layer]
             assert "detail" in cell["layers"][layer]
@@ -951,6 +974,110 @@ class TestLoadRuns:
         report = _import_report()
         cells = report.load_runs(runs_dir=runs_dir)
         assert cells == {}
+
+    @pytest.mark.parametrize("artifact", ["trace", "score"])
+    def test_load_runs_rejects_unknown_future_artifact_versions(
+        self, tmp_path: Path, artifact: str
+    ) -> None:
+        trace = _make_trace(scenario_id="future", variant_id="candidate")
+        trace_path = _write_run(tmp_path, trace, _make_score())
+        path = trace_path if artifact == "trace" else trace_path.with_suffix(".score.json")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload[f"windtunnel_{artifact}"] = 999
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        report = _import_report()
+        assert report.load_runs(tmp_path / "runs") == {}
+
+    def test_robustness_is_gate_performance_for_valid_perturbation_case(
+        self, tmp_path: Path
+    ) -> None:
+        trace = _make_trace(scenario_id="perturbed", variant_id="candidate")
+        _write_run(
+            tmp_path,
+            trace,
+            _make_score(outcome_pass=False),
+            has_perturbations=True,
+        )
+
+        report = _import_report()
+        raw = report.load_runs(tmp_path / "runs")[("perturbed", "candidate")]
+        cell = report._cell_from_run(raw["trace"], raw["score"])
+
+        assert cell["robustness"] == {
+            "applicable": True,
+            "passed": False,
+            "pass_rate": 0.0,
+        }
+
+    def test_invalid_perturbation_case_has_no_robustness_result(self, tmp_path: Path) -> None:
+        trace = _make_trace(scenario_id="invalid", variant_id="candidate")
+        _write_run(
+            tmp_path,
+            trace,
+            _make_score(integrity_pass=False),
+            has_perturbations=True,
+        )
+
+        report = _import_report()
+        raw = report.load_runs(tmp_path / "runs")[("invalid", "candidate")]
+        cell = report._cell_from_run(raw["trace"], raw["score"])
+
+        assert cell["verdict"] == "INVALID"
+        assert cell["robustness"]["pass_rate"] is None
+
+    def test_aggregate_with_any_invalid_run_has_no_robustness_result(
+        self, tmp_path: Path
+    ) -> None:
+        trace = _make_trace(scenario_id="partly_invalid", variant_id="candidate")
+        _write_run(tmp_path, trace, _make_score(), has_perturbations=True)
+        ledger = {
+            "windtunnel_ledger": 1,
+            "scenario_id": "partly_invalid",
+            "label": "candidate",
+            "verdict": "INVALID",
+            "pass_rate": 0.5,
+            "layer_pass_rates": {
+                "outcome": 1.0,
+                "trajectory": 1.0,
+                "constraint": 1.0,
+                "integrity": 0.5,
+            },
+            "run_ids": [trace.run_id],
+            "failure_risk": 0.0,
+        }
+        (tmp_path / "runs" / "ledger.ndjsonl").write_text(
+            json.dumps(ledger) + "\n", encoding="utf-8"
+        )
+
+        report = _import_report()
+        raw = report.load_runs(tmp_path / "runs")[("partly_invalid", "candidate")]
+        cell = report._cell_from_run(raw["trace"], raw["score"])
+
+        assert cell["verdict"] == "INVALID"
+        assert cell["robustness"]["pass_rate"] is None
+
+    def test_unknown_future_ledger_version_is_ignored(self, tmp_path: Path) -> None:
+        trace = _make_trace(scenario_id="future_ledger", variant_id="candidate")
+        _write_run(tmp_path, trace, _make_score())
+        ledger = {
+            "windtunnel_ledger": 999,
+            "scenario_id": "future_ledger",
+            "label": "candidate",
+            "verdict": "FAIL",
+            "pass_rate": 0.0,
+            "layer_pass_rates": {"outcome": 0.0},
+            "run_ids": [trace.run_id],
+        }
+        (tmp_path / "runs" / "ledger.ndjsonl").write_text(
+            json.dumps(ledger) + "\n", encoding="utf-8"
+        )
+
+        report = _import_report()
+        raw = report.load_runs(tmp_path / "runs")[("future_ledger", "candidate")]
+        cell = report._cell_from_run(raw["trace"], raw["score"])
+
+        assert cell["verdict"] == "PASS"
 
     def test_ledger_aggregate_overrides_latest_run_verdict(self, tmp_path: Path) -> None:
         """Regression: a failed 1/2 batch must not look green merely because

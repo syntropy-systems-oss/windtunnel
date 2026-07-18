@@ -14,6 +14,8 @@ def _counts_as_gate_failure(completed: _CompletedAggregate) -> bool:
     """Return the same per-scenario gate decision as the run loop."""
     if completed.had_runner_error:
         return True
+    if completed.result.aggregate.verdict == "INVALID":
+        return True
     if completed.transport_only:
         return False
     return completed.result.aggregate.verdict == "FAIL"
@@ -99,7 +101,7 @@ def _junit_failure_message(completed: _CompletedAggregate, categories: list[str]
     """Return a compact failure summary for the JUnit failure attribute."""
     aggregate = completed.result.aggregate
     category = f" triage={', '.join(categories)}" if categories else ""
-    return f"{aggregate.verdict}: {aggregate.passed}/{aggregate.total} outcome pass{category}"
+    return f"{aggregate.verdict}: {aggregate.passed}/{aggregate.total} gate pass{category}"
 
 
 def _junit_failure_text(completed: _CompletedAggregate, categories: list[str]) -> str:
@@ -112,14 +114,16 @@ def _junit_failure_text(completed: _CompletedAggregate, categories: list[str]) -
         f"outcome_pass_rate: {aggregate.outcome_pass_rate}",
         f"trajectory_pass_rate: {aggregate.trajectory_pass_rate}",
         f"constraint_pass_rate: {aggregate.constraint_pass_rate}",
-        f"robustness_pass_rate: {aggregate.robustness_pass_rate}",
+        f"integrity_pass_rate: {aggregate.integrity_pass_rate}",
+        f"gate_layers: {', '.join(aggregate.gate_layers)}",
+        f"failure_risk: {aggregate.failure_risk}",
     ]
     if categories:
         lines.append(f"triage_category: {', '.join(categories)}")
 
     for index, run_result in enumerate(completed.result.runs, start=1):
         lines.append(f"run {index}: {getattr(run_result.trace, 'run_id', '')}")
-        for layer_name in ("outcome", "trajectory", "constraint", "robustness"):
+        for layer_name in ("outcome", "trajectory", "constraint", "integrity"):
             layer = getattr(run_result.score, layer_name)
             status = "PASS" if layer.passed else "FAIL"
             lines.append(f"  {layer_name}: {status} - {layer.detail}")
@@ -144,7 +148,9 @@ def _triage_categories(completed: _CompletedAggregate) -> list[str]:
     classifier = RuleBasedClassifier()
     categories: list[str] = []
     for run_result in completed.result.runs:
-        if run_result.score.outcome.passed:
+        if not run_result.score.integrity.passed:
+            continue
+        if run_result.score.gate_passed(completed.scenario.resolved_gate_layers()):
             continue
         try:
             classification = classifier.classify(

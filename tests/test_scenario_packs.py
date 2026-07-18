@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from windtunnel.api.pack import ScenarioPack
+from windtunnel.api.preconditions import StateProbeAvailable
 from windtunnel.api.scenario import Policy, Scenario
 
 # Canonical bench order — pins the pre-pack _load_scenarios flattening order
@@ -53,6 +54,23 @@ EXTERNAL_PACK = ScenarioPack(
             prompt="say ok",
             target_facts=[["ok"]],
             tags=["dim:acme_custom"],
+        )
+    ],
+)
+
+TAGLESS_PACK = ScenarioPack(
+    name="tagless_external",
+    scenarios=[Scenario(name="tagless_scenario", prompt="say ok", target_facts=[["ok"]])],
+)
+
+STALE_DIMENSION_PACK = ScenarioPack(
+    name="renamed_dimension",
+    scenarios=[
+        Scenario(
+            name="stale_dimension_scenario",
+            prompt="say ok",
+            target_facts=[["ok"]],
+            tags=["dim:old_dimension_name"],
         )
     ],
 )
@@ -137,12 +155,26 @@ PROBE_PACK = ScenarioPack(
             prompt="say ok",
             target_facts=[["ok"]],
             tags=["dim:probe_dim"],
+            preconditions=[StateProbeAvailable()],
             policies=[
                 Policy(
                     name="world_flag_set",
                     predicate=lambda t: t.observations["world"]["flag"] is True,
                 )
             ],
+        )
+    ],
+)
+
+MISSING_PROBE_PACK = ScenarioPack(
+    name="missing_probe_dim",
+    scenarios=[
+        Scenario(
+            name="missing_probe_scenario",
+            prompt="say ok",
+            target_facts=[["ok"]],
+            tags=["dim:missing_probe_dim"],
+            preconditions=[StateProbeAvailable()],
         )
     ],
 )
@@ -300,6 +332,31 @@ class TestEntryPointPackDiscovery:
         packs = _discover_scenario_packs()
         assert packs[-1].name == "acme_factory_built"
 
+    def test_tagless_external_pack_remains_valid(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_scenario_pack_eps(monkeypatch, ["TAGLESS_PACK"])
+        from windtunnel.cli import _discover_scenario_packs
+
+        packs = _discover_scenario_packs()
+
+        assert packs[-1] is TAGLESS_PACK
+
+    def test_stale_dimension_tag_fails_pack_discovery(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        _patch_scenario_pack_eps(monkeypatch, ["STALE_DIMENSION_PACK"])
+        from windtunnel.cli import _discover_scenario_packs
+
+        with pytest.raises(SystemExit) as excinfo:
+            _discover_scenario_packs()
+
+        assert excinfo.value.code == 2
+        error = capsys.readouterr().err
+        assert "stale_dimension_scenario" in error
+        assert "dim:old_dimension_name" in error
+        assert "dim:renamed_dimension" in error
+
     def test_non_pack_target_exits_2(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
@@ -414,6 +471,7 @@ class TestRunLedger:
 
         origin_record = by_scenario["ledger_origin"]
         assert set(origin_record) == {
+            "windtunnel_ledger",
             "ts",
             "scenario_id",
             "pack",
@@ -422,8 +480,15 @@ class TestRunLedger:
             "model",
             "quant",
             "verdict",
+            "gate_layers",
             "runs",
+            "passed",
+            "pass_rate",
+            "stddev",
             "layer_pass_rates",
+            "robustness_pass_rate",
+            "failure_cost",
+            "failure_risk",
             "run_ids",
             "origin",
             "git_sha",
@@ -435,13 +500,16 @@ class TestRunLedger:
         assert origin_record["model"] == "unknown"
         assert origin_record["quant"] == "unknown"
         assert origin_record["verdict"] == "PASS"
+        assert origin_record["gate_layers"] == ["outcome"]
         assert origin_record["runs"] == 1
         assert origin_record["layer_pass_rates"] == {
             "outcome": 1.0,
             "trajectory": 1.0,
             "constraint": 1.0,
-            "robustness": 1.0,
+            "integrity": 1.0,
         }
+        assert origin_record["failure_cost"]["risk_weight"] == 1
+        assert origin_record["failure_risk"] == 0.0
         assert len(origin_record["run_ids"]) == 1
         assert origin_record["origin"] == "incident-2026-06-30-412"
         assert origin_record["git_sha"] == "abc1234"
@@ -486,6 +554,29 @@ class TestStateProbeFactoryFlowsToRunLoop:
 
     def test_field_defaults_to_none(self) -> None:
         assert ScenarioPack(name="bare").state_probe_factory is None
+
+    def test_missing_required_probe_is_world_error_not_agent_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        _patch_scenario_pack_eps(monkeypatch, ["MISSING_PROBE_PACK"])
+        from windtunnel.cli import main
+
+        runs_dir = tmp_path / "runs"
+        rc = main([
+            "run",
+            "--runtime", "in_memory",
+            "--scenario", "missing_probe_scenario",
+            "--runs-dir", str(runs_dir),
+        ])
+
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "WORLD" in captured.out
+        assert "no state probe was wired" in captured.err
+        assert not list(runs_dir.rglob("*.json"))
 
     def test_pre_run_wired_probe_reaches_policy_and_saved_trace(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

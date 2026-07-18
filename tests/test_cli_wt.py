@@ -67,6 +67,7 @@ def _trace(
     scenario_id: str,
     *,
     run_id: str = "run-1",
+    variant_id: str = "candidate",
     seconds: float = 0.25,
     model: str = "model-x",
     quant: str = "q4",
@@ -79,7 +80,7 @@ def _trace(
     return Trace(
         scenario_id=scenario_id,
         agent_id="agent-x",
-        variant_id="candidate",
+        variant_id=variant_id,
         model=model,
         quant=quant,
         sampler={},
@@ -99,6 +100,7 @@ def _result(
     scenario,
     *,
     passed: bool,
+    integrity_passed: bool = True,
     run_id: str = "run-1",
     detail: str | None = None,
 ):
@@ -112,11 +114,15 @@ def _result(
         outcome=LayerResult(passed=passed, detail=outcome_detail),
         trajectory=LayerResult(passed=True, detail="trajectory ok"),
         constraint=LayerResult(passed=True, detail="constraint ok"),
-        robustness=LayerResult(passed=True, detail="robustness ok"),
+        integrity=LayerResult(passed=integrity_passed, detail="integrity ok"),
     )
     run = ScenarioRunResult(score=score, trace=_trace(scenario.name, run_id=run_id))
     return ScenarioResult(
-        aggregate=aggregate_runs([run], variance_allowed=getattr(scenario, "variance_allowed", False)),
+        aggregate=aggregate_runs(
+            [run],
+            variance_allowed=getattr(scenario, "variance_allowed", False),
+            gate_layers=scenario.resolved_gate_layers(),
+        ),
         runs=[run],
     )
 
@@ -131,7 +137,11 @@ def _patch_cli_run(
     import windtunnel.cli as cli
 
     monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: packs)
-    monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path: object())
+    monkeypatch.setattr(
+        cli,
+        "_build_runtime",
+        lambda runtime_name, label, soul_path, **_kwargs: object(),
+    )
     monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda runtime_name: object())
 
     def fake_run_scenario(scenario, runtime, *args, **kwargs):
@@ -245,10 +255,63 @@ class TestWtReport:
 
 
 class TestWtCompare:
+    @staticmethod
+    def _write_result(runs_dir: Path, scenario_id: str, label: str, passed: bool) -> None:
+        from windtunnel.api.score import LayerResult, Score, score_to_dict
+        from windtunnel.api.trace import save_trace, storage_path
+
+        trace = _trace(scenario_id, run_id=f"{scenario_id}-{label}", variant_id=label)
+        trace_path = storage_path(trace, base_dir=runs_dir)
+        save_trace(trace, trace_path)
+        layer = LayerResult(passed=passed, detail="fixture")
+        score = Score(
+            outcome=layer,
+            trajectory=LayerResult(passed=True, detail="fixture"),
+            constraint=LayerResult(passed=True, detail="fixture"),
+            robustness=LayerResult(passed=True, detail="fixture"),
+        )
+        trace_path.with_suffix(".score.json").write_text(
+            json.dumps(score_to_dict(score)),
+            encoding="utf-8",
+        )
+
     def test_compare_without_labels_shows_help_or_error(self) -> None:
         result = _wt("compare")
         # Should print usage or error (not crash with traceback)
         assert result.returncode != 0 or "label" in (result.stdout + result.stderr).lower()
+
+    def test_fixed_baseline_failure_is_not_a_regression(self, tmp_path: Path) -> None:
+        runs_dir = tmp_path / "runs"
+        self._write_result(runs_dir, "recovered", "baseline", False)
+        self._write_result(runs_dir, "recovered", "candidate", True)
+
+        result = _wt(
+            "compare", "--labels", "baseline", "candidate", "--runs", str(runs_dir)
+        )
+
+        assert result.returncode == 0
+
+    def test_candidate_regression_exits_nonzero(self, tmp_path: Path) -> None:
+        runs_dir = tmp_path / "runs"
+        self._write_result(runs_dir, "regressed", "baseline", True)
+        self._write_result(runs_dir, "regressed", "candidate", False)
+
+        result = _wt(
+            "compare", "--labels", "baseline", "candidate", "--runs", str(runs_dir)
+        )
+
+        assert result.returncode == 1
+
+    def test_unchanged_failure_is_not_a_regression(self, tmp_path: Path) -> None:
+        runs_dir = tmp_path / "runs"
+        self._write_result(runs_dir, "known_failure", "baseline", False)
+        self._write_result(runs_dir, "known_failure", "candidate", False)
+
+        result = _wt(
+            "compare", "--labels", "baseline", "candidate", "--runs", str(runs_dir)
+        )
+
+        assert result.returncode == 0
 
 
 class TestWtRun:
@@ -268,6 +331,114 @@ class TestWtRun:
         # Without args it may print usage or exit non-zero — both acceptable
         # as long as it doesn't crash with an unhandled exception
         assert "traceback" not in result.stderr.lower() or result.returncode != 0
+
+    def test_runs_must_be_positive(self) -> None:
+        result = _wt("run", "--runs", "0")
+        assert result.returncode == 2
+        assert "at least 1" in result.stderr
+
+    def test_build_and_pre_run_share_one_plugin_instance(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        import windtunnel.api.runner as runner
+        import windtunnel.cli as cli
+
+        scenario = _scenario("plugin_lifecycle")
+        instances: list[object] = []
+
+        class StatefulPlugin:
+            def __init__(self) -> None:
+                self.runtime = None
+                instances.append(self)
+
+            def build(self, runtime_name: str, label: str, soul_path: str | None):
+                self.runtime = object()
+                return self.runtime
+
+            def pre_run(self, runtime, scenarios, runtime_name: str) -> None:
+                assert runtime is self.runtime
+
+        monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda _name: StatefulPlugin())
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [_pack("local", [scenario])])
+        monkeypatch.setattr(
+            runner,
+            "run_scenario",
+            lambda selected, runtime, *args, **kwargs: _result(selected, passed=True),
+        )
+
+        rc = cli.main([
+            "run",
+            "--runtime", "stateful",
+            "--scenario", scenario.name,
+            "--runs-dir", str(tmp_path / "runs"),
+        ])
+
+        assert rc == 0
+        assert len(instances) == 1
+
+    def test_operational_wiring_comes_from_owning_pack_not_dimension_tags(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        import windtunnel.api.runner as runner
+        import windtunnel.cli as cli
+        from windtunnel.api.pack import ScenarioPack
+
+        scenario = _scenario(
+            "direct_pack_wiring",
+            tags=["dim:decoy_pack", "dim:owning_pack"],
+        )
+        decoy_mcp = object()
+        owning_mcp = object()
+        decoy_probe = object()
+        owning_probe = object()
+        decoy_pack = ScenarioPack(
+            name="decoy_pack",
+            mcp_factory=lambda _scenario: decoy_mcp,
+            state_probe_factory=lambda _scenario: decoy_probe,
+            transport_only=True,
+        )
+        owning_pack = ScenarioPack(
+            name="owning_pack",
+            scenarios=[scenario],
+            mcp_factory=lambda _scenario: owning_mcp,
+            state_probe_factory=lambda _scenario: owning_probe,
+            transport_only=False,
+        )
+
+        class Runtime:
+            accepts_runner_managed_mcps = True
+
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [decoy_pack, owning_pack])
+        monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda _name: object())
+        monkeypatch.setattr(
+            cli,
+            "_build_runtime",
+            lambda runtime_name, label, soul_path, **_kwargs: Runtime(),
+        )
+
+        def fake_run_scenario(selected, runtime, *args, **kwargs):
+            captured["mcps"] = kwargs["mcps"]
+            captured["state_probe"] = kwargs["state_probe"]
+            return _result(selected, passed=False)
+
+        monkeypatch.setattr(runner, "run_scenario", fake_run_scenario)
+
+        rc = cli.main([
+            "run",
+            "--runtime", "fake",
+            "--scenario", scenario.name,
+            "--runs-dir", str(tmp_path / "runs"),
+        ])
+
+        assert captured == {"mcps": [owning_mcp], "state_probe": owning_probe}
+        assert rc == 1
+        assert "transport-only" not in capsys.readouterr().out
 
 
 class TestWtRunSelection:
@@ -399,6 +570,7 @@ class TestWtRunCiOutput:
         assert len(records) == 1
         record = records[0]
         assert list(record) == [
+            "windtunnel_ledger",
             "ts",
             "scenario_id",
             "pack",
@@ -407,8 +579,15 @@ class TestWtRunCiOutput:
             "model",
             "quant",
             "verdict",
+            "gate_layers",
             "runs",
+            "passed",
+            "pass_rate",
+            "stddev",
             "layer_pass_rates",
+            "robustness_pass_rate",
+            "failure_cost",
+            "failure_risk",
             "run_ids",
             "origin",
             "git_sha",
@@ -421,17 +600,42 @@ class TestWtRunCiOutput:
         assert record["model"] == "model-x"
         assert record["quant"] == "q4"
         assert record["verdict"] == "PASS"
+        assert record["gate_layers"] == ["outcome"]
         assert record["runs"] == 1
         assert record["layer_pass_rates"] == {
             "outcome": 1.0,
             "trajectory": 1.0,
             "constraint": 1.0,
-            "robustness": 1.0,
+            "integrity": 1.0,
         }
+        assert record["robustness_pass_rate"] is None
+        assert record["failure_cost"]["risk_weight"] == 1
+        assert record["failure_risk"] == 0.0
         assert record["run_ids"] == ["run-1"]
         assert record["origin"] == "incident-42"
         assert record["git_sha"] == "abc1234"
         assert record["wt_version"] == "0.3.0"
+
+    def test_invalid_perturbation_run_has_no_robustness_rate(self) -> None:
+        from windtunnel._cli.storage import _ledger_record
+
+        scenario = _scenario("invalid_perturbation")
+        scenario.perturbations = [object()]  # type: ignore[list-item]
+        pack = _pack("recovery", [scenario])
+        result = _result(scenario, passed=True, integrity_passed=False)
+
+        record = _ledger_record(
+            scenario=scenario,
+            pack=pack,
+            result=result,
+            label="candidate",
+            git_sha=None,
+            wt_version="0.9.0",
+        )
+
+        assert record["verdict"] == "INVALID"
+        assert record["robustness_pass_rate"] is None
+        assert record["failure_risk"] == 0.0
 
     def test_junit_has_suite_per_pack_case_per_aggregate_and_escaped_failure_details(
         self,
@@ -620,7 +824,11 @@ class TestWtRunCiOutput:
         scenario = _scenario("needs_world", tags=["dim:custom"])
         pack = _pack("custom", [scenario])
         monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [pack])
-        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path: object())
+        monkeypatch.setattr(
+            cli,
+            "_build_runtime",
+            lambda runtime_name, label, soul_path, **_kwargs: object(),
+        )
         monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda runtime_name: object())
 
         def fail_world(*_args, **_kwargs):
@@ -640,110 +848,6 @@ class TestWtRunCiOutput:
         assert "needs_world" in combined
         assert "missing" in combined
         assert "Traceback" not in combined
-
-
-class TestWtRunStateProbeWiring:
-    """`wt run` must wire a pack's state_probe_factory whenever it exists —
-    a scenario author should not have to remember a separate activating tag
-    on top of writing the factory itself, or probing (and therefore any
-    Policy that reads trace.observations) silently degrades to no external-
-    state evidence at all, with no warning that anything was skipped."""
-
-    def test_probe_is_wired_even_without_the_pack_name_tag(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        import windtunnel.api.runner as runner
-        import windtunnel.cli as cli
-
-        class _FakeProbe:
-            def reset(self) -> None:
-                pass
-
-            def capture(self) -> dict:
-                return {"observed": True}
-
-        probe = _FakeProbe()
-        # Deliberately NO "dim:custom" tag on this scenario — the exact shape
-        # of the regression: a pack author writes a real state_probe_factory
-        # but the scenario carries no activating tag.
-        scenario = _scenario("untagged_but_probed", tags=["tier:smoke"])
-        pack = _pack("custom", [scenario])
-        pack.state_probe_factory = lambda s: probe if s.name == scenario.name else None
-
-        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [pack])
-        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path: object())
-        monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda runtime_name: object())
-
-        captured_kwargs: dict[str, object] = {}
-
-        def fake_run_scenario(scenario_arg, runtime_arg, *args, **kwargs):
-            captured_kwargs.update(kwargs)
-            return _result(scenario_arg, passed=True)
-
-        monkeypatch.setattr(runner, "run_scenario", fake_run_scenario)
-
-        rc = cli.main([
-            "run",
-            "--scenario", scenario.name,
-            "--runtime", "some_plugin_runtime",
-            "--runs-dir", str(tmp_path / "runs"),
-        ])
-
-        assert rc == 0
-        assert captured_kwargs.get("state_probe") is probe
-
-    def test_probe_from_a_different_pack_is_not_wired(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        """A pack whose factory legitimately returns None for a scenario it
-        does not own must not have some OTHER pack's probe attached either —
-        removing the tag gate must not turn into "wire the first probe found
-        no matter which pack it belongs to."."""
-        import windtunnel.api.runner as runner
-        import windtunnel.cli as cli
-
-        class _FakeProbe:
-            def reset(self) -> None:
-                pass
-
-            def capture(self) -> dict:
-                return {"observed": True}
-
-        owning_probe = _FakeProbe()
-        scenario = _scenario("owned_by_second_pack", tags=[])
-        unrelated_pack = _pack("unrelated", [])
-        unrelated_pack.state_probe_factory = lambda s: None  # never owns anything
-
-        owning_pack = _pack("owning", [scenario])
-        owning_pack.state_probe_factory = (
-            lambda s: owning_probe if s.name == scenario.name else None
-        )
-
-        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [unrelated_pack, owning_pack])
-        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path: object())
-        monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda runtime_name: object())
-
-        captured_kwargs: dict[str, object] = {}
-
-        def fake_run_scenario(scenario_arg, runtime_arg, *args, **kwargs):
-            captured_kwargs.update(kwargs)
-            return _result(scenario_arg, passed=True)
-
-        monkeypatch.setattr(runner, "run_scenario", fake_run_scenario)
-
-        rc = cli.main([
-            "run",
-            "--scenario", scenario.name,
-            "--runtime", "some_plugin_runtime",
-            "--runs-dir", str(tmp_path / "runs"),
-        ])
-
-        assert rc == 0
-        assert captured_kwargs.get("state_probe") is owning_probe
 
 
 class TestWtRunPostRunHook:
@@ -778,7 +882,7 @@ class TestWtRunPostRunHook:
         plugin, calls = self._plugin_with_post_run()
 
         monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [pack])
-        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path: object())
+        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path, **_kwargs: object())
         monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda runtime_name: plugin)
         monkeypatch.setattr(
             runner, "run_scenario", lambda s, r, *a, **k: _result(s, passed=True)
@@ -808,7 +912,7 @@ class TestWtRunPostRunHook:
         plugin, calls = self._plugin_with_post_run()
 
         monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [pack])
-        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path: object())
+        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path, **_kwargs: object())
         monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda runtime_name: plugin)
 
         def always_raise(*_args: object, **_kwargs: object) -> None:
@@ -840,7 +944,7 @@ class TestWtRunPostRunHook:
         plugin, calls = self._plugin_with_post_run()
 
         monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [pack])
-        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path: object())
+        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path, **_kwargs: object())
         monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda runtime_name: plugin)
         monkeypatch.setattr(
             runner, "run_scenario", lambda s, r, *a, **k: _result(s, passed=True)
@@ -877,7 +981,7 @@ class TestWtRunPostRunHook:
                 return object()
 
         monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [pack])
-        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path: object())
+        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path, **_kwargs: object())
         monkeypatch.setattr(
             cli, "_resolve_runtime_plugin", lambda runtime_name: _PluginWithoutPostRun()
         )
@@ -939,7 +1043,7 @@ class TestWtRescore:
         out = capsys.readouterr().out
         assert rc == 1
         assert "outcome PASS -> FAIL" in out
-        assert "summary: traces=1 changed=1 new_outcome_failures=1" in out
+        assert "summary: traces=1 changed=1 new_gate_failures=1 invalid=0" in out
 
     def test_rescore_write_updates_sidecar_with_origin_marker(
         self,
@@ -1031,17 +1135,20 @@ class TestWtRunScoreSidecar:
         data = json.loads(sidecars[0].read_text(encoding="utf-8"))
 
         # Flat shape — report.load_runs/_cell_from_run consumers
-        for layer in ("outcome", "trajectory", "constraint", "robustness"):
+        assert data["windtunnel_score"] == 2
+        for layer in ("outcome", "trajectory", "constraint", "integrity"):
             assert "passed" in data[layer], f"flat {layer} missing 'passed'"
             assert "detail" in data[layer], f"flat {layer} missing 'detail'"
         assert "failure_cost" in data
         assert "severity" in data["failure_cost"]
 
         # Nested shape — wt triage consumer
-        for layer in ("outcome", "trajectory", "constraint", "robustness"):
+        for layer in ("outcome", "trajectory", "constraint", "integrity"):
             assert "passed" in data["score"][layer]
         assert data["scenario"]["name"] == "lookup_before_action"
         assert data["scenario"]["requires_tool_use"] is True
+        assert data["scenario"]["gate_layers"] == ["outcome", "trajectory"]
+        assert data["verdict"] == "FAIL"
 
     def test_load_runs_picks_up_run_output_with_verdict(self, tmp_path: Path) -> None:
         """report.load_runs() pairs the trace with its sidecar and the report

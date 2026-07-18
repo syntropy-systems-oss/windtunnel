@@ -59,4 +59,5 @@ nav:
       - "0001: Trace re-seeding": design/0001-trace-reseeding.md
       - "0002: Inject protocol": design/0002-inject-protocol.md
       - "0003: Lifecycle hooks": design/0003-hook-system.md
+      - "0004: Reference self-tests": design/0004-reference-selftest.md
   - Agent quickstart: agent-quickstart.md

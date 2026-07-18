@@ -4,11 +4,12 @@ from __future__ import annotations
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from windtunnel.api import Scenario, run_reset_canary, run_scenario
+from windtunnel.api import Scenario, ScenarioPack, run_reset_canary, run_scenario
 from windtunnel.runtimes.http_inject import HttpInjectRuntime
 from windtunnel.spi.agent_runtime import AgentConfig
 
@@ -328,6 +329,56 @@ def test_reset_canary_composes_with_http_inject(endpoint: _FakeEndpoint) -> None
 
     assert result.passed
     assert not result.leaked
+
+
+def test_cli_uses_contract_c_tool_evidence_without_starting_pack_mcp(
+    endpoint: _FakeEndpoint,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Contract C owns its tools; an unused local mock must not shadow them."""
+    import windtunnel.cli as cli
+
+    endpoint.add_reset({"wt_inject": 1})
+    endpoint.add_inject({
+        "wt_inject": 1,
+        "reply": "Bluewing Logistics ordered pallet 4417.",
+        "tool_calls": [
+            {"name": "client_lookup", "arguments": {"query": "pallet 4417"}},
+        ],
+    })
+    scenario = Scenario(
+        name="contract_c_cli_tool_evidence",
+        prompt="Who ordered pallet 4417?",
+        target_facts=[["Bluewing Logistics"]],
+        requires_tool_use=True,
+        must_call=["client_lookup"],
+        tags=["dim:contract_c_cli"],
+    )
+    factory_calls = 0
+
+    def forbidden_factory(_scenario):
+        nonlocal factory_calls
+        factory_calls += 1
+        raise AssertionError("http_inject must not construct a runner-managed MCP")
+
+    pack = ScenarioPack(
+        name="contract_c_cli",
+        scenarios=[scenario],
+        mcp_factory=forbidden_factory,
+    )
+    monkeypatch.setenv("WT_INJECT_URL", endpoint.url)
+    monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [pack])
+
+    rc = cli.main([
+        "run",
+        "--runtime", "http_inject",
+        "--scenario", scenario.name,
+        "--runs-dir", str(tmp_path / "runs"),
+    ])
+
+    assert rc == 0
+    assert factory_calls == 0
 
 
 # ─── Surface introspection (optional /wt/surface route) ──────────────────────

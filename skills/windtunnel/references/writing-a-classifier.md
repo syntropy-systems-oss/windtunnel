@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/writing-a-classifier.md at 50a92986e336 — do not edit; edit docs/writing-a-classifier.md. -->
+<!-- GENERATED from docs/writing-a-classifier.md at 1fa2ac37ceca — do not edit; edit docs/writing-a-classifier.md. -->
 ---
 description: "Guide to implementing failure classifiers and testing them against Wind Tunnel's taxonomy fixtures."
 ---
@@ -40,7 +40,7 @@ class MyClassifier:
 | `score.outcome.passed` / `.detail` | `Score` | outcome layer; detail contains `no_tools_used` flag |
 | `score.trajectory.passed` / `.detail` | `Score` | trajectory layer |
 | `score.constraint.passed` / `.detail` | `Score` | constraint layer; detail names failed policies |
-| `score.robustness.passed` / `.detail` | `Score` | robustness layer |
+| `score.integrity.passed` / `.detail` | `Score` | whether the declared experiment condition was valid |
 
 ## Output contract
 
@@ -65,9 +65,9 @@ class FailureClassification:
 
 ## LLM-judge status
 
-Wind Tunnel 0.5.0 ships the deterministic `RuleBasedClassifier`. It also ships
-an `LLMJudgeClassifier` class and a `wt triage --classifier llm_judge` parser
-choice as a registration point, but the class raises `NotImplementedError`.
+Wind Tunnel ships the deterministic `RuleBasedClassifier`. It also includes an
+`LLMJudgeClassifier` implementation sketch, but does not advertise that class
+as a CLI choice because it raises `NotImplementedError`.
 
 The sketch below is design guidance for a future implementation or downstream
 fork. It is not runnable as shipped.
@@ -133,10 +133,12 @@ class MyLLMJudgeClassifier:
 
 ## Registering with the CLI
 
-There is no classifier entry-point group in 0.5.0. The shipped CLI supports:
+There is no classifier entry-point group. The shipped CLI supports:
 
 - `rule_based`: implemented.
-- `llm_judge`: reserved, but raises `NotImplementedError` until implemented.
+
+`LLMJudgeClassifier` remains an unregistered implementation sketch until it
+can classify a run successfully.
 
 For an in-repo classifier, add it to the `--classifier` choices and dispatch in
 `windtunnel/cli.py`:
@@ -159,10 +161,11 @@ JSON file with the shape:
     "trace": { ... },
     "scenario": { "name": "...", "prompt": "...", ... },
     "score": {
+        "windtunnel_score": 2,
         "outcome": {"passed": false, "detail": "..."},
         "trajectory": {"passed": true, "detail": "ok"},
         "constraint": {"passed": true, "detail": "ok"},
-        "robustness": {"passed": true, "detail": "ok"}
+        "integrity": {"passed": true, "detail": "ok"}
     }
 }
 ```
@@ -178,6 +181,6 @@ Target: >= 80% agreement on the hand-labeled set.
 ## See also
 
 - `windtunnel/triage/rule_based.py` — the baseline rule-based classifier
-- `windtunnel/triage/llm_judge.py` — the LLM-judge stub with implementation notes
+- `windtunnel/triage/llm_judge.py` — an unregistered LLM-judge implementation sketch
 - [failure-taxonomy.md](failure-taxonomy.md) — category definitions and fix vectors
 - [writing-an-optimizer.md](writing-an-optimizer.md) — how to implement an optimizer

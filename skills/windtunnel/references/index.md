@@ -1,6 +1,6 @@
-<!-- GENERATED from docs/index.md at af7035031d4f — do not edit; edit docs/index.md. -->
+<!-- GENERATED from docs/index.md at f0ae2f953219 — do not edit; edit docs/index.md. -->
 ---
-description: "Overview of Wind Tunnel's four-layer agent reliability bench, import workflow, CLI, and starting points."
+description: "Overview of Wind Tunnel's agent reliability gates, experiment integrity, import workflow, CLI, and starting points."
 ---
 # Wind Tunnel
 
@@ -20,14 +20,18 @@ wt --help
 ## What it does
 
 Conventional evals score the final answer. Wind Tunnel scores the **whole
-flight**, on four independent layers:
+flight** across three behavior layers and separately verifies the experiment:
 
 | Layer | Question |
 |---|---|
 | **outcome** | Was the user-visible answer right? |
 | **trajectory** | Were the right tools called, in the right order, none forbidden? |
 | **constraint** | Did named policy predicates over the trace hold? |
-| **robustness** | Were the declared perturbations actually applied? |
+| **integrity** | Were the declared perturbations actually applied? |
+
+Declared trajectory and constraint expectations join the scenario gate by
+default. Robustness is gate performance under valid perturbations; a failed
+integrity check is `INVALID`, not an agent failure.
 
 And it doesn't take the transcript's word for anything: when a logging mock
 is in play, tool traffic is recorded at the tool server itself, so trajectory
@@ -54,6 +58,7 @@ outcome gate, because a trace proves what happened, not what should pass. See
 | Command | Use it to |
 |---|---|
 | `wt run` | Execute scenarios against `in_memory`, `http_inject`, or a runtime plugin. |
+| `wt selftest` | Certify scenario gates with golden and poison references through a capable runtime. |
 | `wt report` | Render saved runs as HTML, Markdown, or JSON. |
 | `wt compare` | Diff variant labels such as `baseline` and `candidate`. |
 | `wt replay` | Re-run a saved trace's last user turn against a runtime. |
@@ -69,9 +74,11 @@ See the [CLI reference](cli-reference.md) for options and exit codes.
 - **[Getting started](getting-started.md)** — install, first scenario, first report.
 - **[Writing a scenario](writing-a-scenario.md)** — the `Scenario` schema, field by field.
 - **[Writing a runtime](writing-a-runtime.md)** — wire Wind Tunnel to your agent platform (four small methods).
+- **[Reference self-tests](design/0004-reference-selftest.md)** — certify the harness through a live inference-substitution seam.
 - **[Importing a trace](importing-a-trace.md)** — turn a Contract A trace into an authored regression test.
 - **[Recording a universe](recording-a-universe.md)** — serve recorded tool calls as a hermetic mock upstream.
-- **[CLI reference](cli-reference.md)** — all eight `wt` commands in Wind Tunnel 0.5.0.
-- **[Architecture](architecture.md)** — the API/SPI split and the four-layer scoring model.
+- **[CLI reference](cli-reference.md)** — every shipped `wt` command and option.
+- **[Architecture](architecture.md)** — the API/SPI split, gates, integrity, and robustness model.
+- **[Migrating to 0.9](migrating-to-0.9.md)** — intentional scoring and artifact changes.
 - **[Failure taxonomy](failure-taxonomy.md)** — what the triage classifier can tell you.
 - **[Agent quickstart](agent-quickstart.md)** — using a coding agent? Point it at this one page.

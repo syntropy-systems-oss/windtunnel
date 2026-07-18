@@ -10,7 +10,7 @@ deploy it.
 
 ```python
 from windtunnel.api import Scenario, run_scenario
-from windtunnel.mcp.fastmcp.server import LoggingFastMCP, FastMCPServer
+from windtunnel.mcp.fastmcp import FastMCPServer, LoggingFastMCP
 
 crm = LoggingFastMCP("crm")                          # the scenario brings its own tools
 
@@ -45,23 +45,32 @@ fall apart at 0.7. It can handle a clean conversation and break the moment
 one corrupted turn appears in its history.
 
 Conventional evals score the final answer. Wind Tunnel scores the **whole
-flight**, on four independent layers:
+flight** across three independent behavior layers, then separately verifies
+that the experiment itself was valid:
 
 | Layer | Question |
 |---|---|
 | **outcome** | Was the user-visible answer right? |
 | **trajectory** | Were the right tools called, in the right order, none forbidden? |
 | **constraint** | Did named policy predicates over the trace hold? |
-| **robustness** | Were the declared perturbations actually applied? |
+| **integrity** | Were the declared perturbations actually applied? |
 
-The per-run deploy gate is **outcome only** — trajectory, constraint, and
-robustness are recorded on every run and surface as per-layer pass-rates in
-reports, so you can see *how* something passed, not just that it did.
+By default, the deploy gate includes outcome plus every trajectory and
+constraint expectation the scenario declares. An author can set
+`gate_layers` explicitly when a layer is intentionally diagnostic. Integrity
+is never optional: if a declared perturbation did not apply, the run is
+`INVALID`, not an agent pass or failure.
+
+Robustness is the behavior of the agent under adverse conditions. Reports
+therefore calculate robustness from gate performance on scenarios that
+actually declare perturbations; it is no longer a marker-presence score.
 
 A batch of N runs aggregates to a verdict: `PASS` only if **all** N runs
 pass (or `PASS_WITH_VARIANCE` for scenarios that explicitly allow sampler
-variance). Every scenario carries a `FailureCost` (severity, customer-visible,
-reversible) so one critical regression outweighs ten cheap ones.
+variance). Every scenario carries a `FailureCost` annotation. Its stable risk
+weight combines severity, customer visibility, reversibility, and performed
+side effects; reports and comparisons use that weight to rank regressions
+without weakening the fail-closed verdict.
 
 How is this different from Inspect, promptfoo, or a hand-rolled pytest
 harness? The founding bet: **agent reliability bugs live in the seams** —
@@ -104,9 +113,10 @@ Two families, distinguished by *where* the corruption lands:
 - **Environment-shaping** — make the mock tool server misbehave live:
   malformed JSON, timeouts, unexpectedly empty results.
 
-Every perturbation declares a marker, and the robustness layer verifies the
+Every perturbation declares a marker, and the integrity check verifies the
 contract was honoured — a perturbation that silently failed to apply can't
-produce a false pass.
+produce a false pass. Once the condition is known to be valid, that
+scenario's ordinary gate result contributes to the robustness pass rate.
 
 ## Bring your own platform: the API/SPI split
 
@@ -200,6 +210,7 @@ Working on Wind Tunnel itself? See CONTRIBUTING.md for the dev setup
 
 ```bash
 wt run      --scenario lookup_before_action --runtime <your-runtime> --runs 3
+wt selftest --runtime <reference-capable-runtime> --format junit --out selftest.xml
 wt report   --runs runs/ --format html --out report.html
 wt compare  --labels baseline candidate
 wt replay   --trace runs/<trace>.json --runtime in_memory
@@ -210,6 +221,9 @@ wt triage   --runs runs/ --classifier rule_based
 ```
 
 `wt run` can also emit CI artifacts with `--format junit|json --out FILE`.
+`wt selftest` certifies scenario gates with live golden/poison references when
+the runtime implements the optional inference-substitution capability; its
+results do not enter ordinary pass-rate aggregates.
 The built-in runtimes are `in_memory` and `http_inject`; runtime plugins are
 discovered from the `windtunnel.runtimes` entry-point group or a `module:attr`
 dotted path.
@@ -217,10 +231,12 @@ dotted path.
 ## Documentation
 
 - [Getting started](docs/getting-started.md) — install, first scenario, first report
-- [CLI reference](docs/cli-reference.md) — all eight `wt` subcommands in v0.5.0
-- [Architecture](docs/architecture.md) — the two-surface design and the four-layer scoring model
+- [CLI reference](docs/cli-reference.md) — every shipped `wt` command and option
+- [Architecture](docs/architecture.md) — the two-surface design, gates, integrity, and robustness model
+- [Migrating to 0.9](docs/migrating-to-0.9.md) — intentional scoring and artifact changes
 - [Writing a scenario](docs/writing-a-scenario.md) — the `Scenario` schema, field by field
 - [Writing a runtime](docs/writing-a-runtime.md) — implement the SPI for your platform
+- [Reference self-tests](docs/design/0004-reference-selftest.md) — certify gates through a live runtime seam
 - [Importing a trace](docs/importing-a-trace.md) — turn a Contract A trace into a regression skeleton
 - [Recording a universe](docs/recording-a-universe.md) — serve recorded tool calls as a hermetic upstream
 - [Agent quickstart](docs/agent-quickstart.md) — using a coding agent? Point it at this one file to integrate Wind Tunnel into your repo

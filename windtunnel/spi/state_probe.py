@@ -31,9 +31,9 @@ inserted) unless the probe wipes it — the same cross-run contamination
 class reset_call_log() exists for.
 
 Wiring: ScenarioPack.state_probe_factory builds the probe per scenario —
-the CLI calls it, unconditionally, for every pack that defines one, and
-takes the first non-None result; the factory's own return value (not a
-tag) is what decides which scenarios get a probe. run_scenario also
+the CLI reads it directly from the scenario's OWNING pack (no scan over
+other packs, no activating tag required); the factory's own return value
+is what decides whether that scenario gets a probe. run_scenario also
 accepts state_probe= directly for library callers. A probe usually closes
 over a live fixture started elsewhere (e.g. a RuntimePlugin's pre_run
 starting a fake-GitHub server); when the fixture is born in pre_run,

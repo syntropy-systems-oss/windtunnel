@@ -123,9 +123,8 @@ class TestInterchangeValidation:
         with pytest.raises(InterchangeFormatError, match="messages"):
             parse_interchange({"windtunnel_interchange": 1, "session": {"model": "m"}})
 
-    def test_forward_tolerates_unknown_fields_and_newer_version(self) -> None:
+    def test_tolerates_unknown_additive_fields_within_v1(self) -> None:
         data = _envelope()
-        data["windtunnel_interchange"] = 2
         data["future_top_level"] = {"ignored": True}
         data["session"]["future_session_field"] = "kept"
         data["messages"][0]["future_message_field"] = "ignored"
@@ -133,10 +132,16 @@ class TestInterchangeValidation:
 
         trace = parse_interchange(data)
 
-        assert trace.windtunnel_interchange == 2
+        assert trace.windtunnel_interchange == 1
         assert trace.model == "gpt-example-1"
         assert trace.session["future_session_field"] == "kept"
         assert trace.source_ref == "incident-2026-06-30-412"
+
+    def test_rejects_unknown_future_version(self) -> None:
+        data = _envelope()
+        data["windtunnel_interchange"] = 2
+        with pytest.raises(InterchangeFormatError, match="unsupported"):
+            parse_interchange(data)
 
 
 class TestWtImport:

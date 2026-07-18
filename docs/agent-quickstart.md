@@ -68,7 +68,7 @@ if __name__ == "__main__":
         mcps=[FastMCPServer(mcp_instance=mcp)],  # runner starts/stops it
         runs_per_scenario=3,
     )
-    print(result.aggregate.verdict)   # PASS only if ALL runs pass the outcome layer
+    print(result.aggregate.verdict)   # PASS only if ALL runs satisfy the declared gate
 ```
 
 Rules you must not violate when authoring:
@@ -89,14 +89,27 @@ uv run wt run --runtime <your-driver> --runs 5 --label baseline
 uv run wt report --runs runs/ --format html --out report.html
 ```
 
+If scenarios declare golden/poison `reference_cases` and the driver implements
+`ReferenceCapableAgentRuntime`, certify the harness itself:
+
+```bash
+uv run wt selftest --runtime <your-driver> --format junit --out selftest.xml
+```
+
+This substitutes only model decisions; the real loop, tools, fixtures, probes,
+and scoring remain live. The built-in `in_memory` runtime is intentionally
+`UNSUPPORTED`. See
+[reference self-tests](design/0004-reference-selftest.md) before implementing
+the optional runtime seam.
+
 For CI, add `--format junit --out results.xml` to `wt run` (exit codes are
 already `go test`-shaped), and select subsets with `--tag`, `--pack`,
 `--owner`, or globs in `--scenario`. Every sweep appends per-scenario records
 to `runs/ledger.ndjsonl` — the queryable pass-rate history.
 
-`wt run` writes a trace + `.score.json` sidecar per run; `wt compare
---labels baseline candidate` diffs two configurations; `wt triage` classifies
-failures. Note: under `in_memory` (a scripted stub) any
+`wt run` writes a versioned trace + `.score.json` sidecar per run; `wt compare
+--labels baseline candidate` diffs two configurations and ranks regressions by
+failure risk; `wt triage` classifies failures. Note: under `in_memory` (a scripted stub) any
 `requires_tool_use` scenario fails by design — it proves the gate works; real
 verdicts need a real runtime.
 
@@ -142,6 +155,15 @@ class AgentHandle(Protocol):
         """Release everything. Idempotent; must not raise."""
 ```
 
+Optional harness-certification capability:
+
+```python
+class ReferenceCapableAgentRuntime(AgentRuntime, Protocol):
+    def provision_reference(self, config: AgentConfig, case: ReferenceCase,
+                            mcps: list[MCPHandle] | None = None) -> AgentHandle:
+        """Substitute case decisions at inference; keep the agent loop live."""
+```
+
 Register it so `--runtime <name>` resolves, in your driver's `pyproject.toml`:
 
 ```toml
@@ -158,7 +180,12 @@ registered under the `windtunnel.scenario_packs` entry-point group — see
 - Success lives in an artifact or external state, not the prose? Set
   `outcome_fn` and compose it from `windtunnel.api.scorers` (`all_of`,
   `observation`, `llm_judge`, `substantiated_by_tools`) — see
-  [writing-a-scenario.md](writing-a-scenario.md).
+  [writing-a-scenario.md](writing-a-scenario.md). If it reads
+  `trace.observations`, also declare `preconditions=[StateProbeAvailable()]`
+  so missing probe wiring fails as a harness `WORLD` error before the agent
+  runs. The CLI calls `pre_run()` before reading the selected owning pack's
+  `state_probe_factory`; only the probe returned there populates
+  `PreconditionContext.state_probe`.
 - Instead of hand-writing the mock's canned data, a recorded
   `*.universe.json` fixture can serve frozen call/result pairs:
   `RecordedMCPServer("fixture.universe.json")` drops in where

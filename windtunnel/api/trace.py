@@ -27,6 +27,11 @@ from typing import Any
 # Type alias — just str, no special class. Hash values always start with
 # the algorithm prefix so a future migration from sha256 is detectable.
 Hash = str
+TRACE_FORMAT_VERSION = 1
+
+
+class TraceFormatError(ValueError):
+    """Raised when a persisted native trace has an unsupported schema."""
 
 
 def compute_hash(content: str) -> Hash:
@@ -166,6 +171,7 @@ class Trace:
 
     def _to_dict(self) -> dict[str, Any]:
         return {
+            "windtunnel_trace": TRACE_FORMAT_VERSION,
             "run_id": self.run_id,
             "scenario_id": self.scenario_id,
             "agent_id": self.agent_id,
@@ -185,6 +191,14 @@ class Trace:
 
     @classmethod
     def _from_dict(cls, d: dict[str, Any]) -> Trace:
+        version = d.get("windtunnel_trace", 0)
+        if type(version) is not int:
+            raise TraceFormatError("windtunnel_trace must be an integer")
+        if version not in {0, TRACE_FORMAT_VERSION}:
+            raise TraceFormatError(
+                f"unsupported windtunnel_trace version {version}; "
+                f"expected legacy 0 or {TRACE_FORMAT_VERSION}"
+            )
         return cls(
             run_id=d["run_id"],
             scenario_id=d["scenario_id"],
@@ -225,6 +239,8 @@ def load_trace(path: Path) -> Trace:
     """Load a Trace from a JSON file produced by save_trace()."""
     path = Path(path)
     data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise TraceFormatError("trace JSON must contain an object")
     return Trace._from_dict(data)
 
 

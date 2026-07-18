@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/failure-taxonomy.md at 2e8904c29a63 — do not edit; edit docs/failure-taxonomy.md. -->
+<!-- GENERATED from docs/failure-taxonomy.md at abd3a188e7a1 — do not edit; edit docs/failure-taxonomy.md. -->
 ---
 description: "Catalog of Wind Tunnel failure categories, distinguishing signals, and fix vectors for triage."
 ---
@@ -257,9 +257,9 @@ a scenario with no dim tag that the rule-based classifier recognizes.
 is expected for new scenario dimensions that don't yet have a rule.
 
 **Default fix_vector:** None. Hand-label the failure and add a rule, or wire a
-downstream classifier. The `llm_judge` classifier name exists in the CLI as a
-stub registration point in 0.5.0, but the shipped class raises
-`NotImplementedError`.
+downstream classifier. The repository includes an unregistered
+`LLMJudgeClassifier` implementation sketch, but the shipped CLI advertises
+only classifiers that can complete a classification.
 
 ---
 

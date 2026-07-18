@@ -612,6 +612,8 @@ class _HarborSymbols:
 class TerminusRuntime:
     """AgentRuntime backed by Harbor's Terminus-2 terminal agent."""
 
+    accepts_runner_managed_mcps = False
+
     def __init__(self, config: TerminusRuntimeConfig | None = None) -> None:
         self.config = config or TerminusRuntimeConfig.from_env()
         self._harbor = _load_harbor_symbols()
@@ -646,7 +648,7 @@ class TerminusRuntime:
 class _TerminusHandle:
     # Terminus receives one coarse instruction per trial, not an OpenAI message
     # history. Refuse history-shaped perturbations rather than scoring an unseen
-    # counterfactual and marking robustness green.
+    # counterfactual and marking experiment integrity green.
     _windtunnel_consumes_full_history = False
 
     def __init__(

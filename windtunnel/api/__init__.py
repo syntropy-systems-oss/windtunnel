@@ -11,6 +11,7 @@ from windtunnel.api.aggregate import AggregateResult, ScenarioRunResult, aggrega
 from windtunnel.api.canary import CanaryResult, run_reset_canary
 from windtunnel.api.evaluators import (
     evaluate_constraint,
+    evaluate_integrity,
     evaluate_outcome,
     evaluate_robustness,
     evaluate_trajectory,
@@ -18,6 +19,7 @@ from windtunnel.api.evaluators import (
 )
 from windtunnel.api.importer import ImportResult, write_imported_scenario
 from windtunnel.api.interchange import (
+    INTERCHANGE_VERSION,
     InterchangeFormatError,
     InterchangeMessage,
     InterchangePart,
@@ -52,11 +54,12 @@ from windtunnel.api.preconditions import (
     FileExists,
     Precondition,
     PreconditionContext,
+    StateProbeAvailable,
     ToolAvailable,
     WorldMismatchError,
 )
 from windtunnel.api.replay import GenerateFn, replay
-from windtunnel.api.runner import ScenarioResult, run_scenario
+from windtunnel.api.runner import ScenarioResult, run_matrix, run_scenario
 from windtunnel.api.scenario import (
     NumberFact,
     Perturbation,
@@ -65,7 +68,17 @@ from windtunnel.api.scenario import (
     Scenario,
     TrajectoryCheck,
 )
-from windtunnel.api.score import FailureCost, LayerResult, Score, Verdict
+from windtunnel.api.score import (
+    SCORE_FORMAT_VERSION,
+    FailureCost,
+    GateLayer,
+    LayerResult,
+    Score,
+    ScoreFormatError,
+    Verdict,
+    score_from_dict,
+    score_to_dict,
+)
 from windtunnel.api.scorers import (
     all_of,
     any_of,
@@ -74,10 +87,18 @@ from windtunnel.api.scorers import (
     observation,
     substantiated_by_tools,
 )
+from windtunnel.api.selftest import (
+    SelfTestCaseResult,
+    SelfTestVerdict,
+    run_reference_case,
+    selftest_case_to_dict,
+)
 from windtunnel.api.state_reset import StateResetConfig, reset_state_db
 from windtunnel.api.trace import (
+    TRACE_FORMAT_VERSION,
     Hash,
     Trace,
+    TraceFormatError,
     Turn,
     compute_hash,
     load_trace,
@@ -85,6 +106,7 @@ from windtunnel.api.trace import (
     storage_path,
 )
 from windtunnel.api.universe import (
+    UNIVERSE_VERSION,
     SynthesizeHook,
     Universe,
     UniverseFormatError,
@@ -95,26 +117,35 @@ from windtunnel.api.universe import (
     load_universe,
     save_universe,
 )
+from windtunnel.spi.reference import (
+    ReferenceCase,
+    ReferenceDecision,
+    ReferenceKind,
+    ReferenceToolCall,
+)
 
 __all__ = [
     # trace
-    "Hash", "Trace", "Turn", "compute_hash", "load_trace", "save_trace", "storage_path",
+    "TRACE_FORMAT_VERSION", "Hash", "Trace", "TraceFormatError", "Turn", "compute_hash",
+    "load_trace", "save_trace", "storage_path",
     # score
-    "FailureCost", "LayerResult", "Score", "Verdict",
+    "SCORE_FORMAT_VERSION", "FailureCost", "GateLayer", "LayerResult", "Score",
+    "ScoreFormatError", "Verdict", "score_from_dict", "score_to_dict",
     # scenario
     "NumberFact", "Perturbation", "Policy", "PreSendPerturbation", "Scenario",
     "TrajectoryCheck",
+    "ReferenceCase", "ReferenceDecision", "ReferenceKind", "ReferenceToolCall",
     # preconditions
-    "Check", "FileExists", "Precondition", "PreconditionContext", "ToolAvailable",
-    "WorldMismatchError",
+    "Check", "FileExists", "Precondition", "PreconditionContext", "StateProbeAvailable",
+    "ToolAvailable", "WorldMismatchError",
     # scorers
     "all_of", "any_of", "observation", "llm_judge", "substantiated_by_tools",
     "no_divergence",
     # pack
     "ScenarioPack",
     # evaluators
-    "evaluate_outcome", "evaluate_trajectory", "evaluate_constraint", "evaluate_robustness",
-    "tool_name_matches",
+    "evaluate_outcome", "evaluate_trajectory", "evaluate_constraint", "evaluate_integrity",
+    "evaluate_robustness", "tool_name_matches",
     # perturbations
     "CorruptPriorAssistantTurn", "InjectStaleMemory", "ToolTimeout", "ToolReturnsMalformed",
     "BlankAssistantContent", "FallbackRenderLeak", "MalformedToolCall",
@@ -125,17 +156,20 @@ __all__ = [
     # canary
     "CanaryResult", "run_reset_canary",
     # runner
-    "ScenarioResult", "run_scenario",
+    "ScenarioResult", "run_matrix", "run_scenario",
+    # self-test
+    "SelfTestCaseResult", "SelfTestVerdict", "run_reference_case",
+    "selftest_case_to_dict",
     # replay
     "GenerateFn", "replay",
     # state_reset
     "StateResetConfig", "reset_state_db",
     # universe
-    "SynthesizeHook", "Universe", "UniverseFormatError", "UniverseMatching",
+    "UNIVERSE_VERSION", "SynthesizeHook", "Universe", "UniverseFormatError", "UniverseMatching",
     "UniverseRecording", "UniverseTool", "freeze_universe", "load_universe",
     "save_universe",
     # interchange/import
-    "InterchangeFormatError", "InterchangeMessage", "InterchangePart",
+    "INTERCHANGE_VERSION", "InterchangeFormatError", "InterchangeMessage", "InterchangePart",
     "InterchangeToolDefinition", "InterchangeTrace", "InterchangeWitnessedCall",
     "TextPart", "ToolCallPart", "ToolCallResponsePart", "build_envelope",
     "load_interchange", "parse_interchange", "ImportResult", "write_imported_scenario",

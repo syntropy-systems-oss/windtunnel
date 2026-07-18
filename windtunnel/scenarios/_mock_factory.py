@@ -29,7 +29,39 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
-from typing import Any
+from typing import Any, ParamSpec, Protocol, TypeVar, cast
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+class _LoggingFastMCP(Protocol):
+    """Typed structural surface used by the transport-wiring mock modules."""
+
+    @property
+    def settings(self) -> Any: ...
+
+    def tool(self, **kwargs: Any) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]: ...
+
+    def run(
+        self,
+        host: str | None = None,
+        port: int | None = None,
+        *,
+        transport: str = "streamable-http",
+    ) -> None: ...
+
+
+def build_logging_fastmcp(name: str, **kwargs: Any) -> _LoggingFastMCP:
+    """Construct the framework's evidence-recording FastMCP wrapper.
+
+    Built-in mock modules live below ``scenarios/`` but are transport wiring,
+    not scenario authoring surfaces. Keeping the framework import behind this
+    existing sanctioned indirection preserves the static API/SPI import
+    invariant while ensuring subprocess mocks expose witnessed-call evidence.
+    """
+    fastmcp = importlib.import_module("windtunnel.mcp.fastmcp.server")
+    return cast(_LoggingFastMCP, fastmcp.LoggingFastMCP(name, **kwargs))
 
 
 def build_fastmcp_server(

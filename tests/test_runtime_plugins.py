@@ -96,6 +96,19 @@ class TestBuiltinResolution:
         runtime = _build_runtime("http_inject", "lbl", soul_path=None)
         assert isinstance(runtime, HttpInjectRuntime)
 
+    def test_builtin_non_mounting_runtimes_declare_mcp_capability(self) -> None:
+        from windtunnel.cli import _resolve_runtime_plugin
+        from windtunnel.spi import RunnerMCPConfigurableRuntime
+
+        for name in ("in_memory", "http_inject"):
+            runtime = _resolve_runtime_plugin(name).build(name, "lbl", None)
+            assert isinstance(runtime, RunnerMCPConfigurableRuntime)
+            assert runtime.accepts_runner_managed_mcps is False
+
+        from windtunnel.runtimes.terminus import TerminusRuntime
+
+        assert TerminusRuntime.accepts_runner_managed_mcps is False
+
 
 
 # ─── leg 3: module:attr dotted path ──────────────────────────────────────────

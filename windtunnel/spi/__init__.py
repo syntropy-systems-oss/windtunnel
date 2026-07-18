@@ -12,25 +12,39 @@ from windtunnel.spi.agent_runtime import (
     Message,
     ModelSpec,
     Response,
+    RunnerMCPConfigurableRuntime,
     SamplingConfig,
+    SurfaceIntrospectableAgentHandle,
 )
 from windtunnel.spi.hooks import Hook, HookArtifact, HookContext
 from windtunnel.spi.mcp_server import (
+    FailureInjectableMCPHandle,
     MCPCall,
     MCPHandle,
     MCPServer,
     MCPSpec,
+    ToolDefinitionIntrospectableMCPHandle,
     ToolIntrospectableMCPHandle,
+)
+from windtunnel.spi.reference import (
+    ReferenceCapableAgentRuntime,
+    ReferenceCase,
+    ReferenceDecision,
+    ReferenceKind,
+    ReferenceToolCall,
 )
 from windtunnel.spi.runtime_plugin import RuntimePlugin
 from windtunnel.spi.state_probe import StateProbe
 
 __all__ = [
     "AgentConfig", "AgentHandle", "AgentRuntime", "Message", "ModelSpec",
-    "Response", "SamplingConfig",
+    "Response", "RunnerMCPConfigurableRuntime", "SamplingConfig",
+    "SurfaceIntrospectableAgentHandle",
     "Hook", "HookArtifact", "HookContext",
-    "MCPCall", "MCPHandle", "MCPServer", "MCPSpec",
-    "ToolIntrospectableMCPHandle",
+    "FailureInjectableMCPHandle", "MCPCall", "MCPHandle", "MCPServer", "MCPSpec",
+    "ToolDefinitionIntrospectableMCPHandle", "ToolIntrospectableMCPHandle",
     "RuntimePlugin",
+    "ReferenceCapableAgentRuntime", "ReferenceCase", "ReferenceDecision",
+    "ReferenceKind", "ReferenceToolCall",
     "StateProbe",
 ]

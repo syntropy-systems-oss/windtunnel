@@ -18,7 +18,7 @@ class DebriefHook(Hook):
         if score is None:
             return
 
-        verdict = _run_verdict(score)
+        verdict = _run_verdict(score, ctx.scenario)
         failed_layers = _failed_layers(score)
         if os.environ.get("WT_DEBRIEF_ON", "").lower() != "all" and not failed_layers:
             return
@@ -43,7 +43,7 @@ class DebriefHook(Hook):
             model = getattr(trace, "model", None)
 
         ctx.emit_artifact({
-            "schema_version": 1,
+            "schema_version": 2,
             "run_id": ctx.run_id or (getattr(trace, "run_id", "") if trace is not None else ""),
             "scenario_id": _scenario_id(ctx),
             "agent": getattr(agent, "agent_id", "") if agent is not None else "",
@@ -62,13 +62,20 @@ class DebriefHook(Hook):
         })
 
 
-def _run_verdict(score: Any) -> str:
-    return "PASS" if getattr(score, "outcome").passed else "FAIL"
+def _run_verdict(score: Any, scenario: Any = None) -> str:
+    if not getattr(score, "integrity").passed:
+        return "INVALID"
+    gate_layers = (
+        scenario.resolved_gate_layers()
+        if scenario is not None and hasattr(scenario, "resolved_gate_layers")
+        else ("outcome",)
+    )
+    return "PASS" if score.gate_passed(gate_layers) else "FAIL"
 
 
 def _failed_layers(score: Any) -> list[str]:
     failed: list[str] = []
-    for layer_name in ("outcome", "trajectory", "constraint", "robustness"):
+    for layer_name in ("outcome", "trajectory", "constraint", "integrity"):
         layer = getattr(score, layer_name)
         if not layer.passed:
             failed.append(layer_name)
@@ -78,7 +85,7 @@ def _failed_layers(score: Any) -> list[str]:
 def _score_reasons(score: Any) -> dict[str, str]:
     return {
         layer_name: str(getattr(score, layer_name).detail)
-        for layer_name in ("outcome", "trajectory", "constraint", "robustness")
+        for layer_name in ("outcome", "trajectory", "constraint", "integrity")
     }
 
 

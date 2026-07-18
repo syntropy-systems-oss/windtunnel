@@ -20,17 +20,16 @@ Discovery (resolved by the CLI, in order):
   3. Dotted path — a --runtime value containing ":" is treated as
      "module:attr" and imported directly (same instance-or-class rule).
 
-Lifecycle (one `wt run` invocation):
+Lifecycle (one `wt run` or supported `wt selftest` invocation):
     plugin = resolve(runtime_name)
     runtime = plugin.build(runtime_name, label, soul_path)
     scenarios = load_scenarios(...)
     plugin.pre_run(runtime, scenarios, runtime_name)   # optional hook
-    try:
-        ... run loop ...
-    finally:
-        plugin.post_run(runtime, scenarios, runtime_name)   # optional hook
+    ... run or reference-case loop ...
+    plugin.post_run(runtime, scenarios, runtime_name)   # optional hook — wt run only, see below
 
-pre_run() is where platform-specific BENCH PREP lives — the glue that used to
+The same plugin instance is retained for both calls. pre_run() is where
+platform-specific BENCH PREP lives — the glue that used to
 be hardcoded in cli.py: container env propagation, fake-server wiring,
 workspace seeding, readiness-probe specialization. It is called exactly once,
 after build() and scenario loading and before any scenario executes. Plugins
@@ -44,12 +43,16 @@ container, anything scoped to the batch rather than to one scenario. Without
 it, a plugin's only teardown seam was AgentHandle.teardown() (per-runtime,
 torn down inside run_scenario's own finally), which a bench fixture started
 in pre_run() never goes through — nothing ever released it, and it leaked
-for the lifetime of the `wt run` process. post_run() is called exactly once,
-wrapping the run loop in a try/finally: on a clean finish, on the sweep's own
-circuit-breaker abort, and on any exception that escapes the loop itself —
-never only the happy path. It receives the same (runtime, scenarios,
+for the lifetime of the `wt run` process. `wt run` wraps its whole sweep (the
+scenario loop, its circuit breaker, and final exit-code accounting) in a
+try/finally so post_run() runs exactly once: on a clean finish, on the
+sweep's own circuit-breaker abort, and on any exception that escapes the loop
+itself — never only the happy path. It receives the same (runtime, scenarios,
 runtime_name) arguments as pre_run() so a plugin can find whatever it started
-there without needing extra module-level state.
+there without needing extra module-level state. `wt selftest`'s reference-case
+loop does not call post_run() yet — a plugin whose bench prep needs
+whole-process teardown should still release it there some other way (e.g. an
+atexit hook) until that command grows the same symmetric wiring.
 
 Both hooks are OPTIONAL: the CLI invokes each via getattr(plugin, name, None),
 so a minimal plugin may omit either or both entirely. RuntimePlugin therefore

@@ -8,7 +8,7 @@ on. It is backend-agnostic — **never import a runtime or mock type from a
 scenario** (enforced by `tests/test_import_invariants.py`).
 
 This is the authoring reference. For how scoring works conceptually, see
-[`architecture.md`](architecture.md#3-the-four-layer-scoring-model).
+[`architecture.md`](architecture.md#3-behavior-scores-gates-and-experiment-integrity).
 
 ---
 
@@ -27,8 +27,8 @@ my_scenario = Scenario(
 )
 ```
 
-`name`, `prompt`, and `target_facts` are required; everything else defaults to "no
-expectation."
+`name` plus either `prompt` or `user_turns` is required. `target_facts` defaults
+to an empty list so scenarios using `outcome_fn` do not need placeholder facts.
 
 ---
 
@@ -42,7 +42,7 @@ or `send()` for the first run. All checks run, and every failure is reported
 together as `WorldMismatchError`.
 
 ```python
-from windtunnel.api import Check, FileExists, Scenario
+from windtunnel.api import Check, FileExists, Scenario, StateProbeAvailable
 
 def fixture_seeded(ctx):
     rows = (ctx.state_probe.capture() if ctx.state_probe else {}).get("db", {}).get("rows", [])
@@ -55,6 +55,7 @@ Scenario(
     requires_tools=["client_lookup"],  # sugar for ToolAvailable("client_lookup")
     preconditions=[
         FileExists("/tmp/windtunnel-fixture.db"),
+        StateProbeAvailable(),
         Check(fixture_seeded, "fixture contains seed rows"),
     ],
 )
@@ -69,6 +70,10 @@ Built-ins:
   the bench host. Relative paths resolve against a runtime workspace template
   when the driver exposes one, then the live workspace, then the current working
   directory.
+- `StateProbeAvailable()` requires the scenario's owning pack or library caller
+  to wire a `StateProbe`. Scenarios whose policies or `outcome_fn` read
+  `trace.observations` should declare it so missing observation plumbing is a
+  `WORLD` error rather than a plausible-looking agent failure.
 - `Check(fn, description)` wraps a custom function over `PreconditionContext`
   (`mcp_handles`, optional `state_probe`, and `agent_config`). Return `None` or
   `True` to pass, a string to fail with that detail, or `False` to fail with the
@@ -125,7 +130,14 @@ def _graded(trace: Trace) -> LayerResult:
         return LayerResult(False, "no report artifact produced")
     return LayerResult(art["rows"] == EXPECTED_ROWS, "report rows match expected")
 
-Scenario(name="...", prompt="...", target_facts=[], outcome_fn=_graded, requires_tool_use=True)
+Scenario(
+    name="...",
+    prompt="...",
+    target_facts=[],
+    outcome_fn=_graded,
+    requires_tool_use=True,
+    preconditions=[StateProbeAvailable()],
+)
 ```
 
 Like `policies`/`trajectory_checks`, `outcome_fn` is a callable, so it isn't
@@ -184,13 +196,13 @@ wt rescore --trace runs/.../20260102T030405000000Z_abcd1234.json --write
 
 `wt rescore` resolves each trace's `scenario_id` against the currently
 discovered scenario packs, then re-runs outcome, trajectory, constraint, and
-robustness from the saved trace plus current scenario definitions. In the
-current core robustness is derivable from the trace's perturbation markers, so
-it is recomputed too. The command is read-only by default; `--write` updates the
+integrity from the saved trace plus current scenario definitions. Integrity is
+derivable from the trace's perturbation markers, so it is recomputed too. The
+command is read-only by default; `--write` updates the
 `.score.json` sidecar with an `origin.kind = "rescore"` marker. Trace files are
-never modified. Exit codes mirror `wt run`: `0` when all newly-scored outcomes
-pass, `1` when any newly-scored outcome fails, and `2` for usage/configuration
-errors such as missing traces or unresolved scenario definitions.
+never modified. Exit codes mirror `wt run`: `0` when all newly-scored gates
+pass, `1` when any gate fails or any run is invalid, and `2` for usage or
+configuration errors such as missing traces or unresolved scenario definitions.
 
 **AND-of-OR `target_facts`:** a list of groups; each inner group is satisfied if
 **any** member appears (OR), and **every** outer group must be satisfied (AND).
@@ -207,7 +219,7 @@ variants (some older scenarios still do; that's a now-redundant workaround).
 word-boundary regex (so `3` ≠ `B003CCC`); `unit` is advisory (tightens via a
 30-char IGNORECASE proximity check, but the number alone passes).
 
-### Trajectory layer (recorded, not the gate)
+### Trajectory layer
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `must_call` | `list[str]` | `[]` | Tools that must all appear. Use the CANONICAL bare tool name (e.g. `client_lookup`) — the evaluator matches platform-decorated variants (`mcp_acme_ops_client_lookup`, `ops.client_lookup`) by suffix-at-word-boundary. |
@@ -216,11 +228,11 @@ word-boundary regex (so `3` ≠ `B003CCC`); `unit` is advisory (tightens via a
 | `trajectory_checks` | `list[TrajectoryCheck]` | `[]` | Custom verifiers over the observed call path; ANDed with the sugar fields above (see below). |
 
 > `must_call=['clarify']` will fail trajectory ~100% (models clarify in prose, not
-> via a literal `clarify` tool). Trajectory isn't the gate, so this doesn't change
-> the pass count — but prefer `forbidden_calls` to encode "should have clarified."
+> via a literal `clarify` tool). Because a declared trajectory expectation joins
+> the default gate, prefer `forbidden_calls` to encode "should have clarified."
 
 **Custom `TrajectoryCheck`** — the trajectory layer's counterpart to `Policy`
-(constraint) and `Perturbation` (robustness): a verifier over the path the agent
+(constraint) and `Perturbation` (integrity): a verifier over the path the agent
 actually took, for expectations the sugar fields can't express. Implement
 `check(calls) -> (passed, detail)`; `calls` is the chronologically-ordered list
 of observed tool names — server-witnessed when a logging mock MCP is in play,
@@ -279,10 +291,9 @@ Policy(name="pr_opened_against_main",
                                for pr in t.observations["github"]["prs"]))
 ```
 
-A `Policy` is the **constraint** layer — recorded, but it does **not** drive the
-headline pass/fail (only the outcome layer does). If the external state *is* the
-success criterion (the gate), read `trace.observations` from an **`outcome_fn`**
-instead (see the Outcome layer above); use a policy when it's an *additional*
+A `Policy` is a **constraint** expectation and therefore joins the inferred gate.
+If the external state is the primary success criterion, read
+`trace.observations` from an `outcome_fn`; use a policy when it is an additional
 guardrail alongside a separate outcome.
 
 This completes the trace's evidence triad: `turns[*].tool_calls` is the
@@ -295,22 +306,66 @@ from a violated policy. Probes are wired per pack via
 `ScenarioPack.state_probe_factory` (see "Shipping a scenario pack" below) or
 passed directly as `run_scenario(..., state_probe=probe)`.
 
-### Robustness layer
+### Experiment integrity and robustness
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `perturbations` | `list[Perturbation]` | `[]` | Adversarial stressors applied to the run (see below). |
+| `perturbations` | `list[Perturbation]` | `[]` | Adversarial conditions applied to the run and verified by the integrity check (see below). |
+
+Integrity asks whether the declared test condition actually happened. A failed
+integrity check makes the aggregate `INVALID`; it never counts as agent
+success or failure. Robustness is the scenario gate's pass rate under valid
+perturbed conditions and is reported only for scenarios with perturbations.
 
 ### Multi-turn
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `user_turns` | `list[str]` | `[]` | When **non-empty**, this IS the full ordered user-turn sequence: the runner sends each entry under one `session_id` (accumulating history) and **ignores `prompt`**. The LAST entry is the scored turn (evaluators always score the final assistant turn). Convention: set `prompt` to a copy of that last entry so prompt-reading surfaces (triage, the LLM judge) show the scored question. Empty = single-turn (`prompt` is sent). |
+| `user_turns` | `list[str]` | `[]` | When **non-empty**, this is the full ordered user-turn sequence: the runner sends each entry under one `session_id` and ignores `prompt`. The last entry is the scored turn and is also used by prompt-reading surfaces, so duplicating it in `prompt` is unnecessary. Empty means single-turn (`prompt` is sent). |
 
 ### Metadata
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `failure_cost` | `FailureCost` | safest profile | `severity`/`customer_visible`/`reversible`/`side_effect_performed` — for weighted aggregation. |
+| `gate_layers` | `list[GateLayer]` | `None` | Infers outcome plus every declared trajectory/constraint expectation. Set explicitly to make selected layers diagnostic; integrity remains mandatory. |
+| `failure_cost` | `FailureCost` | safest profile | Stable operational risk metadata. Reports calculate a deterministic `risk_weight` and rank failing aggregates by weighted `failure_risk`; it never excuses a gated regression. |
 | `variance_allowed` | `bool` | `False` | If `True`, the deploy gate accepts sub-100% and reports `pass_rate ± stddev` (sampler-sensitivity dim). |
 | `tags` | `list[str]` | `[]` | Convention: `"dim:<name>"` groups regressions by dimension. |
+| `reference_cases` | `list[ReferenceCase]` | `[]` | Optional known-good golden and known-bad poison decision scripts used by `wt selftest` to certify this scenario's gate. |
+
+---
+
+## Certifying the gate with reference cases
+
+`reference_cases` test the test itself. A golden case must pass the scenario's
+declared gate; a poison case must fail it. The runtime substitutes only model
+decisions, while the real agent loop, tools, fixture, probe, evidence capture,
+and scorer remain live.
+
+```python
+from windtunnel.api import ReferenceCase, ReferenceDecision, ReferenceToolCall
+
+golden = ReferenceCase(
+    name="safe-write",
+    kind="golden",
+    decisions=(
+        ReferenceDecision(tool_calls=(
+            ReferenceToolCall("write_artifact", {"safe": True}),
+        )),
+        ReferenceDecision(content="artifact complete"),
+    ),
+)
+```
+
+Use fictional, non-sensitive fixture values. Case names must be unique within
+the scenario. Run them with a runtime that implements the optional
+`ReferenceCapableAgentRuntime` capability:
+
+```bash
+wt selftest --runtime <reference-capable-runtime> --scenario artifact_guard
+```
+
+The built-in `in_memory` runtime reports `UNSUPPORTED` because it does not
+exercise a real agent/tool loop. See
+[reference self-tests](design/0004-reference-selftest.md) for decision shape,
+isolation, probe timing, outputs, and runtime requirements.
 
 ---
 
@@ -318,7 +373,7 @@ passed directly as `run_scenario(..., state_probe=probe)`.
 
 A perturbation adversarially stresses one run. Every perturbation declares a
 `marker`; the runner ensures it lands in `trace.worker_warnings`, and
-`evaluate_robustness` verifies that contract. Two families:
+`evaluate_integrity` verifies that contract. Two families:
 
 ### Family 1 — pre-send / history-shaping (subclasses of `PreSendPerturbation`)
 Inject corrupted prior turns into the `messages` the **live model runs on** (via
@@ -387,9 +442,10 @@ Spinners), `ACC-PORT-001` (Portland Pickles), `ACC-CHIC-001` (Chicago Cubs); SKU
    exported list (e.g. `SILENT_FAILURE_SCENARIOS`).
 3. If it needs tools, define them in the dim's `mock_mcp/server.py` (FastMCP,
    **bare** tool names — the platform adds its integration prefix, e.g. `ops.`) backed by `synthetic_db.py`.
-4. Tag it `dim:<name>`; the dim's `PACK` (a `ScenarioPack` in the dim's
-   `__init__.py`) binds that tag to the dim's `MCPServer` factory so the runner
-   provisions the right mock. New dim? Build a `PACK` and add it to
+4. Tag it `dim:<name>` for selection and reporting; the dim's owning `PACK` (a
+   `ScenarioPack` in the dim's `__init__.py`) directly supplies its runtime
+   wiring. Discovery validates the tag against that pack, so a stale rename
+   fails loudly. New dim? Build a `PACK` and add it to
    `windtunnel/scenarios/__init__.py`'s `builtin_packs()` list.
 5. Run it: `uv run wt run --runtime in_memory --scenario <name> --runs 1`
    (or with your platform runtime).
@@ -409,7 +465,7 @@ change to the framework:
 from windtunnel.api import Scenario, ScenarioPack
 
 PACK = ScenarioPack(
-    name="invoice_hygiene",          # scenarios carry tags=["dim:invoice_hygiene"]
+    name="invoice_hygiene",          # owning pack and --pack identity
     scenarios=[Scenario(...), ...],
     mcp_factory=None,                # or Callable[[Scenario], MCPServer], see below
     state_probe_factory=None,        # or Callable[[Scenario], StateProbe | None]
@@ -433,34 +489,39 @@ What `wt run` does with it:
   first, entry-point packs after); `--scenario` (exact or glob), `--tag`,
   `--pack`, and `--owner` filter across all packs, and omitting them runs
   everything.
+- **Dimension metadata.** `dim:<name>` tags remain available to `--tag`
+  filters, but they do not control runtime wiring. At discovery, any scenario
+  that declares `dim:` tags must include `dim:<owning-pack-name>`, and every
+  named dimension must be a registered pack. Tagless packs remain valid.
 - **Ownership.** `owner` is carried into every ledger record and drives
   `wt run --owner <owner>` selection. Wind Tunnel attaches no other
   semantics — what ownership *means* (routing, gating, paging) is yours.
 - **Mock tools.** If your dim needs canned upstream tools, set
   `mcp_factory` to a callable that takes the selected `Scenario` and returns
   a fresh, **not-yet-started** `MCPServer` (the runner owns start/stop per
-  batch). It's matched to your scenarios by the `dim:<name>` tag, and only
-  invoked for plugin runtimes — the built-in `in_memory` runtime is scripted
-  and ignores mocks. Most factories ignore the scenario argument; take it
-  when the mock must specialize per scenario (the built-in `silent_failure`
-  pack derives its failure mode from the scenario's perturbation).
+  batch). It is read directly from the selected scenario's owning pack, never
+  inferred from tags, and is only invoked for runtimes that accept
+  runner-managed MCP servers — the built-in `in_memory` runtime is scripted
+  and ignores mocks. Most factories ignore the scenario argument; take it when
+  the mock must specialize per scenario (the built-in `silent_failure` pack
+  derives its failure mode from the scenario's perturbation).
 - **External-state evidence.** If your dim verifies world state (see
   "Verifying external state" above), set `state_probe_factory` to a callable
-  that takes the selected `Scenario` and returns a `StateProbe` (or `None`
-  for scenarios it doesn't observe). Unlike `mcp_factory`, this is **not**
-  gated on the `dim:<name>` tag — the CLI calls every pack's
-  `state_probe_factory` for every scenario (plugin runtimes only) and takes
-  the first non-`None` result, so the factory's own return value is the sole
-  decision of which scenarios get a probe. (Requiring the tag too used to be
-  a footgun: forgetting it on a scenario silently dropped that scenario's
-  probe with no warning.) When the probe's fixture is started by your
-  runtime plugin's `pre_run()` (the usual driver shape), ship the pack with
-  `state_probe_factory=None` and have `pre_run()` set it on your
-  module-level `PACK` once the fixture is up — `pre_run` fires before any
-  scenario, and the CLI reads the factory per scenario, not at discovery. If
-  that same fixture needs teardown (a subprocess, a container), release it
-  in the plugin's `post_run()` — `pre_run`'s symmetric counterpart, called
-  once at sweep end (success, abort, or exception) in a `finally`.
+  for scenarios it doesn't observe). It is also read directly from the owning
+  pack and is independent of whether the runtime mounts runner-managed MCPs.
+  When the probe's fixture is started by your runtime plugin's `pre_run()` (the
+  usual driver shape), ship the pack with `state_probe_factory=None` and have
+  `pre_run()` set it on your module-level `PACK` once the fixture is up —
+  `pre_run` fires before any scenario, and the CLI reads the factory afterward.
+  Add `StateProbeAvailable()` to every scenario that requires observations.
+  For both `wt run` and `wt selftest`, `pre_run()` happens before the CLI reads
+  the selected owning pack's factory. Only the probe returned by that factory
+  (or passed directly to the library API) populates
+  `PreconditionContext.state_probe`; a probe hidden in a plugin or scorer does
+  not satisfy `StateProbeAvailable()`. If that same fixture needs teardown (a
+  subprocess, a container), release it in the plugin's `post_run()` — for
+  `wt run`, `pre_run`'s symmetric counterpart, called once at sweep end
+  (success, abort, or exception) in a `finally`.
 - **`transport_only=True`** marks a dim whose history-shaping perturbation is
   applied post-hoc to the trace (the live model never saw it): the scenario
   still runs and reports, but its model verdict doesn't flip the exit code.
@@ -480,4 +541,4 @@ limits a scenario can't paper over — e.g. a small model may phantom-call a `we
 (or a `create-csv` skill) to find a client's email rather than use the granted
 `client_lookup`, regardless of tool description or operator steering. When a
 scenario "fails," check whether it's the model, the harness (an evaluator/mock
-bug), or the scenario design — the four-layer trace usually tells you which.
+bug), or the scenario design — the structured trace usually tells you which.

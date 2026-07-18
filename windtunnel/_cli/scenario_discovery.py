@@ -33,7 +33,48 @@ def _discover_scenario_packs(
         packs.append(_coerce_scenario_pack(obj, f"entry point {ep.name!r}", ep.value))
     for source in extra_sources or []:
         packs.append(_load_scenario_pack_source(source))
+    _validate_scenario_packs(packs)
     return packs
+
+
+def _validate_scenario_packs(packs: list[ScenarioPack]) -> None:
+    """Fail loudly when dimension tags drift from registered pack names.
+
+    ``dim:`` tags remain useful selection metadata after operational wiring
+    moves to the owning ``_SelectedScenario.pack``. Validate that metadata at
+    discovery so a rename cannot silently exclude scenarios from a tagged
+    sweep. Tagless third-party packs remain valid for backwards compatibility.
+    """
+    registered_names = {pack.name for pack in packs}
+    failures: list[str] = []
+
+    for pack in packs:
+        for scenario in pack.scenarios:
+            dimensions = {
+                tag.removeprefix("dim:")
+                for tag in scenario.tags
+                if tag.startswith("dim:")
+            }
+            if not dimensions:
+                continue
+
+            unknown = sorted(dimensions - registered_names)
+            if unknown:
+                failures.append(
+                    f"scenario {scenario.name!r} in pack {pack.name!r} references "
+                    f"unknown dimension tag(s): {', '.join(f'dim:{name}' for name in unknown)}"
+                )
+            if pack.name not in dimensions:
+                failures.append(
+                    f"scenario {scenario.name!r} in pack {pack.name!r} is missing its "
+                    f"owning tag 'dim:{pack.name}'"
+                )
+
+    if failures:
+        print("wt run: invalid scenario pack dimension tags:", file=sys.stderr)
+        for failure in failures:
+            print(f"- {failure}", file=sys.stderr)
+        sys.exit(2)
 
 
 def _coerce_scenario_pack(obj: object, label: str, value: str) -> ScenarioPack:

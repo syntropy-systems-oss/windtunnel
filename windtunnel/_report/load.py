@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from windtunnel.api.trace import is_trace_json_path
+from windtunnel.api.score import ScoreFormatError, score_from_dict, score_to_dict
+from windtunnel.api.trace import TRACE_FORMAT_VERSION, is_trace_json_path
 
 
 def load_runs(runs_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
@@ -34,6 +35,14 @@ def load_runs(runs_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
             continue
         if not isinstance(trace_data, dict) or not isinstance(score_data, dict):
             continue
+        trace_version = trace_data.get("windtunnel_trace", 0)
+        if type(trace_version) is not int or trace_version not in {0, TRACE_FORMAT_VERSION}:
+            continue
+        try:
+            normalized_score = score_to_dict(score_from_dict(score_data))
+        except ScoreFormatError:
+            continue
+        score_data = {**score_data, **normalized_score}
         scenario_id = trace_data.get("scenario_id")
         variant_id = trace_data.get("variant_id")
         if not isinstance(scenario_id, str) or not isinstance(variant_id, str):
@@ -95,6 +104,17 @@ def _load_latest_aggregates(
             continue
         if not isinstance(record, dict):
             continue
+        ledger_version = record.get("windtunnel_ledger", 0)
+        if type(ledger_version) is not int or ledger_version not in {0, 1}:
+            continue
+        layer_rates = record.get("layer_pass_rates")
+        if isinstance(layer_rates, dict) and "integrity" not in layer_rates:
+            legacy_integrity = layer_rates.get("robustness")
+            if isinstance(legacy_integrity, int | float):
+                record = {
+                    **record,
+                    "layer_pass_rates": {**layer_rates, "integrity": legacy_integrity},
+                }
         scenario_id = record.get("scenario_id")
         label = record.get("label")
         if isinstance(scenario_id, str) and isinstance(label, str):

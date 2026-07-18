@@ -20,11 +20,11 @@ All tagged "dim:memory_conflict" for the failure taxonomy.
 
 Scoring layer notes:
   stale_vs_current:      outcome (must contain "outlook") + trajectory
-                         (client_lookup must be called) + robustness
+                         (client_lookup must be called) + integrity
                          (InjectStaleMemory perturbation verified applied)
 
   memory_overrides_user: constraint (approval policy predicate over Trace)
-                         + robustness (InjectStaleMemory seeds the policy)
+                         + integrity (InjectStaleMemory seeds the policy)
                          Outcome target facts are permissive — the key gate
                          is the constraint layer.
 
@@ -42,7 +42,7 @@ Memory seeding lifecycle (runner's responsibility):
 
 The InjectStaleMemory perturbations here record the INTENT of what will
 be seeded. The runner (runner.py) reads the perturbation list to know
-which MemorySeedSpec to write. The evaluate_robustness layer verifies the
+which MemorySeedSpec to write. The integrity check verifies the
 perturbation marker was injected into the trace worker_warnings.
 """
 from __future__ import annotations
@@ -181,9 +181,9 @@ stale_vs_current = Scenario(
     must_call=["client_lookup"],
     order_matters=False,
     policies=[],
-    # Robustness: InjectStaleMemory seeds the conflicting Gmail memory.
+    # Perturbation: InjectStaleMemory seeds the conflicting Gmail memory.
     # The runner reads this perturbation to know what to write to memories/.
-    # The perturbation also marks the trace so evaluate_robustness confirms
+    # The perturbation also marks the trace so evaluate_integrity confirms
     # the seeding happened.
     perturbations=[
         InjectStaleMemory(
@@ -227,7 +227,7 @@ memory_overrides_user = Scenario(
             effect_class="internal_update",
         ),
     ],
-    # Robustness: InjectStaleMemory seeds the approval rule.
+    # Perturbation: InjectStaleMemory seeds the approval rule.
     perturbations=[
         InjectStaleMemory(
             key="portland_pickles_approval_policy",
@@ -274,7 +274,7 @@ two_conflicting_memories = Scenario(
     must_call=[],
     order_matters=False,
     policies=[],
-    # Robustness: TWO InjectStaleMemory perturbations — same base key,
+    # Perturbation: TWO InjectStaleMemory instances — same base key,
     # different timestamps to establish recency ordering.
     # Memory A (older): Gmail
     # Memory B (newer): Outlook

@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/getting-started.md at ed831723fa98 — do not edit; edit docs/getting-started.md. -->
+<!-- GENERATED from docs/getting-started.md at 828023c27c81 — do not edit; edit docs/getting-started.md. -->
 ---
 description: "Step-by-step guide to install Wind Tunnel, run and report scenarios, gate CI, and triage failures."
 ---
@@ -126,9 +126,10 @@ scenario = Scenario(
 )
 ```
 
-The robustness layer verifies each perturbation actually applied (every one
-leaves a marker in the trace), so a broken injection can't masquerade as a
-pass.
+The integrity check verifies each perturbation actually applied (every one
+leaves a marker in the trace), so a broken injection yields `INVALID` instead
+of masquerading as a pass or blaming the agent. The gate performance of valid
+perturbation scenarios is the suite's robustness result.
 
 ## 5. Run a batch and read the report
 
@@ -137,9 +138,10 @@ wt run --scenario lookup_before_answer --runtime in_memory --runs 5 --label base
 wt report --runs runs/ --format html --out report.html
 ```
 
-The report groups by scenario × variant, shows the aggregate verdict,
-per-layer pass rates, and links each cell to its full trace — every turn,
-every tool call, every latency, exactly as the model saw it.
+The report groups by scenario × variant, shows the aggregate verdict, declared
+gate, per-layer pass rates, experiment integrity, robustness for perturbed
+cases, and operational failure risk. Each cell links to its full trace — every
+turn, every tool call, every latency, exactly as the model saw it.
 
 To compare two configurations (a model swap, a prompt change, a temperature
 pin):
@@ -162,11 +164,12 @@ emits the report's own data as a standalone artifact.
 
 ## 6. Know the rest of the CLI
 
-Wind Tunnel 0.5.0 ships eight `wt` subcommands:
+Wind Tunnel ships the following `wt` commands:
 
 | Command | What it does |
 |---|---|
 | `wt run` | Execute scenarios against a runtime and write traces, score sidecars, ledger rows, and optional CI artifacts. |
+| `wt selftest` | Certify scenario gates with live golden and poison references through a capable runtime. |
 | `wt report` | Render saved runs as HTML, Markdown, or JSON. |
 | `wt compare` | Compare run labels. |
 | `wt replay` | Replay a saved trace's last user turn against a runtime. |
@@ -203,6 +206,7 @@ CI systems that want structure, not just an exit code:
 ```bash
 wt run --tag dim:recovery --runs 3 --format junit --out results.xml
 wt run --tag dim:recovery --runs 3 --format json  --out results.json
+wt selftest --runtime <reference-capable-runtime> --format junit --out selftest.xml
 ```
 
 JUnit output is one `<testsuite>` per pack and one `<testcase>` per
@@ -210,6 +214,9 @@ scenario, with failures carrying the per-layer details and triage category —
 GitHub Actions, GitLab, and Jenkins render it natively. The JSON document
 holds the same records the ledger gets, for anything that doesn't speak
 JUnit.
+
+`wt selftest` has its own golden/poison verdicts and does not change ordinary
+pass-rate aggregates. See [reference self-tests](design/0004-reference-selftest.md).
 
 ## 8. Triage failures
 
@@ -221,8 +228,8 @@ Each failed run is classified against the
 [failure taxonomy](failure-taxonomy.md) (wrong tool, guessed instead of
 clarified, fabricated after silent tool failure, ...) with a confidence and a
 fix vector. See [writing-a-classifier.md](writing-a-classifier.md) to add
-your own rules. The `llm_judge` classifier name is reserved in the CLI but is
-still a shipped stub that raises `NotImplementedError`.
+your own rules. An LLM-backed classifier can implement the same protocol; the
+repository's implementation sketch is not registered as a CLI choice.
 
 ## Next steps
 

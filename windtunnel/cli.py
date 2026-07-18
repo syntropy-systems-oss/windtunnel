@@ -4,6 +4,8 @@ Subcommands:
     wt run      [--scenario S]... [--tag TAG]... [--pack PACK]...
                 [--owner OWNER]... [--soul PATH] [--runtime RUNTIME]
                 [--label LABEL] [--runs N] [--format junit|json --out FILE]
+    wt selftest [--scenario S]... [--tag TAG]... [--pack PACK]...
+                --runtime RUNTIME [--format junit|json --out FILE]
     wt rescore  (--runs DIR | --trace PATH...) [--write]
     wt report   [--runs DIR] [--out FILE] [--format html|markdown|json]
     wt compare  --labels L1 L2 ...
@@ -11,7 +13,7 @@ Subcommands:
     wt doctor   --runtime RUNTIME [--soul PATH] [--label LABEL]
     wt import   --trace PATH --out DIR [--force]
     wt validate [--strict] PATH [PATH ...]
-    wt triage   [--runs DIR] [--classifier rule_based|llm_judge]
+    wt triage   [--runs DIR] [--classifier rule_based]
     wt skill    path | install [--dest DIR] [--copy]
 
 Design: argparse (stdlib) — no click dependency. Each subcommand is a
@@ -112,6 +114,7 @@ from windtunnel._cli.scenario_discovery import (
 from windtunnel._cli.scenario_discovery import (
     _select_scenarios as _select_scenarios_impl,
 )
+from windtunnel._cli.selftest import _cmd_selftest as _cmd_selftest_impl
 from windtunnel._cli.storage import (
     _append_ledger_records as _append_ledger_records_impl,
 )
@@ -180,6 +183,7 @@ _load_scenario_pack_source = _load_scenario_pack_source_impl
 _load_scenarios = _load_scenarios_impl
 _print_selection_warnings = _print_selection_warnings_impl
 _select_scenarios = _select_scenarios_impl
+_cmd_selftest = _cmd_selftest_impl
 _counts_as_gate_failure = _counts_as_gate_failure_impl
 _write_run_output = _write_run_output_impl
 _write_run_json = _write_run_json_impl
@@ -245,7 +249,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     Loads traces for each label from the runs/ dir and prints a diff table.
     Labels correspond to variant_id values in stored traces.
     """
-    from windtunnel.report import _cell_from_run, load_runs  # noqa: PLC0415
+    from windtunnel.report import _cell_from_run, compute_diff, load_runs  # noqa: PLC0415
 
     runs_dir = Path(args.runs)
     labels: list[str] = args.labels
@@ -275,7 +279,6 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         for sid, _ in cells:
             all_scenarios.add(sid)
 
-    any_regression = False
     for sid in sorted(all_scenarios):
         row = f"{sid:<40} "
         for lbl in labels:
@@ -288,11 +291,34 @@ def _cmd_compare(args: argparse.Namespace) -> int:
                     selected_cell.get("trace") or {}, selected_cell.get("score") or {}
                 )
                 status = str(report_cell["verdict"])
-                if status == "FAIL":
-                    any_regression = True
                 row += f"{status:<17}"
         print(row)
 
+    # The first label is the baseline; a pre-existing baseline failure is not
+    # itself a regression. Fail only when a later label moves to a worse
+    # verdict, preserving PASS_WITH_VARIANCE ordering through compute_diff().
+    baseline = labels[0]
+    changes = [
+        (candidate, item)
+        for candidate in labels[1:]
+        for item in compute_diff(runs_dir, baseline, candidate)
+    ]
+    any_regression = any(item["direction"] == "regression" for _, item in changes)
+    if changes:
+        print("\nRisk-ranked changes:")
+        for candidate, item in sorted(
+            changes,
+            key=lambda pair: (
+                0 if pair[1]["direction"] == "regression" else 1,
+                -float(pair[1]["risk_delta"]),
+                str(pair[1]["scenario_id"]),
+            ),
+        ):
+            print(
+                f"  {str(item['direction']).upper():<11} {item['scenario_id']} "
+                f"({baseline}={item['verdict_a']} -> {candidate}={item['verdict_b']}, "
+                f"risk {float(item['risk_a']):.2f} -> {float(item['risk_b']):.2f})"
+            )
     return 1 if any_regression else 0
 
 
@@ -340,8 +366,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
     hooks = _resolve_hooks(getattr(args, "hook", None))
     sweep_timestamp = _sweep_artifact_timestamp()
 
-    # Build runtime
-    runtime = _build_runtime(runtime_name, label, soul_path=args.soul)
+    # Resolve once for the entire invocation: stateful plugins must receive
+    # build() and pre_run() on the same object.
+    plugin = _resolve_runtime_plugin(runtime_name)
+    runtime = _build_runtime(runtime_name, label, soul_path=args.soul, _plugin=plugin)
 
     # Discover scenario packs (built-ins + the "windtunnel.scenario_packs"
     # entry-point group). The pack is the unit that carries a dim's scenarios,
@@ -395,41 +423,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
         persona_doc=persona_doc,
     )
 
-    # Dim-tag → MCPServer factory registry, derived from the packs. Scenarios
-    # are runtime-agnostic (import invariant: scenarios/ cannot statically
-    # import windtunnel.mcp.*), so the binding from dim to a concrete mock
-    # lives in each pack's mcp_factory (deferred import — see
-    # windtunnel/scenarios/_mock_factory.py); the CLI just keys factories by
-    # the f"dim:{name}" tag. Each factory is called once per scenario to
-    # produce a fresh server instance (lifecycle: start-per-batch,
-    # stop-per-batch inside run_scenario).
-    mcp_registry = {
-        f"dim:{pack.name}": pack.mcp_factory for pack in packs if pack.mcp_factory is not None
-    }
-
-    # NOTE: the probe registry is built LAZILY (inside the loop, below) rather
-    # than here like mcp_registry — pre_run() hasn't fired yet at this point,
-    # and the driver pattern is precisely that pre_run starts the bench fixture
-    # and THEN sets state_probe_factory on its pack (see windtunnel.api.pack).
-    # Snapshotting the factories pre-pre_run would always read None.
-
     # Platform-specific bench prep (runtime-pluggable seam): the resolved
     # plugin's OPTIONAL pre_run() hook runs once here — after _build_runtime
     # and scenario loading, before any scenario executes. Platform glue
     # (bench servers, container prep, workspace seeding) lives in the driver
     # package's plugin module. Plugins decide applicability themselves by
     # inspecting scenario tags, so the CLI never special-cases a platform.
-    plugin = _resolve_runtime_plugin(runtime_name)
     pre_run = getattr(plugin, "pre_run", None)
     if pre_run is not None:
         pre_run(runtime, scenarios, runtime_name)
 
-    # Dims whose MODEL verdict is counterfactual on the live path — the pack
-    # declares it via ScenarioPack.transport_only (see windtunnel/api/pack.py
-    # for the full semantics, and dim_memory_conflict/__init__.py for why that
-    # built-in pack is currently the only one setting it). This set replaces
-    # the old hardcoded _HISTORY_SHAPING_DIMS.
-    transport_only_dims = {f"dim:{pack.name}" for pack in packs if pack.transport_only}
     _ERROR_CIRCUIT_LIMIT = 3
 
     any_fail = False
@@ -477,53 +480,27 @@ def _cmd_run(args: argparse.Namespace) -> int:
         nonlocal any_fail, consecutive_errors, first_error_logged
         for selected_entry in selected:
             scenario = selected_entry.scenario
-            # Wire the MCPServer for this scenario based on its dim tag — but ONLY
-            # for plugin runtimes, which provision the mock into the real platform
-            # MCP (e.g. acme via its runs API, acme_gateway via the gateway
-            # path). The built-in in_memory runtime is scripted — it IGNORES mcps,
-            # and starting an unused FastMCP subprocess can fail on a local dep/
-            # port conflict before the run even reaches its real target. So don't
-            # build the mock for it.
+            scenario_pack = selected_entry.pack
+            # Wire the MCPServer only when the runtime can mount runner-managed
+            # handles. Contract C, in_memory, and terminal-only runtimes own their
+            # tool surfaces; an unused mock would create misleading empty evidence.
             scenario_mcps = None
             scenario_probe = None
-            if runtime_name != "in_memory":
-                for tag in getattr(scenario, "tags", []):
-                    if tag in mcp_registry:
-                        factory = mcp_registry[tag]
-                        # Pass the scenario so scenario-aware factories (silent_failure,
-                        # which injects MOCK_MCP_FAILURE_MODE per scenario) can specialize.
-                        scenario_mcps = [factory(scenario)]
-                        break
-                # External-state probe. Factories are read per scenario (not
-                # snapshotted into a registry above) because pre_run() may have
-                # set them after pack discovery.
-                #
-                # Deliberately NOT gated on a "dim:{pack.name}" tag the way the
-                # mock-MCP dispatch above is: that tag is load-bearing for
-                # mcp_registry because it disambiguates WHICH mock to build out
-                # of potentially several registered ones (building the wrong
-                # mock, or all of them, could start unwanted subprocesses/ports).
-                # state_probe_factory has no such registry to disambiguate — it
-                # is called directly on each pack the scenario could belong to,
-                # and the factory itself is documented (ScenarioPack.
-                # state_probe_factory's own docstring) to decide per-scenario
-                # applicability by returning None. Gating the CALL on a tag in
-                # addition to that meant a pack author who wrote a real
-                # state_probe_factory but forgot (or never knew to add) the
-                # matching tag got NO probe and NO warning — external-state
-                # scoring silently degraded to trace-only evidence with no
-                # indication anything was skipped. Every pack whose factory
-                # exists is asked; the first one that returns a probe for this
-                # scenario wins.
-                for pack in packs:
-                    if pack.state_probe_factory is None:
-                        continue
-                    candidate = pack.state_probe_factory(scenario)
-                    if candidate is not None:
-                        scenario_probe = candidate
-                        break
+            if (
+                getattr(runtime, "accepts_runner_managed_mcps", True)
+                and scenario_pack.mcp_factory is not None
+            ):
+                # Pass the scenario so scenario-aware factories (silent_failure,
+                # which injects MOCK_MCP_FAILURE_MODE per scenario) can specialize.
+                scenario_mcps = [scenario_pack.mcp_factory(scenario)]
 
-            transport_only = any(t in transport_only_dims for t in getattr(scenario, "tags", []))
+            # External-state probes are independent of MCP mounting. Factories are
+            # read from the owning pack after pre_run() because the runtime plugin
+            # may have wired its live fixture-backed factory during that hook.
+            if scenario_pack.state_probe_factory is not None:
+                scenario_probe = scenario_pack.state_probe_factory(scenario)
+
+            transport_only = scenario_pack.transport_only
 
             # Resilience: a single scenario's failure (e.g. a provision-time agent
             # readiness timeout, or a mock that won't start) MUST NOT abort a long
@@ -643,7 +620,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 # ─── rescore ─────────────────────────────────────────────────────────────────
 
-_SCORE_LAYERS = ("outcome", "trajectory", "constraint", "robustness")
+_SCORE_LAYERS = ("outcome", "trajectory", "constraint", "integrity")
 
 
 def _cmd_rescore(args: argparse.Namespace) -> int:
@@ -651,8 +628,8 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
 
     Recomputes score layers from saved traces and current Scenario definitions.
     It never provisions a runtime and never modifies trace files.  Exit codes
-    mirror `wt run`: 0 when all newly-scored outcomes pass, 1 when any newly
-    scored outcome fails, and 2 for usage/configuration errors such as missing
+    mirror `wt run`: 0 when all newly-scored gates pass, 1 when any newly
+    scored gate fails or is invalid, and 2 for usage/configuration errors such as missing
     traces or unresolved scenario definitions.
     """
     from windtunnel.api.trace import load_trace  # noqa: PLC0415
@@ -680,6 +657,7 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
 
     changed = 0
     new_fail = 0
+    invalid = 0
     unresolved = 0
     errors = 0
     written = 0
@@ -721,7 +699,9 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
 
         if trace_changed:
             changed += 1
-        if not new_score.outcome.passed:
+        if not new_score.integrity.passed:
+            invalid += 1
+        elif not new_score.gate_passed(scenario.resolved_gate_layers()):
             new_fail += 1
 
         write_note = ""
@@ -745,13 +725,13 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
     total = len(trace_paths)
     print(
         "summary: "
-        f"traces={total} changed={changed} new_outcome_failures={new_fail} "
+        f"traces={total} changed={changed} new_gate_failures={new_fail} invalid={invalid} "
         f"unresolved={unresolved} errors={errors} written={written} skipped={skipped}"
     )
 
     if unresolved or errors:
         return 2
-    return 1 if new_fail else 0
+    return 1 if new_fail or invalid else 0
 
 
 def _rescore_trace_paths(args: argparse.Namespace) -> list[Path] | None:
@@ -806,8 +786,8 @@ def _score_saved_trace(trace: Trace, scenario: Scenario) -> Score:
     """Re-run all score layers derivable from a saved trace."""
     from windtunnel.api.evaluators import (  # noqa: PLC0415
         evaluate_constraint,
+        evaluate_integrity,
         evaluate_outcome,
-        evaluate_robustness,
         evaluate_trajectory,
     )
     from windtunnel.api.score import Score  # noqa: PLC0415
@@ -816,7 +796,7 @@ def _score_saved_trace(trace: Trace, scenario: Scenario) -> Score:
         outcome=evaluate_outcome(trace, scenario),
         trajectory=evaluate_trajectory(trace, scenario),
         constraint=evaluate_constraint(trace, scenario),
-        robustness=evaluate_robustness(trace, scenario),
+        integrity=evaluate_integrity(trace, scenario),
         failure_cost=scenario.failure_cost,
     )
 
@@ -836,10 +816,14 @@ def _old_layer_verdict(score_data: dict[str, Any] | None, layer_name: str) -> st
     if score_data is None:
         return "UNKNOWN"
     layer = score_data.get(layer_name)
+    if layer_name == "integrity" and not isinstance(layer, dict):
+        layer = score_data.get("robustness")
     if not isinstance(layer, dict):
         nested = score_data.get("score")
         if isinstance(nested, dict):
             layer = nested.get(layer_name)
+            if layer_name == "integrity" and not isinstance(layer, dict):
+                layer = nested.get("robustness")
     if not isinstance(layer, dict) or "passed" not in layer:
         return "UNKNOWN"
     return "PASS" if bool(layer["passed"]) else "FAIL"
@@ -869,7 +853,7 @@ def _cmd_triage(args: argparse.Namespace) -> int:
               "outcome": {"passed": ..., "detail": ...},
               "trajectory": {"passed": ..., "detail": ...},
               "constraint": {"passed": ..., "detail": ...},
-              "robustness": {"passed": ..., "detail": ...}
+              "integrity": {"passed": ..., "detail": ...}
           }
         }
     Traces without a sibling score.json are skipped.
@@ -879,7 +863,7 @@ def _cmd_triage(args: argparse.Namespace) -> int:
     import json
 
     from windtunnel.api.scenario import Scenario  # noqa: PLC0415
-    from windtunnel.api.score import LayerResult, Score  # noqa: PLC0415
+    from windtunnel.api.score import ScoreFormatError, score_from_dict  # noqa: PLC0415
     from windtunnel.api.trace import is_trace_json_path, load_trace  # noqa: PLC0415
 
     runs_dir = Path(args.runs)
@@ -894,10 +878,6 @@ def _cmd_triage(args: argparse.Namespace) -> int:
         from windtunnel.triage.rule_based import RuleBasedClassifier  # noqa: PLC0415
 
         clf: FailureClassifier = RuleBasedClassifier()
-    elif classifier_name == "llm_judge":
-        from windtunnel.triage.llm_judge import LLMJudgeClassifier  # noqa: PLC0415
-
-        clf = LLMJudgeClassifier()
     else:
         print(f"wt triage: unknown classifier {classifier_name!r}", file=sys.stderr)
         return 2
@@ -914,6 +894,7 @@ def _cmd_triage(args: argparse.Namespace) -> int:
     by_category: dict[str, list[tuple[str, str, FailureClassification]]] = {}
     skipped = 0
     passed = 0
+    invalid = 0
 
     for trace_path in trace_files:
         score_path = trace_path.with_suffix(".score.json")
@@ -930,20 +911,9 @@ def _cmd_triage(args: argparse.Namespace) -> int:
 
         # Build Score
         try:
-            sd = score_data["score"]
-            score = Score(
-                outcome=LayerResult(**sd["outcome"]),
-                trajectory=LayerResult(**sd["trajectory"]),
-                constraint=LayerResult(**sd["constraint"]),
-                robustness=LayerResult(**sd["robustness"]),
-            )
-        except (KeyError, TypeError):
+            score = score_from_dict(score_data)
+        except ScoreFormatError:
             skipped += 1
-            continue
-
-        # Skip passing runs
-        if score.outcome.passed:
-            passed += 1
             continue
 
         # Build Scenario from stored data
@@ -952,14 +922,23 @@ def _cmd_triage(args: argparse.Namespace) -> int:
             scenario = Scenario(
                 name=sc_data["name"],
                 prompt=sc_data.get("prompt", ""),
+                user_turns=sc_data.get("user_turns", []),
                 target_facts=sc_data.get("target_facts", []),
                 requires_tool_use=sc_data.get("requires_tool_use", False),
                 tags=sc_data.get("tags", []),
                 must_call=sc_data.get("must_call", []),
                 forbidden_calls=sc_data.get("forbidden_calls", []),
+                gate_layers=sc_data.get("gate_layers"),
             )
-        except (KeyError, TypeError):
+        except (KeyError, TypeError, ValueError):
             skipped += 1
+            continue
+
+        if not score.integrity.passed:
+            invalid += 1
+            continue
+        if score.gate_passed(scenario.resolved_gate_layers()):
+            passed += 1
             continue
 
         classification = clf.classify(scenario, trace, score)
@@ -972,6 +951,7 @@ def _cmd_triage(args: argparse.Namespace) -> int:
     print(
         f"**Failed runs:** {total_failed}  "
         f"**Passed:** {passed}  "
+        f"**Invalid:** {invalid}  "
         f"**Skipped (no score):** {skipped}  "
         f"**Classifier:** `{classifier_name}`\n"
     )
@@ -1452,7 +1432,7 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs="+",
         metavar="LABEL",
         default=[],
-        help="Variant labels to compare (space-separated).",
+        help="Variant labels to compare (space-separated); the first label is the baseline.",
     )
     compare_p.add_argument(
         "--runs",
@@ -1550,7 +1530,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--runs",
         dest="n_runs",
-        type=int,
+        type=_positive_int,
         default=1,
         metavar="N",
         help="Number of runs per scenario (default: 1).",
@@ -1568,6 +1548,89 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Machine-readable run output format. Must be paired with --out.",
     )
     run_p.add_argument(
+        "--out",
+        default=None,
+        metavar="FILE",
+        help="Path for --format junit/json output. Must be paired with --format.",
+    )
+
+    # ── selftest ────────────────────────────────────────────────────────────
+    selftest_p = sub.add_parser(
+        "selftest",
+        help="Certify scenario gates with live golden and poison references.",
+    )
+    selftest_p.add_argument(
+        "--scenario",
+        action="append",
+        metavar="S",
+        default=None,
+        help="Scenario name or glob to certify. Repeat for multiple; omit for all.",
+    )
+    selftest_p.add_argument(
+        "--tag",
+        action="append",
+        metavar="TAG",
+        default=None,
+        help="Certify scenarios carrying TAG. Repeat for OR matching within tags.",
+    )
+    selftest_p.add_argument(
+        "--pack",
+        action="append",
+        metavar="PACK",
+        default=None,
+        help="Certify scenarios from pack PACK. Repeat for multiple packs.",
+    )
+    selftest_p.add_argument(
+        "--pack-source",
+        action="append",
+        metavar="SOURCE",
+        default=None,
+        help="Load a local scenario pack from module:attr or path.py:attr.",
+    )
+    selftest_p.add_argument(
+        "--owner",
+        action="append",
+        metavar="OWNER",
+        default=None,
+        help="Certify scenarios from packs whose owner matches OWNER.",
+    )
+    selftest_p.add_argument(
+        "--runtime",
+        required=True,
+        metavar="RUNTIME",
+        help="Reference-capable runtime plugin to certify against.",
+    )
+    selftest_p.add_argument(
+        "--soul",
+        default=None,
+        metavar="PATH",
+        help="Path to SOUL.md / system instructions to inject.",
+    )
+    selftest_p.add_argument(
+        "--agents",
+        default=None,
+        metavar="PATH",
+        help="Path to an AGENTS.md operating-notes document to inject.",
+    )
+    selftest_p.add_argument(
+        "--label",
+        default=None,
+        metavar="LABEL",
+        help="Variant-label prefix for reference traces (default: selftest).",
+    )
+    selftest_p.add_argument(
+        "--runs-dir",
+        default="runs/selftest",
+        metavar="DIR",
+        help="Directory to write reference traces (default: ./runs/selftest).",
+    )
+    selftest_p.add_argument(
+        "--format",
+        choices=["junit", "json"],
+        default=None,
+        help="Machine-readable self-test output. Must be paired with --out.",
+    )
+    selftest_p.add_argument(
         "--out",
         default=None,
         metavar="FILE",
@@ -1814,9 +1877,8 @@ def _build_parser() -> argparse.ArgumentParser:
     triage_p.add_argument(
         "--classifier",
         default="rule_based",
-        choices=["rule_based", "llm_judge"],
-        help="Classifier to use: rule_based (default, deterministic) or "
-        "llm_judge (stub — raises NotImplementedError until implemented).",
+        choices=["rule_based"],
+        help="Classifier to use (default: rule_based, deterministic).",
     )
 
     # ── skill ────────────────────────────────────────────────────────────────
@@ -1848,6 +1910,17 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _positive_int(raw: str) -> int:
+    """Parse an integer CLI argument that must be greater than zero."""
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {raw!r}") from exc
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns exit code (0 = all pass, non-zero = regression/error)."""
     parser = _build_parser()
@@ -1859,6 +1932,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_compare(args)
     if args.command == "run":
         return _cmd_run(args)
+    if args.command == "selftest":
+        return _cmd_selftest(args)
     if args.command == "rescore":
         return _cmd_rescore(args)
     if args.command == "replay":

@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.10.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.9.2...v0.10.0) (2026-07-11)
+
+
+### Features
+
+* add live reference self-tests ([#58](https://github.com/syntropy-systems-oss/windtunnel/issues/58)) ([fdac05e](https://github.com/syntropy-systems-oss/windtunnel/commit/fdac05e429123aae3df5e724ae5db62e4519dfc2))
+
+## [0.9.2](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.9.1...v0.9.2) (2026-07-11)
+
+
+### Bug Fixes
+
+* bind scenario execution to owning pack ([#52](https://github.com/syntropy-systems-oss/windtunnel/issues/52)) ([9033cf4](https://github.com/syntropy-systems-oss/windtunnel/commit/9033cf4367677234b9b6f7934e15fa6945c95e97))
+
+## [0.9.1](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.9.0...v0.9.1) (2026-07-11)
+
+
+### Bug Fixes
+
+* accept order report recovery path ([#48](https://github.com/syntropy-systems-oss/windtunnel/issues/48)) ([dd1c426](https://github.com/syntropy-systems-oss/windtunnel/commit/dd1c426fc7f0ef339aa9c02aee0e137e1bc282f0))
+* expose evidence routes on canned MCP servers ([#49](https://github.com/syntropy-systems-oss/windtunnel/issues/49)) ([89242e7](https://github.com/syntropy-systems-oss/windtunnel/commit/89242e70c80036f1bf5dd99a30a18f0504cae6e9))
+
+## [0.9.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.8.1...v0.9.0) (2026-07-10)
+
+
+### Features
+
+* define declared gates and integrity semantics ([#44](https://github.com/syntropy-systems-oss/windtunnel/issues/44)) ([5ddec09](https://github.com/syntropy-systems-oss/windtunnel/commit/5ddec09505d8bc345dd4892cf45ea891c82c86fb))
+
+## [0.8.1](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.8.0...v0.8.1) (2026-07-10)
+
+
+### Bug Fixes
+
+* harden runtime and CLI contracts ([#42](https://github.com/syntropy-systems-oss/windtunnel/issues/42)) ([db4ff35](https://github.com/syntropy-systems-oss/windtunnel/commit/db4ff35e23cb64bc28f5d33ece457b069685c8c5))
+
+## [0.8.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.7.1...v0.8.0) (2026-07-10)
+
+
+### Features
+
+* reorganize framework internals ([#40](https://github.com/syntropy-systems-oss/windtunnel/issues/40)) ([ebd614c](https://github.com/syntropy-systems-oss/windtunnel/commit/ebd614cf05020c0471e273738608c05f554cedef))
+
 ## [0.7.1](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.7.0...v0.7.1) (2026-07-10)
 
 
