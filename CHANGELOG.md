@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.10.0...v0.10.1) (2026-07-18)
+
+
+### Bug Fixes
+
+* probe wiring, module identity, and a teardown seam ([#61](https://github.com/syntropy-systems-oss/windtunnel/issues/61)) ([95acb41](https://github.com/syntropy-systems-oss/windtunnel/commit/95acb41cdd175e08e5b6c5044b4c31710e9e97c7))
+
 ## [0.10.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.9.2...v0.10.0) (2026-07-11)
 
 
