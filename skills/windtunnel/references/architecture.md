@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/architecture.md at 512dc19ffb35 — do not edit; edit docs/architecture.md. -->
+<!-- GENERATED from docs/architecture.md at 22107fff0059 — do not edit; edit docs/architecture.md. -->
 ---
 description: "Architecture overview of Wind Tunnel's API/SPI split, runner data path, scoring layers, perturbations, and CLI surfaces."
 ---
@@ -67,8 +67,10 @@ to evolve between releases.
 SPI concepts have one canonical definition. In particular, `MCPSpec` is
 defined in `spi.agent_runtime` and re-exported elsewhere, and a
 `RuntimePlugin` structurally requires only `build()`. Optional lifecycle hooks
-such as `pre_run()` are discovered by capability rather than made part of the
-minimum plugin contract.
+such as `pre_run()` (once-per-sweep bench setup) and its teardown counterpart
+`post_run()` (once-per-sweep bench teardown, run in a `finally` so it fires
+even when the sweep aborts or a scenario raises) are discovered by capability
+rather than made part of the minimum plugin contract.
 
 ## 2. Anatomy of a scored run
 

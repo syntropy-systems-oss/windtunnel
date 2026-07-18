@@ -447,12 +447,20 @@ What `wt run` does with it:
 - **External-state evidence.** If your dim verifies world state (see
   "Verifying external state" above), set `state_probe_factory` to a callable
   that takes the selected `Scenario` and returns a `StateProbe` (or `None`
-  for scenarios it doesn't observe). Same `dim:<name>`-tag dispatch and
-  plugin-runtime-only invocation as `mcp_factory`. When the probe's fixture
-  is started by your runtime plugin's `pre_run()` (the usual driver shape),
-  ship the pack with `state_probe_factory=None` and have `pre_run()` set it
-  on your module-level `PACK` once the fixture is up — `pre_run` fires before
-  any scenario, and the CLI reads the factory per scenario, not at discovery.
+  for scenarios it doesn't observe). Unlike `mcp_factory`, this is **not**
+  gated on the `dim:<name>` tag — the CLI calls every pack's
+  `state_probe_factory` for every scenario (plugin runtimes only) and takes
+  the first non-`None` result, so the factory's own return value is the sole
+  decision of which scenarios get a probe. (Requiring the tag too used to be
+  a footgun: forgetting it on a scenario silently dropped that scenario's
+  probe with no warning.) When the probe's fixture is started by your
+  runtime plugin's `pre_run()` (the usual driver shape), ship the pack with
+  `state_probe_factory=None` and have `pre_run()` set it on your
+  module-level `PACK` once the fixture is up — `pre_run` fires before any
+  scenario, and the CLI reads the factory per scenario, not at discovery. If
+  that same fixture needs teardown (a subprocess, a container), release it
+  in the plugin's `post_run()` — `pre_run`'s symmetric counterpart, called
+  once at sweep end (success, abort, or exception) in a `finally`.
 - **`transport_only=True`** marks a dim whose history-shaping perturbation is
   applied post-hoc to the trace (the live model never saw it): the scenario
   still runs and reports, but its model verdict doesn't flip the exit code.

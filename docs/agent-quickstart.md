@@ -146,7 +146,7 @@ Register it so `--runtime <name>` resolves, in your driver's `pyproject.toml`:
 
 ```toml
 [project.entry-points."windtunnel.runtimes"]
-myplatform = "my_driver.plugin:MyPlatformPlugin"   # has .build(); optional .pre_run()
+myplatform = "my_driver.plugin:MyPlatformPlugin"   # has .build(); optional .pre_run()/.post_run()
 ```
 
 Scenario dimensions plug in the same way: package them as a `ScenarioPack`

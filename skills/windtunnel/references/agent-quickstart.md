@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/agent-quickstart.md at f9559c8cb4ea — do not edit; edit docs/agent-quickstart.md. -->
+<!-- GENERATED from docs/agent-quickstart.md at 82f2d3129b71 — do not edit; edit docs/agent-quickstart.md. -->
 ---
 description: "Self-contained guide for coding agents to add Wind Tunnel scenarios, runtime wiring, and run commands to a project."
 ---
@@ -147,7 +147,7 @@ Register it so `--runtime <name>` resolves, in your driver's `pyproject.toml`:
 
 ```toml
 [project.entry-points."windtunnel.runtimes"]
-myplatform = "my_driver.plugin:MyPlatformPlugin"   # has .build(); optional .pre_run()
+myplatform = "my_driver.plugin:MyPlatformPlugin"   # has .build(); optional .pre_run()/.post_run()
 ```
 
 Scenario dimensions plug in the same way: package them as a `ScenarioPack`
