@@ -490,15 +490,33 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     # which injects MOCK_MCP_FAILURE_MODE per scenario) can specialize.
                     scenario_mcps = [factory(scenario)]
                     break
-            # External-state probe, same dim-tag dispatch as the mock. Factories
-            # are read per scenario (not snapshotted into a registry above)
-            # because pre_run() may have set them after pack discovery. The
-            # factory itself may return None for scenarios it doesn't observe.
+            # External-state probe. Factories are read per scenario (not
+            # snapshotted into a registry above) because pre_run() may have
+            # set them after pack discovery.
+            #
+            # Deliberately NOT gated on a "dim:{pack.name}" tag the way the
+            # mock-MCP dispatch above is: that tag is load-bearing for
+            # mcp_registry because it disambiguates WHICH mock to build out
+            # of potentially several registered ones (building the wrong
+            # mock, or all of them, could start unwanted subprocesses/ports).
+            # state_probe_factory has no such registry to disambiguate — it
+            # is called directly on each pack the scenario could belong to,
+            # and the factory itself is documented (ScenarioPack.
+            # state_probe_factory's own docstring) to decide per-scenario
+            # applicability by returning None. Gating the CALL on a tag in
+            # addition to that meant a pack author who wrote a real
+            # state_probe_factory but forgot (or never knew to add) the
+            # matching tag got NO probe and NO warning — external-state
+            # scoring silently degraded to trace-only evidence with no
+            # indication anything was skipped. Every pack whose factory
+            # exists is asked; the first one that returns a probe for this
+            # scenario wins.
             for pack in packs:
                 if pack.state_probe_factory is None:
                     continue
-                if f"dim:{pack.name}" in getattr(scenario, "tags", []):
-                    scenario_probe = pack.state_probe_factory(scenario)
+                candidate = pack.state_probe_factory(scenario)
+                if candidate is not None:
+                    scenario_probe = candidate
                     break
 
         transport_only = any(t in transport_only_dims for t in getattr(scenario, "tags", []))

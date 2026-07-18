@@ -642,6 +642,110 @@ class TestWtRunCiOutput:
         assert "Traceback" not in combined
 
 
+class TestWtRunStateProbeWiring:
+    """`wt run` must wire a pack's state_probe_factory whenever it exists —
+    a scenario author should not have to remember a separate activating tag
+    on top of writing the factory itself, or probing (and therefore any
+    Policy that reads trace.observations) silently degrades to no external-
+    state evidence at all, with no warning that anything was skipped."""
+
+    def test_probe_is_wired_even_without_the_pack_name_tag(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        import windtunnel.api.runner as runner
+        import windtunnel.cli as cli
+
+        class _FakeProbe:
+            def reset(self) -> None:
+                pass
+
+            def capture(self) -> dict:
+                return {"observed": True}
+
+        probe = _FakeProbe()
+        # Deliberately NO "dim:custom" tag on this scenario — the exact shape
+        # of the regression: a pack author writes a real state_probe_factory
+        # but the scenario carries no activating tag.
+        scenario = _scenario("untagged_but_probed", tags=["tier:smoke"])
+        pack = _pack("custom", [scenario])
+        pack.state_probe_factory = lambda s: probe if s.name == scenario.name else None
+
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [pack])
+        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path: object())
+        monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda runtime_name: object())
+
+        captured_kwargs: dict[str, object] = {}
+
+        def fake_run_scenario(scenario_arg, runtime_arg, *args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return _result(scenario_arg, passed=True)
+
+        monkeypatch.setattr(runner, "run_scenario", fake_run_scenario)
+
+        rc = cli.main([
+            "run",
+            "--scenario", scenario.name,
+            "--runtime", "some_plugin_runtime",
+            "--runs-dir", str(tmp_path / "runs"),
+        ])
+
+        assert rc == 0
+        assert captured_kwargs.get("state_probe") is probe
+
+    def test_probe_from_a_different_pack_is_not_wired(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A pack whose factory legitimately returns None for a scenario it
+        does not own must not have some OTHER pack's probe attached either —
+        removing the tag gate must not turn into "wire the first probe found
+        no matter which pack it belongs to."."""
+        import windtunnel.api.runner as runner
+        import windtunnel.cli as cli
+
+        class _FakeProbe:
+            def reset(self) -> None:
+                pass
+
+            def capture(self) -> dict:
+                return {"observed": True}
+
+        owning_probe = _FakeProbe()
+        scenario = _scenario("owned_by_second_pack", tags=[])
+        unrelated_pack = _pack("unrelated", [])
+        unrelated_pack.state_probe_factory = lambda s: None  # never owns anything
+
+        owning_pack = _pack("owning", [scenario])
+        owning_pack.state_probe_factory = (
+            lambda s: owning_probe if s.name == scenario.name else None
+        )
+
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [unrelated_pack, owning_pack])
+        monkeypatch.setattr(cli, "_build_runtime", lambda runtime_name, label, soul_path: object())
+        monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda runtime_name: object())
+
+        captured_kwargs: dict[str, object] = {}
+
+        def fake_run_scenario(scenario_arg, runtime_arg, *args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return _result(scenario_arg, passed=True)
+
+        monkeypatch.setattr(runner, "run_scenario", fake_run_scenario)
+
+        rc = cli.main([
+            "run",
+            "--scenario", scenario.name,
+            "--runtime", "some_plugin_runtime",
+            "--runs-dir", str(tmp_path / "runs"),
+        ])
+
+        assert rc == 0
+        assert captured_kwargs.get("state_probe") is owning_probe
+
+
 class TestWtRescore:
     def test_rescore_help_exits_zero(self) -> None:
         result = _wt("rescore", "--help")

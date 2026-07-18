@@ -56,7 +56,22 @@ class ScenarioPack:
 
     state_probe_factory: builds the pack's StateProbe for a given scenario,
         or returns None when that scenario needs no external-state capture.
-        The probe seam mirrors mcp_factory: called once per scenario, the
+        Unlike mcp_factory, the CLI calls this on EVERY pack that defines
+        one, for every scenario, with no activating tag required — the
+        factory itself is the sole decision point for "does this scenario
+        get a probe", by returning None for scenarios it does not own. (A
+        tag-gate identical to mcp_factory's dispatch existed here through
+        0.7.x; it silently skipped state_probe_factory entirely whenever a
+        scenario lacked the pack's own f"dim:{name}" tag, so authoring a
+        real factory and forgetting that one tag meant external-state
+        scoring quietly fell back to no observations at all, with no
+        warning. Removed — the factory's own None-return already carries
+        that decision, and requiring a second, separately-remembered signal
+        added a footgun without adding disambiguation: mcp_factory's tag
+        keys a shared registry of possibly-expensive mocks to avoid
+        building the wrong one, but state_probe_factory is called directly
+        per-pack, so the tag was never load-bearing for it.) The first pack
+        (in discovery order) whose factory returns non-None wins; the
         result is passed to run_scenario(state_probe=...), which resets it
         before each run and freezes capture() into trace.observations
         before scoring (see windtunnel/spi/state_probe.py). A probe
