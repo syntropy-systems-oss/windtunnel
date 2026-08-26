@@ -14,6 +14,8 @@ Subcommands:
     wt import   --trace PATH --out DIR [--force]
     wt validate [--strict] PATH [PATH ...]
     wt triage   [--runs DIR] [--classifier rule_based]
+    wt serve    [--runs-dir DIR] [--port PORT] [--host HOST]
+                [--pack-source SOURCE]... [--live-glob PATTERN]
     wt skill    path | install [--dest DIR] [--copy]
 
 Design: argparse (stdlib) — no click dependency. Each subcommand is a
@@ -1329,6 +1331,55 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+# ─── serve ───────────────────────────────────────────────────────────────────
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """Handle the `wt serve` subcommand.
+
+    Hosts a local, read-only viewer over a runs/ directory: the sweep
+    ledger dashboard, per-run drill-down (trace + score sidecar), the
+    discovered scenario packs (the test cases and the tool surface they
+    declare), and an optional generic live tail of JSONL files. Scenario
+    packs are discovered exactly like `wt run`: built-in dims, the
+    "windtunnel.scenario_packs" entry-point group, and any --pack-source.
+
+    The server never writes: it only implements GET, and nothing under the
+    runs/ directory (or anywhere else) is mutated by any endpoint.
+    """
+    from windtunnel._serve.server import build_server  # noqa: PLC0415
+
+    runs_dir = Path(args.runs_dir)
+    pack_sources = args.pack_source or []
+    packs = _discover_scenario_packs(pack_sources) if pack_sources else _discover_scenario_packs()
+
+    try:
+        server = build_server(
+            runs_dir=runs_dir,
+            packs=packs,
+            live_glob=args.live_glob,
+            host=args.host,
+            port=args.port,
+            wt_version=_wt_version(),
+        )
+    except OSError as exc:
+        print(f"wt serve: could not bind {args.host}:{args.port}: {exc}", file=sys.stderr)
+        return 1
+
+    host, port = server.bound_address
+    print(f"wt serve: viewing {runs_dir} at http://{host}:{port}/", file=sys.stderr)
+    if args.live_glob:
+        print(f"wt serve: live-tailing JSONL files matching {args.live_glob!r}", file=sys.stderr)
+    print("wt serve: read-only — Ctrl-C to stop.", file=sys.stderr)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("wt serve: stopped.", file=sys.stderr)
+    finally:
+        server.server_close()
+    return 0
+
+
 def _installed_skill_dir() -> Path:
     """Return the installed Wind Tunnel skill directory as a filesystem path."""
     skill = resources.files("windtunnel").joinpath("skill")
@@ -1881,6 +1932,50 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Classifier to use (default: rule_based, deterministic).",
     )
 
+    # ── serve ────────────────────────────────────────────────────────────────
+    serve_p = sub.add_parser(
+        "serve",
+        help="Host a local, read-only web viewer over a runs/ directory.",
+    )
+    serve_p.add_argument(
+        "--runs-dir",
+        default="runs",
+        metavar="DIR",
+        help="Runs directory to view (default: ./runs). Nothing in it is ever modified.",
+    )
+    serve_p.add_argument(
+        "--port",
+        type=int,
+        default=8686,
+        metavar="PORT",
+        help="Port to listen on (default: 8686; 0 picks an ephemeral port).",
+    )
+    serve_p.add_argument(
+        "--host",
+        default="127.0.0.1",
+        metavar="HOST",
+        help="Interface to bind (default: 127.0.0.1 — local viewing only).",
+    )
+    serve_p.add_argument(
+        "--pack-source",
+        action="append",
+        metavar="SOURCE",
+        default=None,
+        help="Load an additional local scenario pack from module:attr "
+        "or path/to/file.py:attr for the scenario browser. Repeat "
+        "for multiple sources; discovery otherwise matches `wt run` "
+        "(built-in dims plus the 'windtunnel.scenario_packs' "
+        "entry-point group).",
+    )
+    serve_p.add_argument(
+        "--live-glob",
+        default=None,
+        metavar="PATTERN",
+        help="Tail JSONL files matching this glob and stream newly "
+        "appended lines to the viewer's Live tab. Generic by design: "
+        "point it at whatever JSONL your runtime writes.",
+    )
+
     # ── skill ────────────────────────────────────────────────────────────────
     skill_p = sub.add_parser(
         "skill",
@@ -1948,6 +2043,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_validate(args)
     if args.command == "triage":
         return _cmd_triage(args)
+    if args.command == "serve":
+        return _cmd_serve(args)
     if args.command == "skill":
         return _cmd_skill(args)
 
