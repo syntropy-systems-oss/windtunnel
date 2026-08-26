@@ -40,16 +40,22 @@ def _entry_to_message(entry: ScriptedEntry) -> tuple[dict[str, Any], str]:
     if isinstance(entry, str):
         content: str = entry
         tool_calls: list[dict[str, Any]] = []
+        error: str | None = None
     else:
         content = entry.get("content", "")
         # Pass through as-given (OpenAI wire shape) — no normalisation.
         tool_calls = entry.get("tool_calls", []) or []
+        # Optional runtime-error marker (see Turn.error) so pipeline tests
+        # can script "this turn failed inside the platform".
+        error = entry.get("error")
     finish_reason = "tool_calls" if tool_calls else "stop"
     message = {
         "role": "assistant",
         "content": content,
         "tool_calls": tool_calls,
     }
+    if error is not None:
+        message["error"] = error
     return message, finish_reason
 
 

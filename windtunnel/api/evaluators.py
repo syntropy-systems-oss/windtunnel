@@ -201,6 +201,28 @@ def evaluate_outcome(trace: Trace, scenario: Scenario) -> LayerResult:
             ),
         )
 
+    # Vacuous-pass guard: every declared check passed (possibly because none
+    # were declared), but the answer turn is EMPTY. When the outcome layer
+    # gates the verdict, silence must never pass by default — a runtime
+    # failure that produced a blank scored turn would otherwise read as
+    # "all facts found". Scenarios where silence is genuinely correct opt
+    # in with allow_empty_answer=True. A non-gated (diagnostic-only)
+    # outcome keeps the legacy vacuous pass — it never flips a verdict.
+    if not answer.strip():
+        if scenario.allow_empty_answer:
+            return LayerResult(
+                passed=True,
+                detail="empty answer allowed by scenario (allow_empty_answer=True)",
+            )
+        if "outcome" in scenario.resolved_gate_layers():
+            return LayerResult(
+                passed=False,
+                detail=(
+                    "outcome gated but the answer turn is empty "
+                    "(set allow_empty_answer=True if silence is the correct outcome)"
+                ),
+            )
+
     return LayerResult(passed=True, detail="all facts and numbers found in last assistant turn")
 
 
@@ -398,16 +420,31 @@ def evaluate_constraint(trace: Trace, scenario: Scenario) -> LayerResult:
 # ─── Experiment-integrity evaluator ───────────────────────────────────────────
 
 def evaluate_integrity(trace: Trace, scenario: Scenario) -> LayerResult:
-    """Evaluate whether declared perturbations were actually applied.
+    """Evaluate whether the run is valid evidence of agent behavior.
 
-    Pass = no perturbations declared OR all declared
-           perturbations have their marker in trace.worker_warnings.
-    Fail = perturbations declared but at least one marker is absent.
+    Two checks, both about the EXPERIMENT rather than the agent:
 
-    The runner is responsible for calling perturbation.apply()
-    before the scenario run and passing the marked trace to the evaluator.
-    This evaluator just verifies the contract was honoured.
+    1. A scored turn the runtime marked as errored (Turn.error) is not a
+       model decision at all — the run is INVALID, never a vacuous pass
+       or an agent failure. Only the scored (last assistant) turn
+       invalidates: an errored intermediate turn the agent recovered
+       from is real agent behavior, and stays scoreable.
+    2. Declared perturbations must have their marker in
+       trace.worker_warnings — a perturbation that silently failed to
+       apply cannot produce a false pass. The runner is responsible for
+       calling perturbation.apply() before the scenario run; this
+       evaluator just verifies the contract was honoured.
     """
+    scored = _last_assistant_turn(trace)
+    if scored is not None and scored.error:
+        return LayerResult(
+            passed=False,
+            detail=(
+                f"scored turn reported a runtime error: {scored.error} "
+                "(run is INVALID — not evidence of agent behavior)"
+            ),
+        )
+
     if not scenario.perturbations:
         return LayerResult(passed=True, detail="no perturbations declared")
 

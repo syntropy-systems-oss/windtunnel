@@ -68,7 +68,8 @@ EXPECTED_SPI_EXPORTS = (
 EXPECTED_DATACLASS_FIELDS = {
     Scenario: (
         "name", "prompt", "target_facts", "target_numbers", "requires_tool_use",
-        "forbidden_facts", "outcome_fn", "must_call", "forbidden_calls", "order_matters",
+        "forbidden_facts", "outcome_fn", "allow_empty_answer",
+        "must_call", "forbidden_calls", "order_matters",
         "trajectory_checks", "user_turns", "preconditions", "requires_tools", "requires_files",
         "policies", "gate_layers", "strict_gates", "perturbations", "failure_cost",
         "variance_allowed", "tags", "reference_cases",

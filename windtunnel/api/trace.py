@@ -56,6 +56,17 @@ class Turn:
 
     rendered_prompt_hash: auto-computed from rendered_prompt on init.
         None when rendered_prompt is None.
+
+    error: runtime-reported failure marker for this turn. A runtime that
+        knows a turn failed inside its platform (an inference timeout, a
+        crashed worker, a gateway 5xx) signals it here instead of
+        smuggling error text into ``content`` — content stays what the
+        agent said, error stays what the platform reported. None (the
+        default, and the value for every pre-existing trace) means no
+        error was reported. A SCORED turn carrying an error makes the
+        run INVALID via the integrity layer (see evaluate_integrity):
+        a failed turn is not evidence of agent behavior, so it must
+        never become a vacuous pass or count as an agent failure.
     """
     role: str
     content: str
@@ -63,6 +74,7 @@ class Turn:
     tool_results: list[dict[str, Any]]
     latency_ms: float
     rendered_prompt: str | None = None
+    error: str | None = None
 
     # Computed on post_init — not passed by callers.
     rendered_prompt_hash: Hash | None = field(default=None, init=False)
@@ -84,6 +96,7 @@ class Turn:
             "latency_ms": self.latency_ms,
             "rendered_prompt": self.rendered_prompt,
             "rendered_prompt_hash": self.rendered_prompt_hash,
+            "error": self.error,
         }
 
     @classmethod
@@ -95,6 +108,7 @@ class Turn:
             tool_results=d.get("tool_results") or [],
             latency_ms=d.get("latency_ms", 0.0),
             rendered_prompt=d.get("rendered_prompt"),
+            error=d.get("error"),
         )
         # rendered_prompt_hash is computed by __post_init__ from rendered_prompt.
         # If the stored hash differs (shouldn't happen), we trust the stored value

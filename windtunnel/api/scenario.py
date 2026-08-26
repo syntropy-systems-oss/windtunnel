@@ -263,6 +263,15 @@ class Scenario:
     # so offline re-scoring needs the pack importable.
     outcome_fn: Callable[[Trace], LayerResult] | None = None
 
+    # allow_empty_answer: opt-in for scenarios where SILENCE is the correct
+    # outcome. By default (False), a gated outcome layer FAILS when the
+    # scored answer turn is empty/whitespace — even a scenario declaring no
+    # target facts cannot pass vacuously on a blank (or runtime-errored)
+    # final turn. Set True only when an empty final turn is genuinely a
+    # pass (e.g. an artifact-producing scenario whose whole verdict lives
+    # in tool effects and the agent is expected to say nothing).
+    allow_empty_answer: bool = False
+
     # ── Trajectory layer ───────────────────────────────────────────────────────
     # must_call: each entry is EITHER a str (exact tool name required) OR a
     # list[str] (any-of alternatives group — at least one alternative must be

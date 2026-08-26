@@ -77,6 +77,9 @@ from windtunnel.api._runner.messages import (
 from windtunnel.api._runner.messages import (
     extract_response_worker_warnings as _extract_response_worker_warnings,
 )
+from windtunnel.api._runner.messages import (
+    extract_turn_error as _extract_turn_error,
+)
 from windtunnel.api._runner.world import (
     bind_state_probe_workspace as _bind_state_probe_workspace,
 )
@@ -257,6 +260,11 @@ def _run_once(
             tool_calls=tool_calls,
             tool_results=[],
             latency_ms=latency_ms,
+            # Optional runtime-reported failure marker for this turn: an
+            # errored SCORED turn makes the run INVALID at scoring time
+            # (see Turn.error / evaluate_integrity). Absent for runtimes
+            # that don't report it — honest degradation.
+            error=_extract_turn_error(response),
         ))
         responses.append(reply_text)
 
