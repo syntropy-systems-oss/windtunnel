@@ -61,9 +61,11 @@ from windtunnel.api.preconditions import (
 from windtunnel.api.replay import GenerateFn, replay
 from windtunnel.api.runner import ScenarioResult, run_matrix, run_scenario
 from windtunnel.api.scenario import (
+    EvidenceAnchor,
     NumberFact,
     Perturbation,
     Policy,
+    PolicyVerdict,
     PreSendPerturbation,
     Scenario,
     TrajectoryCheck,
@@ -132,7 +134,8 @@ __all__ = [
     "SCORE_FORMAT_VERSION", "FailureCost", "GateLayer", "LayerResult", "Score",
     "ScoreFormatError", "Verdict", "score_from_dict", "score_to_dict",
     # scenario
-    "NumberFact", "Perturbation", "Policy", "PreSendPerturbation", "Scenario",
+    "NumberFact", "Perturbation", "Policy", "EvidenceAnchor", "PolicyVerdict",
+    "PreSendPerturbation", "Scenario",
     "TrajectoryCheck",
     "ReferenceCase", "ReferenceDecision", "ReferenceKind", "ReferenceToolCall",
     # preconditions

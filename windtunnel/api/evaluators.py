@@ -85,7 +85,7 @@ from windtunnel.api._matching import (
 from windtunnel.api._matching import (
     tool_name_matches as tool_name_matches,
 )
-from windtunnel.api.scenario import NumberFact, Scenario, TrajectoryCheck
+from windtunnel.api.scenario import NumberFact, PolicyVerdict, Scenario, TrajectoryCheck
 from windtunnel.api.score import LayerResult
 from windtunnel.api.trace import Trace
 
@@ -399,20 +399,34 @@ def evaluate_constraint(trace: Trace, scenario: Scenario) -> LayerResult:
 
     Each policy is a named predicate over the trace. All must pass.
     Failed policy names are collected for the diagnostic detail.
+
+    A predicate may return a plain bool (the original contract) or a
+    PolicyVerdict (api.scenario) whose ``passed`` is authoritative and
+    whose ``detail`` is appended to the layer detail on failure. Anchors
+    on a PolicyVerdict are evidence-surface decoration only — they never
+    influence the verdict here.
     """
     failed_policies: list[str] = []
+    failure_details: list[str] = []
     for policy in scenario.policies:
         try:
-            if not policy.predicate(trace):
-                failed_policies.append(policy.name)
+            result = policy.predicate(trace)
         except Exception as exc:
             failed_policies.append(f"{policy.name}(error: {exc})")
+            continue
+        if isinstance(result, PolicyVerdict):
+            if not result.passed:
+                failed_policies.append(policy.name)
+                if result.detail:
+                    failure_details.append(f"{policy.name}: {result.detail}")
+        elif not result:
+            failed_policies.append(policy.name)
 
     if failed_policies:
-        return LayerResult(
-            passed=False,
-            detail=f"constraint violations: {failed_policies}",
-        )
+        detail = f"constraint violations: {failed_policies}"
+        if failure_details:
+            detail += "; " + "; ".join(failure_details)
+        return LayerResult(passed=False, detail=detail)
 
     return LayerResult(passed=True, detail="all constraints satisfied")
 

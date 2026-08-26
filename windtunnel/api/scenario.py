@@ -54,7 +54,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from windtunnel.api.preconditions import Precondition
 from windtunnel.api.score import GATE_LAYER_ORDER, FailureCost, GateLayer, LayerResult
@@ -81,18 +81,100 @@ class NumberFact:
 
 # ─── Policy ───────────────────────────────────────────────────────────────────
 
+EvidenceAnchorKind = Literal["witnessed_call", "span", "locator"]
+
+
+@dataclass(frozen=True)
+class EvidenceAnchor:
+    """One place in the run's stored evidence a policy verdict points at.
+
+    Anchors let an evidence surface (the run viewer) illuminate exactly
+    WHERE a policy looked, instead of treating every policy as an opaque
+    predicate. Three kinds, all pointing at data already frozen on the
+    Trace — an anchor never references anything the trace does not carry:
+
+    - kind="witnessed_call": ``call_index`` into the server-witnessed call
+      log (``trace.mcp_calls``) in chronological order — the same order
+      evidence surfaces render the witnessed list.
+    - kind="span": ``turn_index`` into ``trace.turns`` plus a half-open
+      ``[start, end)`` character range in that turn's content.
+    - kind="locator": ``note`` is an opaque free-text location (a file
+      path, an observation key, an external record id). Rendered as text
+      ("looked at: …"), never resolved or fetched by the framework.
+
+    ``note`` is optional context for the other kinds ("the retry", "the
+    duplicate send") and required for locators.
+    """
+
+    kind: EvidenceAnchorKind
+    call_index: int | None = None
+    turn_index: int | None = None
+    start: int | None = None
+    end: int | None = None
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        if self.kind == "witnessed_call":
+            if self.call_index is None or self.call_index < 0:
+                raise ValueError("witnessed_call anchor requires call_index >= 0")
+            if self.turn_index is not None or self.start is not None or self.end is not None:
+                raise ValueError("witnessed_call anchor takes only call_index (+ note)")
+        elif self.kind == "span":
+            if self.turn_index is None or self.turn_index < 0:
+                raise ValueError("span anchor requires turn_index >= 0")
+            if self.start is None or self.end is None or not 0 <= self.start < self.end:
+                raise ValueError("span anchor requires 0 <= start < end")
+            if self.call_index is not None:
+                raise ValueError("span anchor takes turn_index/start/end (+ note), not call_index")
+        elif self.kind == "locator":
+            if not self.note.strip():
+                raise ValueError("locator anchor requires a non-empty note")
+            if self.call_index is not None or self.turn_index is not None:
+                raise ValueError("locator anchor carries only its note")
+        else:
+            raise ValueError(f"unknown evidence anchor kind: {self.kind!r}")
+
+
+@dataclass(frozen=True)
+class PolicyVerdict:
+    """Optional richer return for a Policy predicate.
+
+    A predicate may return a plain bool (the original contract, unchanged)
+    or a PolicyVerdict carrying a diagnostic detail and evidence anchors.
+    The boolean verdict is authoritative either way; anchors only decorate
+    it — an evidence surface illuminates them, and a policy that returns
+    none stays an opaque predicate (honestly presented as such, never
+    fabricated around).
+    """
+
+    passed: bool
+    detail: str = ""
+    anchors: tuple[EvidenceAnchor, ...] = ()
+
+    def __post_init__(self) -> None:
+        # Authors naturally pass a list; store a tuple (frozen dataclass).
+        if not isinstance(self.anchors, tuple):
+            object.__setattr__(self, "anchors", tuple(self.anchors))
+        for anchor in self.anchors:
+            if not isinstance(anchor, EvidenceAnchor):
+                raise ValueError("PolicyVerdict anchors must be EvidenceAnchor instances")
+
+
 @dataclass
 class Policy:
     """A named predicate over a Trace for the constraint layer.
 
-    predicate: Callable[[Trace], bool] — returns True if the constraint
-        is satisfied, False if violated.
+    predicate: Callable[[Trace], bool | PolicyVerdict] — truthy/PolicyVerdict
+        with passed=True means the constraint is satisfied. Returning a
+        plain bool is the original contract and remains fully supported;
+        returning a PolicyVerdict additionally carries a diagnostic detail
+        and EvidenceAnchor references for evidence surfaces.
     effect_class: forward-compat hook for the side-effect-safety dim.
         Declares which effect class this policy guards, e.g.
         "external_send", "destructive". None = unclassified.
     """
     name: str
-    predicate: Callable[[Trace], bool]
+    predicate: Callable[[Trace], bool | PolicyVerdict]
     effect_class: str | None = None
 
 
