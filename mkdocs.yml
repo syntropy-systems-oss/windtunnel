@@ -48,6 +48,7 @@ nav:
       - Driving Terminus-2: driving-terminus.md
       - Evaluating skills: evaluating-skills.md
       - Importing a trace: importing-a-trace.md
+      - Viewing runs: viewing-runs.md
       - Recording a universe: recording-a-universe.md
       - Writing a classifier: writing-a-classifier.md
       - Writing an optimizer: writing-an-optimizer.md

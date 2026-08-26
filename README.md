@@ -218,6 +218,7 @@ wt doctor   --runtime http_inject
 wt validate --strict incident.wtin.json
 wt import   --trace incident.wtin.json --out scenarios/imported/incident/
 wt triage   --runs runs/ --classifier rule_based
+wt serve    --runs-dir runs/ --port 8686
 ```
 
 `wt run` can also emit CI artifacts with `--format junit|json --out FILE`.
@@ -227,6 +228,12 @@ results do not enter ordinary pass-rate aggregates.
 The built-in runtimes are `in_memory` and `http_inject`; runtime plugins are
 discovered from the `windtunnel.runtimes` entry-point group or a `module:attr`
 dotted path.
+
+`wt serve` hosts a local, read-only viewer over a runs/ directory: the sweep
+ledger dashboard, per-run drill-down (conversation turns, witnessed tool
+calls, the four layer verdicts with their detail strings), a browser for the
+discovered scenario packs, and an optional `--live-glob` tail of whatever
+JSONL your runtime writes — see [viewing runs](docs/viewing-runs.md).
 
 ## Documentation
 
@@ -238,6 +245,7 @@ dotted path.
 - [Writing a runtime](docs/writing-a-runtime.md) — implement the SPI for your platform
 - [Reference self-tests](docs/design/0004-reference-selftest.md) — certify gates through a live runtime seam
 - [Importing a trace](docs/importing-a-trace.md) — turn a Contract A trace into a regression skeleton
+- [Viewing runs](docs/viewing-runs.md) — `wt serve`, the local read-only run viewer
 - [Recording a universe](docs/recording-a-universe.md) — serve recorded tool calls as a hermetic upstream
 - [Agent quickstart](docs/agent-quickstart.md) — using a coding agent? Point it at this one file to integrate Wind Tunnel into your repo
 - [Failure taxonomy](docs/failure-taxonomy.md) — classification categories and fix vectors

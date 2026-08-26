@@ -3,7 +3,7 @@ name: windtunnel
 description: Bench tool-using LLM agents with the wt CLI, scenario packs, trace import/interchange,
   Contract C inject endpoints, reset isolation, and recorded tool universes.
 ---
-<!-- GENERATED from agents/skill-template.md + docs/ at 653dbe5fa86c — do not edit; edit docs/ or agents/skill-template.md. -->
+<!-- GENERATED from agents/skill-template.md + docs/ at 1b040c119071 — do not edit; edit docs/ or agents/skill-template.md. -->
 # Wind Tunnel
 
 Wind Tunnel is unittest for agents: a reliability bench for tool-using LLM
@@ -49,6 +49,7 @@ serving recorded tool universes, or bringing up Contract C inject endpoints.
 - `references/recording-a-universe.md` - Reference for recorded tool-universe fixtures, matching rules, divergence policies, and RecordedMCPServer usage.
 - `references/surface-goldens.md` - Task guide for capturing prompt-surface goldens and gating steering changes with wt surface.
 - `references/using-hooks.md` - Task guide for enabling Wind Tunnel lifecycle hooks, reading debrief artifacts, and registering custom hooks.
+- `references/viewing-runs.md` - Task guide for wt serve — the local, read-only web viewer over a runs/ directory: ledger dashboard, run drill-down, scenario browser, and live JSONL tail.
 - `references/writing-a-classifier.md` - Guide to implementing failure classifiers and testing them against Wind Tunnel's taxonomy fixtures.
 - `references/writing-a-runtime.md` - Guide to implementing Wind Tunnel runtime protocols or Contract C endpoints with reset isolation and tool-call evidence.
 - `references/writing-a-scenario.md` - Reference for authoring backend-agnostic Scenario objects, scoring fields, perturbations, dimensions, and scenario packs.

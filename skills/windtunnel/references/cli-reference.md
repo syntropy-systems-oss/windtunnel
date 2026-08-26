@@ -1,12 +1,12 @@
-<!-- GENERATED from docs/cli-reference.md at af35b5c0cbf7 — do not edit; edit docs/cli-reference.md. -->
+<!-- GENERATED from docs/cli-reference.md at 9e6b631f93ac — do not edit; edit docs/cli-reference.md. -->
 ---
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at 2b74639603de — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at 28b968e5626c — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
-The `wt` command ships 12 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
+The `wt` command ships 13 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
 
 | Command | Purpose |
 |---|---|
@@ -21,6 +21,7 @@ The `wt` command ships 12 subcommands. This page is generated from `windtunnel.c
 | `wt import` | Generate a scenario skeleton from a Contract A *.wtin.json trace. |
 | `wt validate` | Validate Contract A *.wtin.json interchange envelope(s). |
 | `wt triage` | Classify failed runs and emit a markdown report grouped by failure category. |
+| `wt serve` | Host a local, read-only web viewer over a runs/ directory. |
 | `wt skill` | Print or install the packaged Wind Tunnel agent skill. |
 
 Exit code conventions: `0` means success, `1` means a runtime failure, regression, world mismatch, or newly-scored outcome failure, and `2` means usage or configuration error.
@@ -308,6 +309,26 @@ Arguments and options:
 |---|---:|---|---|
 | `--runs` | no | runs | Path to the runs/ directory (default: ./runs). Each trace must have a sibling .score.json file. |
 | `--classifier` | no | rule_based | Classifier to use (default: rule_based, deterministic). Choices: rule_based. |
+
+## `wt serve`
+
+Host a local, read-only web viewer over a runs/ directory.
+
+Usage:
+
+```bash
+wt serve [-h] [--runs-dir DIR] [--port PORT] [--host HOST] [--pack-source SOURCE] [--live-glob PATTERN]
+```
+
+Arguments and options:
+
+| Name | Required | Default | Help |
+|---|---:|---|---|
+| `--runs-dir` | no | runs | Runs directory to view (default: ./runs). Nothing in it is ever modified. |
+| `--port` | no | 8686 | Port to listen on (default: 8686; 0 picks an ephemeral port). |
+| `--host` | no | 127.0.0.1 | Interface to bind (default: 127.0.0.1 — local viewing only). |
+| `--pack-source` | no |  | Load an additional local scenario pack from module:attr or path/to/file.py:attr for the scenario browser. Repeat for multiple sources; discovery otherwise matches `wt run` (built-in dims plus the 'windtunnel.scenario_packs' entry-point group). |
+| `--live-glob` | no |  | Tail JSONL files matching this glob and stream newly appended lines to the viewer's Live tab. Generic by design: point it at whatever JSONL your runtime writes. |
 
 ## `wt skill`
 
