@@ -274,6 +274,44 @@ Policy(name="no_bypass_approval",
 A predicate returns `True` = satisfied. A predicate that *raises* is recorded as a
 failure (with the exception text) — it never crashes the evaluator.
 
+#### Anchored verdicts: `PolicyVerdict` + `EvidenceAnchor`
+
+A predicate may instead return a `PolicyVerdict` — same authority
+(`passed` decides), plus a diagnostic `detail` (appended to the layer
+detail on failure) and **evidence anchors**: references to the exact
+places in the stored trace the policy judged, so evidence surfaces
+(`wt serve`'s run screen) can illuminate them instead of presenting the
+policy as an opaque predicate.
+
+```python
+from windtunnel.api.scenario import EvidenceAnchor, Policy, PolicyVerdict
+
+def _no_duplicate_send(trace):
+    sends = [i for i, call in enumerate(trace.mcp_calls)
+             if call["tool_name"] == "order_update"]
+    return PolicyVerdict(
+        passed=len(sends) <= 1,
+        detail=f"{len(sends)} update call(s) witnessed",
+        anchors=[EvidenceAnchor(kind="witnessed_call", call_index=i) for i in sends],
+    )
+
+Policy(name="no_duplicate_send", predicate=_no_duplicate_send,
+       effect_class="external_send")
+```
+
+Three anchor kinds, all pointing at data already frozen on the trace:
+
+| Kind | Fields | Points at |
+|---|---|---|
+| `witnessed_call` | `call_index` (+ `note`) | one entry of `trace.mcp_calls`, chronological order |
+| `span` | `turn_index`, `start`, `end` (+ `note`) | a half-open character range in one turn's content |
+| `locator` | `note` (required) | an opaque free-text location (a file path, an observation key) — rendered as text, never resolved |
+
+Fully backward compatible: plain-bool policies are unchanged, and a policy
+that returns no anchors is honestly presented as opaque ("no transcript
+anchor") — the framework never fabricates anchors around it. Anchors
+decorate the verdict; they never influence it.
+
 #### Verifying external state: `trace.observations`
 
 Some scenarios succeed or fail in the *world*, not the transcript: the agent

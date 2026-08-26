@@ -82,17 +82,30 @@ expectation was met or missed:
 - hovering a `must_call` or `forbidden_calls` entry illuminates every
   matching tool call in the transcript (green for required, red for
   forbidden); clicking locks the highlight so it survives scrolling —
-  click again, or another entry, to unlock or switch. The matches are
-  computed server-side by the same `tool_name_matches` comparisons the
-  trajectory evaluator uses, at token precision: the exact canonical name
-  is marked inside a platform-decorated call, not the whole block. When
-  the evidence source is the server's own call log, a server-computed
-  witnessed→transcript mapping (greedy in-order name walk) lights the
-  corresponding claimed call blocks too; a witnessed call the transcript
-  never claimed is labeled "no matching transcript call" rather than
-  silently skipped. A miss is precision too: "never called" carries the
-  definitive red state on the contract side — "no call matched — this is
-  the failure" — because absence has nothing to highlight;
+  click again, or another entry, to unlock or switch. Hover also scrolls
+  the transcript pane to the first lit match after a short hover-intent
+  dwell (locking scrolls immediately), so sweeping the cursor down the
+  contract never thrashes the pane. The baseline transcript stays
+  neutral — green/red appears only under illumination; at-rest status
+  lives on the contract side. Matches are computed server-side by the
+  same `tool_name_matches` comparisons the trajectory evaluator uses, at
+  token precision: the exact canonical name is marked inside a
+  platform-decorated call, not the whole block. When the evidence source
+  is the server's own call log, a server-computed witnessed→transcript
+  mapping (greedy in-order name walk) lights the corresponding claimed
+  call blocks too; a witnessed call the transcript never claimed is
+  labeled "no matching transcript call" rather than silently skipped. A
+  miss is precision too: "never called" carries the definitive red state
+  on the contract side — "no call matched — this is the failure" —
+  because absence has nothing to highlight;
+- a policy that returns an anchored verdict (`PolicyVerdict` with
+  `EvidenceAnchor` references — see [writing a
+  scenario](writing-a-scenario.md)) is hoverable like any call entry: its
+  witnessed-call and span anchors illuminate, and its free-text locators
+  render as "looked at: …" under the entry. Entries with nothing to
+  illuminate — plain-predicate policies, custom `TrajectoryCheck`s,
+  `outcome_fn` — are visibly non-interactive and say so ("opaque policy —
+  no transcript anchor"); nothing ever looks hoverable and does nothing;
 - the layer chips in the banner jump to their evidence entries within the
   contract pane.
 
