@@ -36,7 +36,7 @@ from windtunnel.api._matching import (
     tool_name_matches,
 )
 from windtunnel.api.evaluators import NEGATION_CUES
-from windtunnel.api.scenario import Scenario
+from windtunnel.api.scenario import PolicyVerdict, Scenario
 from windtunnel.api.trace import Trace
 
 
@@ -45,7 +45,7 @@ def compute_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
     return {
         "outcome": _outcome_evidence(scenario, trace),
         "trajectory": _trajectory_evidence(scenario, trace),
-        "constraint": _constraint_evidence(scenario),
+        "constraint": _constraint_evidence(scenario, trace),
         "integrity": _integrity_evidence(scenario, trace),
     }
 
@@ -333,19 +333,63 @@ def _trajectory_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
 # ─── constraint / integrity ──────────────────────────────────────────────────
 
 
-def _constraint_evidence(scenario: Scenario) -> dict[str, Any]:
-    """Policies are opaque predicates over the trace — no spans to offer.
+def _constraint_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
+    """Per-policy evidence: anchors when the policy offers them, honesty when not.
 
-    Their pass/fail truth lives in the constraint layer's detail string
-    (which names each failed policy); the viewer lists the declared policies
-    so the contract panel can show what was being enforced.
+    A Policy predicate may return a PolicyVerdict carrying EvidenceAnchor
+    references (api.scenario). Policies are pure predicates over the saved
+    Trace, so — exactly like the fact matchers — the viewer re-runs them
+    here to collect anchors. The VERDICT authority is untouched: the run's
+    recorded constraint detail (the sidecar) stays the displayed truth;
+    ``recomputed_passed`` is named for what it is, and a re-run that raises
+    degrades that policy to the opaque (unanchored) presentation.
+
+    Policies that return a plain bool have no anchors — the UI must present
+    them as opaque ("no transcript anchor"), never as silently inert
+    interactive entries.
     """
-    return {
-        "policies": [
-            {"name": policy.name, "effect_class": policy.effect_class}
-            for policy in scenario.policies
-        ],
-    }
+    entries: list[dict[str, Any]] = []
+    for policy in scenario.policies:
+        entry: dict[str, Any] = {
+            "name": policy.name,
+            "effect_class": policy.effect_class,
+            "anchorable": False,
+            "recomputed_passed": None,
+            "detail": None,
+            "call_anchors": [],
+            "span_anchors": [],
+            "locators": [],
+        }
+        try:
+            result = policy.predicate(trace)
+        except Exception as exc:  # noqa: BLE001 - degrade to opaque, keep the viewer up
+            entry["detail"] = f"policy could not be re-evaluated: {type(exc).__name__}: {exc}"
+            entries.append(entry)
+            continue
+        if isinstance(result, PolicyVerdict):
+            entry["recomputed_passed"] = result.passed
+            entry["detail"] = result.detail or None
+            for anchor in result.anchors:
+                if anchor.kind == "witnessed_call":
+                    entry["call_anchors"].append(
+                        {"call_index": anchor.call_index, "note": anchor.note}
+                    )
+                elif anchor.kind == "span":
+                    entry["span_anchors"].append(
+                        {
+                            "turn_index": anchor.turn_index,
+                            "start": anchor.start,
+                            "end": anchor.end,
+                            "note": anchor.note,
+                        }
+                    )
+                else:  # locator
+                    entry["locators"].append(anchor.note)
+            entry["anchorable"] = bool(entry["call_anchors"] or entry["span_anchors"])
+        else:
+            entry["recomputed_passed"] = bool(result)
+        entries.append(entry)
+    return {"policies": entries}
 
 
 def _integrity_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:

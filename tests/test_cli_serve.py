@@ -40,7 +40,7 @@ import pytest
 _PACK_SOURCE_TEXT = '''\
 """Fixture scenario pack for the run-viewer tests."""
 from windtunnel.api.pack import ScenarioPack
-from windtunnel.api.scenario import Policy, Scenario
+from windtunnel.api.scenario import EvidenceAnchor, Policy, PolicyVerdict, Scenario
 from windtunnel.api.score import FailureCost
 
 PACK = ScenarioPack(
@@ -68,6 +68,26 @@ PACK = ScenarioPack(
             # constraint layer alone carries the FAIL — the shape that must
             # never render as "no policies declared" next to a red chip.
             policies=[Policy(name="no_unverified_claims", predicate=lambda trace: False)],
+        ),
+        Scenario(
+            name="cite_the_answer",
+            prompt="say ok",
+            target_facts=[["ok"]],
+            # An ANCHORED policy: returns a PolicyVerdict pointing at the
+            # exact span it judged plus an opaque locator — the shape the
+            # run viewer illuminates on hover.
+            policies=[Policy(
+                name="answer_is_cited",
+                predicate=lambda trace: PolicyVerdict(
+                    passed=True,
+                    detail="acknowledgement present in the final turn",
+                    anchors=[
+                        EvidenceAnchor(kind="span", turn_index=len(trace.turns) - 1,
+                                       start=0, end=2, note="the acknowledgement"),
+                        EvidenceAnchor(kind="locator", note="observations/acknowledgement"),
+                    ],
+                ),
+            )],
         ),
     ],
 )
@@ -240,6 +260,7 @@ class TestLedgerParsing:
             "acknowledge_ok",
             "lookup_client_email",
             "hold_the_line",
+            "cite_the_answer",
         }
         for row in rows:
             assert row["pack"] == "viewer_pack"
@@ -395,7 +416,7 @@ class TestHttpEndpoints:
 
     def test_ledger_endpoint(self, viewer: SimpleNamespace) -> None:
         payload = _get_json(viewer.base, "/api/ledger")
-        assert len(payload["rows"]) == 3
+        assert len(payload["rows"]) == 4
         assert payload["rows"][0]["verdict"] in {"PASS", "FAIL"}
 
     def test_run_endpoint_round_trip(self, viewer: SimpleNamespace) -> None:
@@ -573,6 +594,41 @@ class TestConstraintPolicyRecording:
         assert recorded["scenario"]["policies"] == [
             {"name": "attached_at_sweep_time", "effect_class": None}
         ]
+
+
+class TestPolicyAnchorEndpoint:
+    """Anchored-policy round-trip: a PolicyVerdict's EvidenceAnchor set
+    reaches the evidence endpoint; plain policies present as opaque."""
+
+    def _evidence_for(self, base: str, scenario_id: str) -> dict:
+        rows = _get_json(base, "/api/ledger")["rows"]
+        run_id = next(r for r in rows if r["scenario_id"] == scenario_id)["run_ids"][0]
+        return run_id, _get_json(base, f"/api/run/{run_id}/evidence")
+
+    def test_anchored_policy_round_trip(self, viewer: SimpleNamespace) -> None:
+        run_id, payload = self._evidence_for(viewer.base, "cite_the_answer")
+        entry = payload["evidence"]["constraint"]["policies"][0]
+        assert entry["name"] == "answer_is_cited"
+        assert entry["anchorable"] is True
+        assert entry["recomputed_passed"] is True
+        assert entry["detail"] == "acknowledgement present in the final turn"
+        assert entry["locators"] == ["observations/acknowledgement"]
+        span = entry["span_anchors"][0]
+        assert span["note"] == "the acknowledgement"
+        # The anchor slices the stored trace exactly.
+        run = _get_json(viewer.base, f"/api/run/{run_id}")
+        content = run["trace"]["turns"][span["turn_index"]]["content"]
+        assert content[span["start"]:span["end"]] == "ok"
+
+    def test_plain_policy_presents_as_opaque(self, viewer: SimpleNamespace) -> None:
+        _run_id, payload = self._evidence_for(viewer.base, "hold_the_line")
+        entry = payload["evidence"]["constraint"]["policies"][0]
+        assert entry["name"] == "no_unverified_claims"
+        assert entry["anchorable"] is False
+        assert entry["recomputed_passed"] is False
+        assert entry["call_anchors"] == []
+        assert entry["span_anchors"] == []
+        assert entry["locators"] == []
 
 
 class TestEvidenceComputation:
@@ -1131,6 +1187,7 @@ class TestNoEnvironmentLeak:
         "tests/test_cli_serve.py",
         "tests/test_knobs.py",
         "tests/test_matching_spans.py",
+        "tests/test_policy_evidence.py",
         "docs/viewing-runs.md",
     )
 

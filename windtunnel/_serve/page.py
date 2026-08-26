@@ -70,9 +70,10 @@ button.layer-chip { cursor: pointer; }
 .turn { border: 1px solid var(--border); border-radius: 6px; margin: 0.5rem 0; overflow: hidden; }
 .turn .role { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); padding: 0.25rem 0.75rem; background: color-mix(in srgb, var(--border) 40%, transparent); }
 .turn .content { padding: 0.5rem 0.75rem; white-space: pre-wrap; font-size: 0.88rem; overflow-wrap: anywhere; }
+/* Baseline transcript is NEUTRAL: satisfied/violated status at rest lives on
+   the contract side only. Green/red appears here solely as .illum-* classes
+   applied by hover/lock illumination from a contract entry. */
 .tool-call { font-family: var(--mono); font-size: 0.8rem; padding: 0.25rem 0.75rem; border-top: 1px dashed var(--border); color: var(--muted); overflow-wrap: anywhere; }
-.tool-call.good { background: var(--hl-good-bg); color: var(--hl-good-fg); }
-.tool-call.bad { background: var(--hl-bad-bg); color: var(--hl-bad-fg); }
 mark.hl-good { background: var(--hl-good-bg); color: var(--hl-good-fg); border-radius: 3px; padding: 0 1px; }
 mark.hl-bad { background: var(--hl-bad-bg); color: var(--hl-bad-fg); border-radius: 3px; padding: 0 1px; text-decoration: underline wavy; }
 details { margin: 0.4rem 0; }
@@ -103,10 +104,19 @@ body.run-view #run-content { flex: 1; min-height: 0; display: flex; flex-directi
   #run-columns > .pane { max-height: none; overflow: visible; }
 }
 #experiment-panel { border-top: 1px solid var(--border); margin-top: 1rem; padding-top: 0.75rem; }
-.tok { border-bottom: 2px solid currentColor; }
-.tool-call.illum-good .tok, .tagchip.illum-good .tok { background: var(--pass-fg); color: var(--pass-bg); border-radius: 2px; border-bottom: none; padding: 0 1px; }
-.tool-call.illum-bad .tok, .tagchip.illum-bad .tok { background: var(--fail-fg); color: var(--fail-bg); border-radius: 2px; border-bottom: none; padding: 0 1px; }
+/* The precision token is invisible at rest and becomes the strong mark
+   under illumination — the exact grep hit inside a lit call. */
+.tool-call.illum-good .tok { background: var(--pass-fg); color: var(--pass-bg); border-radius: 2px; padding: 0 1px; }
+.tool-call.illum-bad .tok { background: var(--fail-fg); color: var(--fail-bg); border-radius: 2px; padding: 0 1px; }
 .tool-call.unmapped { border-left: 2px dashed var(--muted); }
+/* Policy span anchors: invisible at rest, lit on hover/lock of their entry. */
+mark.policy-mark { background: transparent; color: inherit; }
+mark.policy-mark.illum-good { background: var(--hl-good-bg); color: var(--hl-good-fg); border-radius: 3px; }
+mark.policy-mark.illum-bad { background: var(--hl-bad-bg); color: var(--hl-bad-fg); border-radius: 3px; }
+/* Affordance honesty: entries with no transcript anchor are visibly
+   non-interactive — dimmed, no pointer, no hover ring. */
+.contract-item.no-anchor { opacity: 0.72; }
+.contract-item.no-anchor .what { cursor: default; }
 .thought { padding: 0.4rem 0.75rem; font-size: 0.85rem; color: var(--muted); font-style: italic; white-space: pre-wrap; overflow-wrap: anywhere; border-top: 1px dashed var(--border); }
 .thought:first-child { border-top: none; }
 .call-group { border: 1px solid var(--border); border-radius: 6px; margin: 0.5rem 0; overflow: hidden; }
@@ -339,30 +349,67 @@ function renderRunScreen(runId, run, evidencePayload, row) {
 // highlight so it survives scrolling; click again (or another entry) to
 // unlock/switch.
 let lockedEntry = null;
-function applyIllum(entry, on) {
-  const cls = 'illum-' + (entry.dataset.hl || 'good');
+// Every selector an entry's illumination targets, in one list — used both
+// to toggle classes and to find the first lit node in document order.
+function illumSelectors(entry) {
   const traj = window.RUN_TRAJ || null;
+  const selectors = [];
   (entry.dataset.targets || '').split(',').filter(Boolean).forEach((index) => {
-    document.querySelectorAll(`[data-obs="${index}"]`).forEach((node) =>
-      node.classList.toggle(cls, on));
+    selectors.push(`[data-obs="${index}"]`);
     // Server-witnessed evidence: also light the CLAIMED transcript call the
     // server mapped this witnessed call onto (data-claim tags follow the
     // same claimed-call walk the mapping was computed against).
     if (traj && traj.transcript_call_map) {
       const mapped = traj.transcript_call_map[Number(index)];
       if (mapped && mapped.transcript_index != null) {
-        document.querySelectorAll(`[data-claim="${mapped.transcript_index}"]`).forEach((node) =>
-          node.classList.toggle(cls, on));
+        selectors.push(`[data-claim="${mapped.transcript_index}"]`);
       }
     }
   });
+  // Policy span anchors, tagged by evidence-entry index.
+  if (entry.dataset.policyTarget !== undefined) {
+    selectors.push(`[data-policy="${entry.dataset.policyTarget}"]`);
+  }
+  return selectors;
 }
+function applyIllum(entry, on) {
+  const cls = 'illum-' + (entry.dataset.hl || 'good');
+  const selectors = illumSelectors(entry);
+  if (!selectors.length) return;
+  document.querySelectorAll(selectors.join(',')).forEach((node) =>
+    node.classList.toggle(cls, on));
+}
+// Scroll the transcript pane to the first illuminated node (document
+// order). Immediate on lock; on plain hover only after a short
+// hover-intent dwell so sweeping the cursor down the contract doesn't
+// yank the pane around on every pass.
+function scrollToFirstLit(entry) {
+  const selectors = illumSelectors(entry);
+  if (!selectors.length) return;
+  const first = document.querySelector(selectors.join(','));
+  if (!first) return;
+  const pane = first.closest('.pane');
+  if (!pane) return;
+  const delta = first.getBoundingClientRect().top - pane.getBoundingClientRect().top;
+  pane.scrollTo({top: pane.scrollTop + delta - 48, behavior: 'smooth'});
+}
+let hoverScrollTimer = null;
 function wireIllumination(container) {
   lockedEntry = null;
   container.querySelectorAll('.contract-hover').forEach((entry) => {
-    entry.addEventListener('mouseenter', () => { if (!lockedEntry) applyIllum(entry, true); });
-    entry.addEventListener('mouseleave', () => { if (!lockedEntry) applyIllum(entry, false); });
+    entry.addEventListener('mouseenter', () => {
+      if (lockedEntry) return;
+      applyIllum(entry, true);
+      // Hover-intent: dwell briefly before scrolling to the first match.
+      clearTimeout(hoverScrollTimer);
+      hoverScrollTimer = setTimeout(() => scrollToFirstLit(entry), 350);
+    });
+    entry.addEventListener('mouseleave', () => {
+      clearTimeout(hoverScrollTimer);
+      if (!lockedEntry) applyIllum(entry, false);
+    });
     entry.addEventListener('click', () => {
+      clearTimeout(hoverScrollTimer);
       if (lockedEntry === entry) {
         applyIllum(entry, false);
         entry.classList.remove('locked');
@@ -374,6 +421,7 @@ function wireIllumination(container) {
       lockedEntry = entry;
       entry.classList.add('locked');
       applyIllum(entry, true);
+      scrollToFirstLit(entry); // lock scrolls immediately and keeps it
     });
   });
 }
@@ -558,7 +606,7 @@ function renderContract(scenario, ev, score) {
       : contractItem(observed, 'required', {good: 'tools used', bad: 'no tools used'})));
   }
   if (scenario.has_outcome_fn) {
-    parts.push('<div class="muted">outcome is scored by a custom outcome_fn — see the outcome detail above; no fact spans exist</div>');
+    parts.push('<div class="muted">opaque outcome_fn — no transcript anchor; its verdict is the outcome detail above</div>');
   }
 
   // Trajectory expectations.
@@ -603,7 +651,7 @@ function renderContract(scenario, ev, score) {
     parts.push('<div class="muted">no tool-path expectations declared</div>');
   }
   if ((scenario.trajectory_checks || []).length) {
-    parts.push(`<div class="muted">custom checks: ${esc(scenario.trajectory_checks.join(', '))} — verdicts in the trajectory detail</div>`);
+    parts.push(`<div class="muted">opaque custom checks — no transcript anchor: ${esc(scenario.trajectory_checks.join(', '))} (verdicts in the trajectory detail)</div>`);
   }
 
   // Constraint + integrity + cost.
@@ -615,6 +663,9 @@ function renderContract(scenario, ev, score) {
   const recordedPolicies = score && score.scenario ? score.scenario.policies : undefined;
   const policies = recordedPolicies !== undefined ? recordedPolicies : scenario.policies;
   const constraintResult = score ? score.constraint : null;
+  // Anchor evidence (when the pack is loaded): entry index in the evidence
+  // list, matched by name — anchors come from PolicyVerdict returns.
+  const policyEv = ev && ev.constraint ? ev.constraint.policies : [];
   if (policies === undefined || policies === null) {
     parts.push('<div class="muted">policy declarations were not recorded for this run' +
       (constraintResult && constraintResult.passed === false
@@ -623,13 +674,37 @@ function renderContract(scenario, ev, score) {
     parts.push('<div class="muted">no policies declared</div>');
   } else {
     parts.push(policies.map((p) => {
-      // A policy predicate is an opaque callable; its verdict lives in the
-      // constraint detail, which names each failed policy in quotes.
+      // The recorded sidecar verdict stays authoritative: violated = named
+      // in the failed constraint detail.
       const violated = !!(constraintResult && constraintResult.passed === false &&
         (constraintResult.detail || '').includes(`'${p.name}'`));
       const what = `${esc(p.name)}${p.effect_class ? ` [${esc(p.effect_class)}]` : ''}`;
-      if (constraintResult == null) return `<div class="contract-item"><span class="what">${what}</span></div>`;
-      return contractItem(!violated, what, {good: 'held', bad: 'violated'});
+      const evIndex = policyEv.findIndex((entry) => entry.name === p.name);
+      const entryEv = evIndex >= 0 ? policyEv[evIndex] : null;
+      let extra = null;
+      let suffix = '';
+      if (entryEv && entryEv.anchorable) {
+        // Anchorable: hover/lock illuminates the anchored calls/spans.
+        const targets = (entryEv.call_anchors || []).map((a) => a.call_index);
+        const attrs = [`data-hl="${violated ? 'bad' : 'good'}"`];
+        if (targets.length) attrs.push(`data-targets="${targets.join(',')}"`);
+        if ((entryEv.span_anchors || []).length) attrs.push(`data-policy-target="${evIndex}"`);
+        extra = {cls: 'contract-hover',
+                 attrs: attrs.join(' ') + ' title="hover to highlight in the transcript; click to lock"'};
+        if (entryEv.detail) suffix += ` <span class="muted">${esc(entryEv.detail)}</span>`;
+      } else {
+        // Affordance honesty: nothing to illuminate — say so, don't invite
+        // a hover that does nothing.
+        extra = {cls: 'no-anchor'};
+        suffix = ' <span class="muted">opaque policy — no transcript anchor</span>';
+      }
+      if (entryEv && (entryEv.locators || []).length) {
+        suffix += `<br><span class="muted">looked at: ${entryEv.locators.map((l) => esc(l)).join(' · ')}</span>`;
+      }
+      if (constraintResult == null) {
+        return `<div class="contract-item ${extra.cls}" ${extra.attrs ?? ''}><span class="what">${what}${suffix}</span></div>`;
+      }
+      return contractItem(!violated, what + suffix, {good: 'held', bad: 'violated'}, extra);
     }).join(''));
   }
 
@@ -657,6 +732,8 @@ function renderContract(scenario, ev, score) {
 
 // Wrap highlight spans around content. Spans are half-open [start, end)
 // offsets into the exact content string; overlaps keep the earliest span.
+// span.attrs (pre-escaped attribute text) lets policy anchors carry their
+// data-policy tag for illumination targeting.
 function renderHighlighted(content, spans) {
   const ordered = [...spans].sort((a, b) => a.start - b.start || a.end - b.end)
     .filter((span) => span.start >= 0 && span.end <= content.length && span.start < span.end);
@@ -665,22 +742,36 @@ function renderHighlighted(content, spans) {
   for (const span of ordered) {
     if (span.start < cursor) continue; // overlap — first span wins
     parts.push(esc(content.slice(cursor, span.start)));
-    parts.push(`<mark class="${span.cls}" title="${esc(span.title ?? '')}">${esc(content.slice(span.start, span.end))}</mark>`);
+    parts.push(`<mark class="${span.cls}" title="${esc(span.title ?? '')}"${span.attrs ?? ''}>${esc(content.slice(span.start, span.end))}</mark>`);
     cursor = span.end;
   }
   parts.push(esc(content.slice(cursor)));
   return parts.join('');
 }
 
+// Policy span anchors grouped by turn: turn_index -> renderHighlighted spans
+// tagged data-policy="<entry index>" so hover/lock can light them.
+function policySpansByTurn(ev) {
+  const byTurn = new Map();
+  const policies = ev && ev.constraint ? ev.constraint.policies : [];
+  policies.forEach((policy, policyIndex) => {
+    for (const anchor of policy.span_anchors || []) {
+      if (!byTurn.has(anchor.turn_index)) byTurn.set(anchor.turn_index, []);
+      byTurn.get(anchor.turn_index).push({
+        start: anchor.start,
+        end: anchor.end,
+        cls: 'policy-mark',
+        title: 'policy ' + policy.name + (anchor.note ? ': ' + anchor.note : ''),
+        attrs: ` data-policy="${policyIndex}"`,
+      });
+    }
+  });
+  return byTurn;
+}
+
 function callDetailFor(trajEv, obsIndex) {
   if (obsIndex == null || !trajEv) return null;
   return (trajEv.observed_call_details || [])[obsIndex] || null;
-}
-function callStatusClass(detail) {
-  if (!detail) return '';
-  if (detail.forbidden.length) return 'bad'; // bad wins over good
-  if (detail.must_call_entries.length) return 'good';
-  return '';
 }
 // Precision: wrap the server-computed matched token (always a suffix of the
 // observed name, by tool_name_matches construction) so illumination marks
@@ -730,12 +821,19 @@ function renderTranscript(trace, ev, score) {
   const source = trajEv ? trajEv.evidence_source : null;
   const parts = ['<h2>Transcript</h2>'];
 
+  const policySpans = policySpansByTurn(ev);
+  const contentWithPolicyMarks = (turnIndex, content, extraSpans) => {
+    const spans = [...(extraSpans || []), ...(policySpans.get(turnIndex) || [])];
+    return spans.length ? renderHighlighted(content ?? '', spans) : esc(content);
+  };
+
   // (a) the user message(s), chronological.
-  const userTurns = turns.filter((turn) => turn.role === 'user');
-  parts.push(`<h3 id="user-section">User message${userTurns.length > 1 ? 's' : ''}</h3>`);
-  parts.push(userTurns.length
-    ? userTurns.map((turn) => `<div class="turn"><div class="role">user</div>
-        <div class="content">${esc(turn.content)}</div></div>`).join('')
+  const userEntries = turns.map((turn, index) => [turn, index])
+    .filter(([turn]) => turn.role === 'user');
+  parts.push(`<h3 id="user-section">User message${userEntries.length > 1 ? 's' : ''}</h3>`);
+  parts.push(userEntries.length
+    ? userEntries.map(([turn, index]) => `<div class="turn"><div class="role">user</div>
+        <div class="content">${contentWithPolicyMarks(index, turn.content)}</div></div>`).join('')
     : '<div class="muted">no user turns recorded</div>');
 
   // (b) the tool-call trajectory: thought + calls + results per turn, in order.
@@ -763,7 +861,7 @@ function renderTranscript(trace, ev, score) {
       }
     } else if (!isUser && !isFinal && (turn.content || '').trim()) {
       // Intermediate assistant text = the thought before/between calls.
-      inner.push(`<div class="thought">${esc(turn.content)}</div>`);
+      inner.push(`<div class="thought">${contentWithPolicyMarks(index, turn.content)}</div>`);
     }
     for (const call of calls) {
       const name = call.function?.name ?? call.name;
@@ -778,7 +876,9 @@ function renderTranscript(trace, ev, score) {
         (claimIndex != null ? claimedByIndex.get(claimIndex) ?? null : null);
       const attrs = (claimIndex != null ? ` data-claim="${claimIndex}"` : '') +
         (obsIndex != null ? ` data-obs="${obsIndex}"` : '');
-      inner.push(`<div class="tool-call ${callStatusClass(detail)}"${attrs}>tool_call ${renderCallName(name, detail)}(${esc(args)})</div>`);
+      // Neutral at rest: status lives on the contract side; color arrives
+      // only as .illum-* from hover/lock.
+      inner.push(`<div class="tool-call"${attrs}>tool_call ${renderCallName(name, detail)}(${esc(args)})</div>`);
     }
     for (const result of results) {
       inner.push(`<div class="tool-call">tool_result ${esc(JSON.stringify(result))}</div>`);
@@ -802,7 +902,7 @@ function renderTranscript(trace, ev, score) {
       const mapped = callMap && obsIndex != null ? callMap[obsIndex] : null;
       const unmapped = mapped != null && mapped.transcript_index == null;
       const note = unmapped ? ' <span class="muted">· no matching transcript call</span>' : '';
-      return `<div class="tool-call ${callStatusClass(detail)}${unmapped ? ' unmapped' : ''}"${obsAttr}>` +
+      return `<div class="tool-call${unmapped ? ' unmapped' : ''}"${obsAttr}>` +
         `${renderCallName(call.tool_name, detail)} ← ${esc(JSON.stringify(call.args ?? {}))}${note}</div>`;
     }).join(''));
   }
@@ -825,9 +925,9 @@ function renderTranscript(trace, ev, score) {
       for (const fact of outcomeEv.forbidden_facts) {
         for (const span of fact.spans) spans.push({...span, cls: 'hl-bad', title: 'forbidden fact asserted: ' + fact.fact});
       }
-      content = renderHighlighted(finalTurn.content ?? '', spans);
+      content = contentWithPolicyMarks(answerIndex, finalTurn.content ?? '', spans);
     } else {
-      content = esc(finalTurn.content);
+      content = contentWithPolicyMarks(answerIndex, finalTurn.content);
     }
     parts.push(`<div class="turn"><div class="role">assistant · scored turn</div>
       <div class="content">${content}</div></div>`);
