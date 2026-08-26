@@ -10,6 +10,11 @@ Endpoints:
     GET /api/meta       viewer configuration (runs dir, live glob, version)
     GET /api/ledger     parsed ledger rows, newest first (dashboard polls this)
     GET /api/run/<id>   one saved run: raw trace JSON + .score.json sidecar
+    GET /api/run/<id>/evidence
+                        span-level evidence recomputed from (Scenario, Trace)
+                        via the scoring matchers — see _serve/evidence.py;
+                        degrades to {"available": false, reason} when the
+                        run's scenario is not among the discovered packs
     GET /api/scenarios  discovered pack/scenario summaries (the test cases)
     GET /api/live       SSE stream tailing JSONL files matching --live-glob
 
@@ -48,12 +53,14 @@ class RunViewerServer(ThreadingHTTPServer):
         *,
         runs_dir: Path,
         pack_data: list[dict[str, Any]],
+        scenario_index: dict[str, Any],
         live_glob: str | None,
         wt_version: str,
     ) -> None:
         super().__init__(address, _RunViewerHandler)
         self.runs_dir = Path(runs_dir)
         self.pack_data = pack_data
+        self.scenario_index = scenario_index
         self.live_glob = live_glob
         self.wt_version = wt_version
 
@@ -82,10 +89,12 @@ def build_server(
     the dashboard follows a sweep that is writing right now.
     """
     pack_data = _data.pack_summaries(packs)
+    scenario_index = _data.scenarios_by_id(packs)
     return RunViewerServer(
         (host, port),
         runs_dir=runs_dir,
         pack_data=pack_data,
+        scenario_index=scenario_index,
         live_glob=live_glob,
         wt_version=wt_version,
     )
@@ -117,6 +126,9 @@ class _RunViewerHandler(BaseHTTPRequestHandler):
                 )
             elif path == "/api/ledger":
                 self._send_json(_data.load_ledger_rows(self.server.runs_dir))
+            elif path.startswith("/api/run/") and path.endswith("/evidence"):
+                run_id = path.removeprefix("/api/run/").removesuffix("/evidence")
+                self._send_run_evidence(run_id)
             elif path.startswith("/api/run/"):
                 run_id = path.removeprefix("/api/run/")
                 resolved = _data.resolve_run(self.server.runs_dir, run_id)
@@ -151,6 +163,60 @@ class _RunViewerHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_run_evidence(self, run_id: str) -> None:
+        """Recompute span-level evidence for one saved run.
+
+        The trace is re-loaded through the same load_trace path `wt rescore`
+        uses, and the scenario definition comes from the packs discovered at
+        startup. Degradation is graceful and explicit: an unknown scenario
+        (or an unloadable trace) returns available=false with a reason the
+        UI can show, never a fabricated highlight.
+        """
+        from windtunnel._serve.evidence import compute_evidence  # noqa: PLC0415
+        from windtunnel.api.trace import load_trace  # noqa: PLC0415
+
+        trace_path = _data.resolve_run_path(self.server.runs_dir, run_id)
+        if trace_path is None:
+            self._send_json({"error": f"no stored trace for run_id {run_id!r}"}, status=404)
+            return
+
+        try:
+            trace = load_trace(trace_path)
+        except Exception as exc:  # noqa: BLE001 - a bad trace degrades, never 500s
+            self._send_json(
+                {"available": False, "reason": f"trace could not be loaded: {exc}"}
+            )
+            return
+
+        scenario = self.server.scenario_index.get(trace.scenario_id)
+        if scenario is None:
+            self._send_json(
+                {
+                    "available": False,
+                    "reason": (
+                        f"scenario {trace.scenario_id!r} is not among the discovered "
+                        "packs — start wt serve with the --pack-source this run was "
+                        "executed with to recompute evidence"
+                    ),
+                }
+            )
+            return
+
+        try:
+            evidence = compute_evidence(scenario, trace)
+        except Exception as exc:  # noqa: BLE001 - same degradation stance
+            self._send_json(
+                {"available": False, "reason": f"evidence computation failed: {exc}"}
+            )
+            return
+        self._send_json(
+            {
+                "available": True,
+                "scenario": _data.scenario_summary(scenario),
+                "evidence": evidence,
+            }
+        )
 
     # ── SSE live tail ────────────────────────────────────────────────────────
 

@@ -74,14 +74,13 @@ def load_ledger_rows(runs_dir: Path) -> dict[str, Any]:
 # ─── run drill-down ──────────────────────────────────────────────────────────
 
 
-def resolve_run(runs_dir: Path, run_id: str) -> dict[str, Any] | None:
-    """Locate one saved run by its run_id and return trace + score sidecar.
+def resolve_run_path(runs_dir: Path, run_id: str) -> Path | None:
+    """Locate the stored trace file for one run_id, or None.
 
     Storage puts each trace at
     ``<runs>/<scenario_id>/<agent_id>/<variant_id>/<model>/<quant>/<ts>_<run_id[:8]>.json``
     (see api/trace.storage_path), so candidates are narrowed by the filename's
     run_id prefix and confirmed against the run_id stored inside the trace.
-    Returns None when no stored trace carries this run_id.
     """
     if not _RUN_ID_RE.match(run_id):
         return None
@@ -97,14 +96,25 @@ def resolve_run(runs_dir: Path, run_id: str) -> dict[str, Any] | None:
             trace_data = json.loads(trace_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if not isinstance(trace_data, dict) or trace_data.get("run_id") != run_id:
-            continue
-        return {
-            "trace": trace_data,
-            "score": _read_sidecar(trace_path),
-            "trace_file": trace_path.relative_to(runs_dir).as_posix(),
-        }
+        if isinstance(trace_data, dict) and trace_data.get("run_id") == run_id:
+            return trace_path
     return None
+
+
+def resolve_run(runs_dir: Path, run_id: str) -> dict[str, Any] | None:
+    """Return one saved run's raw trace JSON + score sidecar, or None."""
+    trace_path = resolve_run_path(runs_dir, run_id)
+    if trace_path is None:
+        return None
+    try:
+        trace_data = json.loads(trace_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return {
+        "trace": trace_data,
+        "score": _read_sidecar(trace_path),
+        "trace_file": trace_path.relative_to(runs_dir).as_posix(),
+    }
 
 
 def _read_sidecar(trace_path: Path) -> dict[str, Any] | None:
@@ -118,6 +128,20 @@ def _read_sidecar(trace_path: Path) -> dict[str, Any] | None:
 
 
 # ─── scenario browser ────────────────────────────────────────────────────────
+
+
+def scenarios_by_id(packs: list[ScenarioPack]) -> dict[str, Scenario]:
+    """Index discovered scenarios by name for evidence recomputation.
+
+    Packs flatten in discovery order (matching selection); on a duplicate
+    scenario name the first pack's definition wins, mirroring how the
+    dashboard reader must pick ONE definition to recompute against.
+    """
+    index: dict[str, Scenario] = {}
+    for pack in packs:
+        for scenario in getattr(pack, "scenarios", []) or []:
+            index.setdefault(str(getattr(scenario, "name", "")), scenario)
+    return index
 
 
 def pack_summaries(packs: list[ScenarioPack]) -> list[dict[str, Any]]:
