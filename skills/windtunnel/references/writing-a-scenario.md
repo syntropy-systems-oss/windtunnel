@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/writing-a-scenario.md at 4173c7192a4c — do not edit; edit docs/writing-a-scenario.md. -->
+<!-- GENERATED from docs/writing-a-scenario.md at 336bdc3bce31 — do not edit; edit docs/writing-a-scenario.md. -->
 ---
 description: "Reference for authoring backend-agnostic Scenario objects, scoring fields, perturbations, dimensions, and scenario packs."
 ---
@@ -112,6 +112,7 @@ Fields are grouped by the scoring layer each feeds.
 | `requires_tool_use` | `bool` | `False` | If `True`, outcome **fails** when the trace has zero tool calls, even if the facts appear. Closes the "guessed from training" false positive. |
 | `forbidden_facts` | `list[str]` | `[]` | Strings that must **not** appear (negation-aware) in the last turn. |
 | `outcome_fn` | `Callable[[Trace], LayerResult] \| None` | `None` | **Custom outcome evaluator** (below). When set, it fully owns this layer. |
+| `allow_empty_answer` | `bool` | `False` | Opt-in for scenarios where **silence is the correct outcome**. By default a gated outcome layer fails when the scored answer turn is empty/whitespace — even with no declared facts, a blank final turn never passes vacuously. |
 
 **`outcome_fn` — grade an artifact, not the prose.** The fields above all match
 the model's last assistant turn. When success means *the thing the agent built is

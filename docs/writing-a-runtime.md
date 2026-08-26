@@ -175,6 +175,16 @@ Also worth capturing if your platform exposes it: the **rendered prompt**
 auto-computed hash let you diff what the model *actually saw* across runs —
 the fastest way to catch template regressions.
 
+**Report failed turns as failures, not as content.** If your platform knows
+the turn errored (an inference timeout, a crashed worker, a gateway 5xx),
+put a non-empty string under `"error"` in the response (on the message or
+at the top level) instead of smuggling error text into `content`. The
+runner records it on `Turn.error`, and a scored turn carrying an error
+makes the run **INVALID** — not an agent failure, and never a vacuous
+pass. The signal is optional: runtimes that don't report it behave exactly
+as before, and the empty-answer gate (`allow_empty_answer`) still stops a
+blank scored turn from passing a gated outcome vacuously.
+
 ## `reset_state()` vs `teardown()`
 
 Two lifecycle levels, deliberately distinct:
