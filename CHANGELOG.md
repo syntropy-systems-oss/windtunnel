@@ -6,6 +6,8 @@
 
 * **cli:** wt serve — local read-only run viewer (ledger dashboard, run drill-down, scenario browser, --live-glob SSE tail)
 * **serve:** full-screen run view with span-level evidence highlighting — scenario contract beside the transcript, matched facts green, asserted forbidden facts and offending tool calls red, recomputed via span variants of the core scoring matchers (equivalence-pinned)
+* **spi:** knob introspection — an optional KnobIntrospectableRuntime capability declares a runtime's adjustable parameters (KnobSpec: text/enum/number/flag) and overrides flow back opaquely through AgentConfig.knobs; wt run gains --knob NAME=VALUE with strict validation against the declaration
+* **serve:** wt serve --experiment — knob panel and scoped scenario reruns from the run screen: a POSTed rerun spawns wt run for exactly that scenario with the overrides, streams progress over SSE, and lands in the ledger under an exp-&lt;parent&gt; label with a before/after verdict delta; without the flag the server stays read-only by construction
 
 ## [0.10.2](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.10.1...v0.10.2) (2026-07-18)
 

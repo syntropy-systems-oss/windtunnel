@@ -2,7 +2,7 @@
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at 28b968e5626c — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at cccd4f2ecc57 — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
 The `wt` command ships 13 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
@@ -67,7 +67,7 @@ Run scenarios against a runtime.
 Usage:
 
 ```bash
-wt run [-h] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--owner OWNER] [--soul PATH] [--agents PATH] [--runtime RUNTIME] [--hook HOOK] [--label LABEL] [--runs N] [--runs-dir DIR] [--format {junit,json}] [--out FILE]
+wt run [-h] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--owner OWNER] [--soul PATH] [--agents PATH] [--runtime RUNTIME] [--hook HOOK] [--label LABEL] [--knob NAME=VALUE] [--runs N] [--runs-dir DIR] [--format {junit,json}] [--out FILE]
 ```
 
 Arguments and options:
@@ -84,6 +84,7 @@ Arguments and options:
 | `--runtime` | no | in_memory | Runtime to use (default: in_memory). Either the built-in 'in_memory' (zero-infrastructure scripted runtime — no network; useful for learning the scoring model and testing scenario definitions in CI), the name of an installed runtime plugin (discovered via the 'windtunnel.runtimes' entry-point group — e.g. 'acme' from a platform driver package), or a 'module:attr' dotted path to a RuntimePlugin instance or class. |
 | `--hook` | no |  | Lifecycle hook to activate for this run. Repeat for multiple hooks; built-ins include 'debrief'. |
 | `--label` | no |  | Variant label for this run (recorded in traces). |
+| `--knob` | no |  | Override one runtime knob for this run. Repeat for multiple. Validated against the runtime's declared KnobSpecs when it is knob-introspectable; passed through opaquely otherwise. Wind Tunnel never interprets knob values. |
 | `--runs` | no | 1 | Number of runs per scenario (default: 1). |
 | `--runs-dir` | no | runs | Directory to write trace files (default: ./runs). |
 | `--format` | no |  | Machine-readable run output format. Must be paired with --out. Choices: junit, json. |
@@ -316,7 +317,7 @@ Host a local, read-only web viewer over a runs/ directory.
 Usage:
 
 ```bash
-wt serve [-h] [--runs-dir DIR] [--port PORT] [--host HOST] [--pack-source SOURCE] [--live-glob PATTERN]
+wt serve [-h] [--runs-dir DIR] [--port PORT] [--host HOST] [--pack-source SOURCE] [--live-glob PATTERN] [--experiment] [--runtime RUNTIME]
 ```
 
 Arguments and options:
@@ -328,6 +329,8 @@ Arguments and options:
 | `--host` | no | 127.0.0.1 | Interface to bind (default: 127.0.0.1 — local viewing only). |
 | `--pack-source` | no |  | Load an additional local scenario pack from module:attr or path/to/file.py:attr for the scenario browser. Repeat for multiple sources; discovery otherwise matches `wt run` (built-in dims plus the 'windtunnel.scenario_packs' entry-point group). |
 | `--live-glob` | no |  | Tail JSONL files matching this glob and stream newly appended lines to the viewer's Live tab. Generic by design: point it at whatever JSONL your runtime writes. |
+| `--experiment` | no | false | Enable scoped scenario reruns from the run screen: the runtime's declared knobs become adjustable and a rerun spawns `wt run` for exactly that scenario with the overrides. Off by default — without it the server is read-only by construction. Requires --runtime. |
+| `--runtime` | no |  | Runtime for --experiment reruns and knob introspection. Resolved exactly like `wt run --runtime`. |
 
 ## `wt skill`
 

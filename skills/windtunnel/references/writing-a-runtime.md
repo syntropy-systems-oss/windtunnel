@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/writing-a-runtime.md at e7e37a9c3069 — do not edit; edit docs/writing-a-runtime.md. -->
+<!-- GENERATED from docs/writing-a-runtime.md at 3e6e0f0e9f08 — do not edit; edit docs/writing-a-runtime.md. -->
 ---
 description: "Guide to implementing Wind Tunnel runtime protocols or Contract C endpoints with reset isolation and tool-call evidence."
 ---
@@ -104,6 +104,42 @@ The built-in `in_memory` runtime is deliberately unsupported because it
 shortcuts the loop this capability is meant to certify. See
 [reference self-tests](design/0004-reference-selftest.md) for the complete
 contract, verdicts, and probe-wiring timing.
+
+## Optional `describe_knobs()` — declare the experiment surface
+
+```python
+from windtunnel.spi import AgentConfig, KnobSpec
+
+class MyRuntime:
+    def describe_knobs(self) -> list[KnobSpec]:
+        return [
+            KnobSpec(name="steering_text", kind="text",
+                     value=self._steering, scope="provision",
+                     description="Replace the operator steering text for the run."),
+            KnobSpec(name="routing_mode", kind="enum",
+                     choices=("fast", "careful"), value="fast",
+                     description="Which request-routing profile to use."),
+        ]
+
+    def provision(self, config: AgentConfig, mcps=None):
+        steering = config.knobs.get("steering_text", self._steering)
+        ...
+```
+
+A knob is any parameter an operator should be able to adjust between runs
+of the *same* scenario — steering text, a routing mode, a retry budget, a
+feature toggle. Wind Tunnel never knows what a knob **means**, only its
+shape (`text` / `enum` / `number` / `flag`): it validates override values
+against the declaration and passes them through `AgentConfig.knobs`
+untouched. Interpreting them is entirely the runtime's business.
+
+The declaration is read on the **constructed** runtime (after
+`RuntimePlugin.build()`, before `provision()`), so it must not require live
+infrastructure. Overrides arrive from `wt run --knob NAME=VALUE` and from
+the knob panel in `wt serve --experiment`; runtimes that declare nothing
+behave exactly as before and may ignore `config.knobs` entirely. The
+built-in `in_memory` runtime is the conformance reference: its
+`scripted_response` knob replaces the scripted reply for a run.
 
 ## `send(messages, session_id)` — one turn
 

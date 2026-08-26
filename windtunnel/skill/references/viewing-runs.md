@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/viewing-runs.md at 8b279759ac0d — do not edit; edit docs/viewing-runs.md. -->
+<!-- GENERATED from docs/viewing-runs.md at c59b38eca362 — do not edit; edit docs/viewing-runs.md. -->
 ---
 description: "Task guide for wt serve — the local, read-only web viewer over a runs/ directory: ledger dashboard, run drill-down, scenario browser, and live JSONL tail."
 ---
@@ -89,6 +89,40 @@ resolved gate layers, and the `FailureCost` risk weight — plus the tool
 surface the pack declares. The tool listing is best-effort and honest:
 `wt serve` never starts a mock server, so a server that only knows its tools
 once started reports that instead of a fabricated listing.
+
+## Experiment mode: knobs and scoped reruns
+
+```bash
+wt serve --experiment --runtime <your-runtime> --pack-source packs/mine.py:PACK
+```
+
+`--experiment` (off by default) turns the run screen into an experiment
+bench. A runtime that implements the optional `describe_knobs()` capability
+([writing a runtime](writing-a-runtime.md)) declares its adjustable
+parameters — name, kind (`text` / `enum` / `number` / `flag`), current
+value, description — and the run screen renders them as a knob panel. Wind
+Tunnel never knows what a knob means, only its shape.
+
+"Rerun this scenario" spawns an ordinary `wt run` subprocess scoped to
+exactly that scenario (`--scenario <id> --pack <pack> --knob NAME=VALUE
+...`), streams its output live over SSE, and appends the result to the same
+ledger under an experiment label:
+
+```
+exp-<parent run_id[:8]>-<HHMMSS>
+```
+
+so the new row links back to the run it varies: the experiment's run screen
+shows "experiment of `<parent>`" with the verdict delta (for example
+`PASS → FAIL`), and the parent's screen lists every experiment that varied
+it. One rerun runs at a time — concurrent requests are refused — and knob
+overrides are validated strictly against the runtime's declaration; an
+override the runtime never declared is rejected, never silently dropped.
+
+Without `--experiment` the server keeps its read-only construction: POST is
+unimplemented (the stock 501) and the experiment endpoints do not exist.
+With it, the serve process itself still writes nothing — all artifacts come
+from the spawned `wt run`.
 
 ## Live watch
 
