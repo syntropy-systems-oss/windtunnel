@@ -965,6 +965,69 @@ class TestEvidenceComputation:
         assert outcome["fact_groups"] == []
 
 
+class TestUnifiedIllumination:
+    """One interaction model for every evidence class: nothing lit at rest,
+    every anchorable contract entry is a hover/lock source, and locks form
+    a set. The DOM behavior itself runs in the browser; these tests pin
+    (a) the server data each entry's wiring consumes and (b) the page
+    source's structural commitments."""
+
+    def _page_js(self) -> str:
+        from windtunnel._serve.page import _JS
+
+        return _JS
+
+    def test_fact_group_spans_carry_what_hover_wiring_needs(
+        self, viewer: SimpleNamespace
+    ) -> None:
+        """Each fact group's spans are indexed per group (the fg<i> token),
+        span-exact, and pinned to the scored turn — the data the fact-group
+        hover source illuminates."""
+        rows = _get_json(viewer.base, "/api/ledger")["rows"]
+        run_id = next(r for r in rows if r["scenario_id"] == "acknowledge_ok")["run_ids"][0]
+        run = _get_json(viewer.base, f"/api/run/{run_id}")
+        outcome = _get_json(viewer.base, f"/api/run/{run_id}/evidence")["evidence"]["outcome"]
+        assert len(outcome["fact_groups"]) == 1  # group index == entry token index
+        group = outcome["fact_groups"][0]
+        assert group["matched"] is True and group["spans"]
+        for span in group["spans"]:
+            assert span["turn_index"] == outcome["answer_turn_index"]
+            answer = run["trace"]["turns"][span["turn_index"]]["content"]
+            assert answer[span["start"]:span["end"]].lower() == span["fact"].lower()
+
+    def test_no_evidence_class_renders_lit_at_rest(self) -> None:
+        """The page emits only invisible ev-marks; the legacy always-on
+        hl-good/hl-bad mark classes are gone from the renderer."""
+        js = self._page_js()
+        assert "hl-good" not in js and "hl-bad" not in js
+        assert "ev-mark" in js
+        from windtunnel._serve.page import _CSS
+
+        assert "mark.ev-mark { background: transparent" in _CSS
+        assert "mark.hl-good" not in _CSS and "mark.hl-bad" not in _CSS
+
+    def test_every_evidence_class_is_an_illumination_source(self) -> None:
+        """Fact groups, numbers, and forbidden facts join must_call /
+        forbidden_calls / anchored policies as hover/lock sources (their
+        data-mark tokens), and each interactive entry carries a lock box."""
+        js = self._page_js()
+        for token in ("fg${", "num${", "ff${", "pol${"):
+            assert token in js, token
+        assert "markAttrs(" in js
+        assert 'class="lock-box"' in js
+
+    def test_lock_state_is_a_set_with_a_hover_layer_on_top(self) -> None:
+        """Multi-lock semantics: illumination is recomputed as the union of
+        the lock-set plus the hovered entry, so two locked + one hovered
+        render together and unhover drops only the temporary layer."""
+        js = self._page_js()
+        assert "lockedEntries = new Set()" in js
+        assert "const active = new Set(lockedEntries);" in js
+        assert "if (hovered) active.add(hovered);" in js
+        assert "refreshIllum(null); // drops only the temporary layer" in js
+        assert "lockedEntries.delete(entry)" in js  # unlock removes one member
+
+
 class TestReadOnlyByConstruction:
     def _fingerprint(self, runs_dir: Path) -> dict[str, str]:
         return {

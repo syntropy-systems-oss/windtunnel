@@ -74,8 +74,6 @@ button.layer-chip { cursor: pointer; }
    the contract side only. Green/red appears here solely as .illum-* classes
    applied by hover/lock illumination from a contract entry. */
 .tool-call { font-family: var(--mono); font-size: 0.8rem; padding: 0.25rem 0.75rem; border-top: 1px dashed var(--border); color: var(--muted); overflow-wrap: anywhere; }
-mark.hl-good { background: var(--hl-good-bg); color: var(--hl-good-fg); border-radius: 3px; padding: 0 1px; }
-mark.hl-bad { background: var(--hl-bad-bg); color: var(--hl-bad-fg); border-radius: 3px; padding: 0 1px; text-decoration: underline wavy; }
 details { margin: 0.4rem 0; }
 summary { cursor: pointer; }
 summary .name { font-family: var(--mono); font-weight: 600; }
@@ -109,10 +107,16 @@ body.run-view #run-content { flex: 1; min-height: 0; display: flex; flex-directi
 .tool-call.illum-good .tok { background: var(--pass-fg); color: var(--pass-bg); border-radius: 2px; padding: 0 1px; }
 .tool-call.illum-bad .tok { background: var(--fail-fg); color: var(--fail-bg); border-radius: 2px; padding: 0 1px; }
 .tool-call.unmapped { border-left: 2px dashed var(--muted); }
-/* Policy span anchors: invisible at rest, lit on hover/lock of their entry. */
-mark.policy-mark { background: transparent; color: inherit; }
-mark.policy-mark.illum-good { background: var(--hl-good-bg); color: var(--hl-good-fg); border-radius: 3px; }
-mark.policy-mark.illum-bad { background: var(--hl-bad-bg); color: var(--hl-bad-fg); border-radius: 3px; }
+/* Pre-rendered evidence marks (fact/number/forbidden spans, policy span
+   anchors): invisible at rest, lit only by hover/lock illumination — the
+   one interaction model for every evidence class. Bad wins visually when
+   two sources overlap. */
+mark.ev-mark { background: transparent; color: inherit; }
+mark.ev-mark.illum-good { background: var(--hl-good-bg); color: var(--hl-good-fg); border-radius: 3px; }
+mark.ev-mark.illum-bad { background: var(--hl-bad-bg); color: var(--hl-bad-fg); border-radius: 3px; text-decoration: underline wavy; }
+/* Lock-set affordance: a checkbox per interactive entry, subtle at rest. */
+.lock-box { accent-color: var(--accent); margin-right: 0.25rem; opacity: 0.45; cursor: pointer; }
+.contract-hover:hover .lock-box, .contract-hover.locked .lock-box { opacity: 1; }
 /* Affordance honesty: entries with no transcript anchor are visibly
    non-interactive — dimmed, no pointer, no hover ring. */
 .contract-item.no-anchor { opacity: 0.72; }
@@ -279,7 +283,11 @@ function verdictWord(good, goodText, badText) {
 function contractItem(good, what, note, extra) {
   const cls = (extra && extra.cls) ? ' ' + extra.cls : '';
   const attrs = (extra && extra.attrs) ? ' ' + extra.attrs : '';
-  return `<div class="contract-item ${good ? 'good' : 'bad'}${cls}"${attrs}>` +
+  // Interactive entries carry a lock checkbox: checked = this entry's
+  // highlight is locked on. Multiple entries can be locked at once.
+  const lockBox = cls.includes('contract-hover')
+    ? '<input type="checkbox" class="lock-box" tabindex="-1" title="lock this highlight">' : '';
+  return `<div class="contract-item ${good ? 'good' : 'bad'}${cls}"${attrs}>` + lockBox +
     verdictWord(good, note.good, note.bad) +
     `<span class="what">${what}</span></div>`;
 }
@@ -287,6 +295,14 @@ function sourceToggle(source) {
   // The opaque check's own source, when the server could introspect it.
   if (!source) return '';
   return `<details class="check-source"><summary>show check source</summary><pre class="check-source">${esc(source)}</pre></details>`;
+}
+function markAttrs(token, hl) {
+  // Span-mark illumination source: token names the pre-rendered ev-marks
+  // (fg<i>/num<i>/ff<i>/pol<i>) this entry lights. null = nothing to
+  // light (an absence — the contract-side status is the whole story).
+  if (!token) return null;
+  return {cls: 'contract-hover',
+          attrs: `data-marks="${token}" data-hl="${hl}" title="hover to highlight in the transcript; click to lock"`};
 }
 function hoverAttrs(indices, hl) {
   // Server-computed observed-call indices -> hover/lock illumination targets.
@@ -358,7 +374,10 @@ function renderRunScreen(runId, run, evidencePayload, row) {
 // nodes carry data-obs="<index>". Hovering illuminates; clicking locks the
 // highlight so it survives scrolling; click again (or another entry) to
 // unlock/switch.
-let lockedEntry = null;
+// Multiple entries may be locked at once (the lock-set); hover adds one
+// temporary entry on top. Illumination is always recomputed as the union,
+// so unlocking or unhovering removes exactly its own layer.
+let lockedEntries = new Set();
 // Every selector an entry's illumination targets, in one list — used both
 // to toggle classes and to find the first lit node in document order.
 function illumSelectors(entry) {
@@ -376,22 +395,31 @@ function illumSelectors(entry) {
       }
     }
   });
-  // Policy span anchors, tagged by evidence-entry index.
-  if (entry.dataset.policyTarget !== undefined) {
-    selectors.push(`[data-policy="${entry.dataset.policyTarget}"]`);
-  }
+  // Pre-rendered span marks (fact/number/forbidden/policy), tagged by the
+  // entry's own token(s).
+  (entry.dataset.marks || '').split(' ').filter(Boolean).forEach((token) => {
+    selectors.push(`[data-mark="${token}"]`);
+  });
   // Directly-claimed targets (mapped observation anchors).
   (entry.dataset.claimTargets || '').split(',').filter(Boolean).forEach((index) => {
     selectors.push(`[data-claim="${index}"]`);
   });
   return selectors;
 }
-function applyIllum(entry, on) {
-  const cls = 'illum-' + (entry.dataset.hl || 'good');
-  const selectors = illumSelectors(entry);
-  if (!selectors.length) return;
-  document.querySelectorAll(selectors.join(',')).forEach((node) =>
-    node.classList.toggle(cls, on));
+function refreshIllum(hovered) {
+  // Recompute from scratch: clear everything, then re-light the union of
+  // the lock-set plus the (optional) hovered entry.
+  document.querySelectorAll('.illum-good, .illum-bad').forEach((node) =>
+    node.classList.remove('illum-good', 'illum-bad'));
+  const active = new Set(lockedEntries);
+  if (hovered) active.add(hovered);
+  for (const entry of active) {
+    const cls = 'illum-' + (entry.dataset.hl || 'good');
+    const selectors = illumSelectors(entry);
+    if (!selectors.length) continue;
+    document.querySelectorAll(selectors.join(',')).forEach((node) =>
+      node.classList.add(cls));
+  }
 }
 // Scroll the transcript pane to the first illuminated node (document
 // order). Immediate on lock; on plain hover only after a short
@@ -409,33 +437,31 @@ function scrollToFirstLit(entry) {
 }
 let hoverScrollTimer = null;
 function wireIllumination(container) {
-  lockedEntry = null;
+  lockedEntries = new Set();
   container.querySelectorAll('.contract-hover').forEach((entry) => {
     entry.addEventListener('mouseenter', () => {
-      if (lockedEntry) return;
-      applyIllum(entry, true);
-      // Hover-intent: dwell briefly before scrolling to the first match.
+      // Hover is a temporary layer ON TOP of the lock-set.
+      refreshIllum(entry);
       clearTimeout(hoverScrollTimer);
       hoverScrollTimer = setTimeout(() => scrollToFirstLit(entry), 350);
     });
     entry.addEventListener('mouseleave', () => {
       clearTimeout(hoverScrollTimer);
-      if (!lockedEntry) applyIllum(entry, false);
+      refreshIllum(null); // drops only the temporary layer
     });
     entry.addEventListener('click', () => {
       clearTimeout(hoverScrollTimer);
-      if (lockedEntry === entry) {
-        applyIllum(entry, false);
+      if (lockedEntries.has(entry)) {
+        lockedEntries.delete(entry);
         entry.classList.remove('locked');
-        lockedEntry = null;
-        applyIllum(entry, true); // still hovered
-        return;
+      } else {
+        lockedEntries.add(entry);
+        entry.classList.add('locked');
+        scrollToFirstLit(entry); // locking jumps to its first match
       }
-      if (lockedEntry) { applyIllum(lockedEntry, false); lockedEntry.classList.remove('locked'); }
-      lockedEntry = entry;
-      entry.classList.add('locked');
-      applyIllum(entry, true);
-      scrollToFirstLit(entry); // lock scrolls immediately and keeps it
+      const box = entry.querySelector('.lock-box');
+      if (box) box.checked = lockedEntries.has(entry);
+      refreshIllum(entry); // pointer is still on this entry
     });
   });
 }
@@ -593,7 +619,8 @@ function renderContract(scenario, ev, score) {
       const info = outcomeEv && outcomeEv.fact_groups[index];
       const what = group.map((fact) => esc(fact)).join(' | ');
       if (!info) return `<div class="contract-item"><span class="what">${what}</span></div>`;
-      return contractItem(info.matched, what, {good: 'said', bad: 'never said'});
+      return contractItem(info.matched, what, {good: 'said', bad: 'never said'},
+        markAttrs(info.spans.length ? `fg${index}` : null, 'good'));
     }).join(''));
   }
   const numbers = scenario.target_numbers || [];
@@ -602,7 +629,8 @@ function renderContract(scenario, ev, score) {
       const info = outcomeEv && outcomeEv.numbers[index];
       const what = esc(number.value + (number.unit ? ' ' + number.unit : ''));
       if (!info) return `<div class="contract-item"><span class="what">${what}</span></div>`;
-      return contractItem(info.matched, what, {good: 'said', bad: 'never said'});
+      return contractItem(info.matched, what, {good: 'said', bad: 'never said'},
+        markAttrs(info.span ? `num${index}` : null, 'good'));
     }).join(''));
   }
   const forbiddenFacts = scenario.forbidden_facts || [];
@@ -610,7 +638,8 @@ function renderContract(scenario, ev, score) {
     parts.push('<h3>Forbidden facts</h3>' + forbiddenFacts.map((fact, index) => {
       const info = outcomeEv && outcomeEv.forbidden_facts[index];
       if (!info) return `<div class="contract-item"><span class="what">${esc(fact)}</span></div>`;
-      return contractItem(!info.asserted, esc(fact), {good: 'not asserted', bad: 'asserted'});
+      return contractItem(!info.asserted, esc(fact), {good: 'not asserted', bad: 'asserted'},
+        markAttrs(info.spans.length ? `ff${index}` : null, 'bad'));
     }).join(''));
   }
   if (scenario.requires_tool_use) {
@@ -711,7 +740,7 @@ function renderContract(scenario, ev, score) {
         const attrs = [`data-hl="${violated ? 'bad' : 'good'}"`];
         if (targets.length) attrs.push(`data-targets="${targets.join(',')}"`);
         if (claimTargets.length) attrs.push(`data-claim-targets="${claimTargets.join(',')}"`);
-        if ((entryEv.span_anchors || []).length) attrs.push(`data-policy-target="${evIndex}"`);
+        if ((entryEv.span_anchors || []).length) attrs.push(`data-marks="pol${evIndex}"`);
         extra = {cls: 'contract-hover',
                  attrs: attrs.join(' ') + ' title="hover to highlight in the transcript; click to lock"'};
         if (entryEv.detail) suffix += ` <span class="muted">${esc(entryEv.detail)}</span>`;
@@ -764,8 +793,8 @@ function renderContract(scenario, ev, score) {
 
 // Wrap highlight spans around content. Spans are half-open [start, end)
 // offsets into the exact content string; overlaps keep the earliest span.
-// span.attrs (pre-escaped attribute text) lets policy anchors carry their
-// data-policy tag for illumination targeting.
+// span.attrs (pre-escaped attribute text) lets evidence marks carry their
+// data-mark tag for illumination targeting.
 function renderHighlighted(content, spans) {
   const ordered = [...spans].sort((a, b) => a.start - b.start || a.end - b.end)
     .filter((span) => span.start >= 0 && span.end <= content.length && span.start < span.end);
@@ -782,7 +811,7 @@ function renderHighlighted(content, spans) {
 }
 
 // Policy span anchors grouped by turn: turn_index -> renderHighlighted spans
-// tagged data-policy="<entry index>" so hover/lock can light them.
+// tagged data-mark="pol<entry index>" so hover/lock can light them.
 function policySpansByTurn(ev) {
   const byTurn = new Map();
   const policies = ev && ev.constraint ? ev.constraint.policies : [];
@@ -792,9 +821,9 @@ function policySpansByTurn(ev) {
       byTurn.get(anchor.turn_index).push({
         start: anchor.start,
         end: anchor.end,
-        cls: 'policy-mark',
+        cls: 'ev-mark',
         title: 'policy ' + policy.name + (anchor.note ? ': ' + anchor.note : ''),
-        attrs: ` data-policy="${policyIndex}"`,
+        attrs: ` data-mark="pol${policyIndex}"`,
       });
     }
   });
@@ -947,16 +976,22 @@ function renderTranscript(trace, ev, score) {
   } else {
     let content;
     if (outcomeEv && answerIndex === outcomeEv.answer_turn_index) {
+      // Pre-rendered INVISIBLE marks, one data-mark token per contract
+      // entry (fg<i>/num<i>/ff<i>) — nothing lights up until that entry
+      // is hovered or locked.
       const spans = [];
-      for (const group of outcomeEv.fact_groups) {
-        for (const span of group.spans) spans.push({...span, cls: 'hl-good', title: 'target fact: ' + span.fact});
-      }
-      for (const number of outcomeEv.numbers) {
-        if (number.span) spans.push({...number.span, cls: 'hl-good', title: 'target number: ' + number.value});
-      }
-      for (const fact of outcomeEv.forbidden_facts) {
-        for (const span of fact.spans) spans.push({...span, cls: 'hl-bad', title: 'forbidden fact asserted: ' + fact.fact});
-      }
+      outcomeEv.fact_groups.forEach((group, groupIndex) => {
+        for (const span of group.spans) spans.push({...span, cls: 'ev-mark',
+          attrs: ` data-mark="fg${groupIndex}"`, title: 'target fact: ' + span.fact});
+      });
+      outcomeEv.numbers.forEach((number, numberIndex) => {
+        if (number.span) spans.push({...number.span, cls: 'ev-mark',
+          attrs: ` data-mark="num${numberIndex}"`, title: 'target number: ' + number.value});
+      });
+      outcomeEv.forbidden_facts.forEach((fact, factIndex) => {
+        for (const span of fact.spans) spans.push({...span, cls: 'ev-mark',
+          attrs: ` data-mark="ff${factIndex}"`, title: 'forbidden fact asserted: ' + fact.fact});
+      });
       content = contentWithPolicyMarks(answerIndex, finalTurn.content ?? '', spans);
     } else {
       content = contentWithPolicyMarks(answerIndex, finalTurn.content);
