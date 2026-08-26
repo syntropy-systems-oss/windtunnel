@@ -94,7 +94,7 @@ class _InMemoryHandle:
         entry = self._responses[idx]
         self._call_count += 1
         message, finish_reason = _entry_to_message(entry)
-        return {
+        response: Response = {
             "choices": [
                 {
                     "message": message,
@@ -102,6 +102,12 @@ class _InMemoryHandle:
                 }
             ]
         }
+        # Optional per-step turns pass-through (see the runner's
+        # adopt_response_turns contract) so pipeline tests can script a
+        # runtime that reconstructs its agent loop step by step.
+        if isinstance(entry, dict) and "turns" in entry:
+            response["turns"] = entry["turns"]
+        return response
 
     def reset_state(self) -> None:
         self.reset_count += 1

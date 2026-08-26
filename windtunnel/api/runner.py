@@ -69,6 +69,9 @@ from windtunnel.api._runner.hooks import (
     dispatch_hooks as _dispatch_hooks,
 )
 from windtunnel.api._runner.messages import (
+    adopt_response_turns as _adopt_response_turns,
+)
+from windtunnel.api._runner.messages import (
     build_messages as _build_messages,
 )
 from windtunnel.api._runner.messages import (
@@ -254,18 +257,33 @@ def _run_once(
         reply_text, tool_calls = _extract_reply(response)
         runtime_warnings.extend(_extract_response_worker_warnings(response))
 
-        turns.append(Turn(
-            role="assistant",
-            content=reply_text,
-            tool_calls=tool_calls,
-            tool_results=[],
-            latency_ms=latency_ms,
-            # Optional runtime-reported failure marker for this turn: an
-            # errored SCORED turn makes the run INVALID at scoring time
-            # (see Turn.error / evaluate_integrity). Absent for runtimes
-            # that don't report it — honest degradation.
-            error=_extract_turn_error(response),
-        ))
+        # Optional per-step enrichment: a runtime that reconstructs its
+        # agent loop step by step rides Turn-shaped dicts on
+        # response["turns"] (thought text, per-step tool_calls,
+        # shape-faithful tool_results, per-step error). Adopted verbatim
+        # when the shape validates; otherwise a loud
+        # response_turns_rejected warning lands in the trace and the
+        # aggregated single turn below remains byte-identical to the
+        # historical behavior. See adopt_response_turns for the contract.
+        adopted_turns, adoption_warnings = _adopt_response_turns(
+            response, reply_text, latency_ms
+        )
+        runtime_warnings.extend(adoption_warnings)
+        if adopted_turns is not None:
+            turns.extend(adopted_turns)
+        else:
+            turns.append(Turn(
+                role="assistant",
+                content=reply_text,
+                tool_calls=tool_calls,
+                tool_results=[],
+                latency_ms=latency_ms,
+                # Optional runtime-reported failure marker for this turn: an
+                # errored SCORED turn makes the run INVALID at scoring time
+                # (see Turn.error / evaluate_integrity). Absent for runtimes
+                # that don't report it — honest degradation.
+                error=_extract_turn_error(response),
+            ))
         responses.append(reply_text)
 
     finished_at = datetime.now(UTC)
