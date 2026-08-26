@@ -201,6 +201,73 @@ class TestConstraintEvidenceRecomputation:
         ]
         assert entry["locators"] == ["workspace/notes.txt"]
 
+    def test_check_source_is_introspected_for_def_based_callables(self) -> None:
+        """'What exactly is windtunnel expecting?' — the evidence endpoint
+        carries the opaque check's own source when introspectable."""
+        from windtunnel._serve.evidence import compute_evidence
+        from windtunnel.api.score import LayerResult
+
+        def answer_mentions_the_total(trace: Trace) -> LayerResult:
+            mentioned = "12" in trace.turns[-1].content
+            return LayerResult(passed=mentioned, detail="checked for the total")
+
+        def no_second_send(trace: Trace) -> bool:
+            return len(trace.mcp_calls) <= 1
+
+        scenario = Scenario(
+            name="policy_case",
+            prompt="go",
+            outcome_fn=answer_mentions_the_total,
+            policies=[Policy(name="no_second_send", predicate=no_second_send)],
+        )
+        evidence = compute_evidence(scenario, _trace())
+        assert "def answer_mentions_the_total" in evidence["outcome"]["outcome_fn_source"]
+        policy_entry = evidence["constraint"]["policies"][0]
+        assert "def no_second_send" in policy_entry["source"]
+
+    def test_unsourceable_callable_degrades_to_honest_absence(self) -> None:
+        from windtunnel._serve.evidence import compute_evidence
+
+        scenario = Scenario(
+            name="policy_case",
+            prompt="go",
+            # A C builtin is callable but has no Python source.
+            policies=[Policy(name="opaque_builtin", predicate=bool)],
+        )
+        entry = compute_evidence(scenario, _trace())["constraint"]["policies"][0]
+        assert entry["source"] is None
+
+    def test_custom_trajectory_check_source_surfaces(self) -> None:
+        from windtunnel._serve.evidence import compute_evidence
+        from windtunnel.api.scenario import TrajectoryCheck
+
+        class AtMostTwoLookups(TrajectoryCheck):
+            def check(self, calls: list[str]) -> tuple[bool, str]:
+                lookups = sum(1 for name in calls if name.endswith("client_lookup"))
+                return lookups <= 2, f"{lookups} lookup(s)"
+
+        scenario = Scenario(
+            name="policy_case", prompt="go", trajectory_checks=[AtMostTwoLookups()]
+        )
+        checks = compute_evidence(scenario, _trace())["trajectory"]["custom_checks"]
+        assert checks[0]["name"] == "AtMostTwoLookups"
+        assert "class AtMostTwoLookups" in checks[0]["source"]
+
+    def test_over_long_source_is_truncated_with_a_marker(self) -> None:
+        from windtunnel._serve import evidence as evidence_module
+
+        def long_check(trace: Trace) -> bool:  # pragma: no cover - never called
+            return True
+
+        original = evidence_module._SOURCE_CHAR_LIMIT
+        evidence_module._SOURCE_CHAR_LIMIT = 10
+        try:
+            source = evidence_module._callable_source(long_check)
+        finally:
+            evidence_module._SOURCE_CHAR_LIMIT = original
+        assert source is not None
+        assert "more characters]" in source
+
     def test_raising_predicate_degrades_to_opaque(self) -> None:
         from windtunnel._serve.evidence import compute_evidence
 

@@ -13,14 +13,17 @@ scorer. It is enforced structurally —
   - trajectory evidence uses the same evidence-source decision and
     tool_name_matches comparisons evaluate_trajectory uses;
   - opaque callables (outcome_fn, Policy predicates, custom
-    TrajectoryChecks) are reported by name only — their verdicts live in
-    the layer detail strings, and no span is fabricated for them.
+    TrajectoryChecks) are reported by name — plus their own SOURCE when
+    inspect can read it — but never executed beyond what scoring already
+    does, and no span is ever fabricated for them.
 
 Everything returned is plain JSON-serializable data.
 """
 
 from __future__ import annotations
 
+import inspect
+import textwrap
 from typing import Any
 
 from windtunnel.api._evidence import mcp_evidence_state
@@ -38,6 +41,30 @@ from windtunnel.api._matching import (
 from windtunnel.api.evaluators import NEGATION_CUES
 from windtunnel.api.scenario import PolicyVerdict, Scenario
 from windtunnel.api.trace import Trace
+
+_SOURCE_CHAR_LIMIT = 4000
+
+
+def _callable_source(fn: Any) -> str | None:
+    """The callable's source text, dedented and capped — or honest None.
+
+    Read-only introspection of already-loaded pack objects: what an opaque
+    check IS, shown instead of executed. Builtins, C extensions, and
+    callables whose defining file is gone yield None (the UI keeps its
+    "opaque — no transcript anchor" presentation); an over-long body is
+    truncated with an explicit marker, never silently clipped.
+    """
+    try:
+        source = textwrap.dedent(inspect.getsource(fn))
+    except (OSError, TypeError):
+        return None
+    source = source.strip("\n")
+    if not source:
+        return None
+    if len(source) > _SOURCE_CHAR_LIMIT:
+        omitted = len(source) - _SOURCE_CHAR_LIMIT
+        source = source[:_SOURCE_CHAR_LIMIT] + f"\n… [truncated {omitted} more characters]"
+    return source
 
 
 def compute_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
@@ -78,6 +105,11 @@ def _outcome_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
         "tool_use_required": bool(scenario.requires_tool_use),
         "tool_use_observed": has_tool_calls(trace),
         "custom_outcome_fn": scenario.outcome_fn is not None,
+        # "What exactly is windtunnel expecting?" — the opaque check's own
+        # source, when introspectable (None = honest absence).
+        "outcome_fn_source": (
+            _callable_source(scenario.outcome_fn) if scenario.outcome_fn is not None else None
+        ),
         "fact_groups": [],
         "numbers": [],
         "forbidden_facts": [],
@@ -326,7 +358,10 @@ def _trajectory_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
         "forbidden_calls": forbidden_entries,
         "order_matters": bool(scenario.order_matters),
         "order_satisfied": order_satisfied,
-        "custom_checks": [type(check).__name__ for check in scenario.trajectory_checks],
+        "custom_checks": [
+            {"name": type(check).__name__, "source": _callable_source(type(check))}
+            for check in scenario.trajectory_checks
+        ],
     }
 
 
@@ -359,6 +394,7 @@ def _constraint_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
             "call_anchors": [],
             "span_anchors": [],
             "locators": [],
+            "source": _callable_source(policy.predicate),
         }
         try:
             result = policy.predicate(trace)

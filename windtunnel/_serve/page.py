@@ -117,6 +117,11 @@ mark.policy-mark.illum-bad { background: var(--hl-bad-bg); color: var(--hl-bad-f
    non-interactive — dimmed, no pointer, no hover ring. */
 .contract-item.no-anchor { opacity: 0.72; }
 .contract-item.no-anchor .what { cursor: default; }
+/* "What exactly is windtunnel expecting?" — the opaque check's own source,
+   collapsed behind a toggle. */
+details.check-source { margin: 0.15rem 0 0.4rem 1.2rem; }
+details.check-source summary { font-size: 0.78rem; color: var(--muted); }
+pre.check-source { font-family: var(--mono); font-size: 0.75rem; white-space: pre; overflow-x: auto; max-height: 16rem; overflow-y: auto; padding: 0.5rem 0.75rem; margin-top: 0.25rem; background: color-mix(in srgb, var(--border) 30%, transparent); border-radius: 6px; }
 .thought { padding: 0.4rem 0.75rem; font-size: 0.85rem; color: var(--muted); font-style: italic; white-space: pre-wrap; overflow-wrap: anywhere; border-top: 1px dashed var(--border); }
 .thought:first-child { border-top: none; }
 .call-group { border: 1px solid var(--border); border-radius: 6px; margin: 0.5rem 0; overflow: hidden; }
@@ -277,6 +282,11 @@ function contractItem(good, what, note, extra) {
   return `<div class="contract-item ${good ? 'good' : 'bad'}${cls}"${attrs}>` +
     verdictWord(good, note.good, note.bad) +
     `<span class="what">${what}</span></div>`;
+}
+function sourceToggle(source) {
+  // The opaque check's own source, when the server could introspect it.
+  if (!source) return '';
+  return `<details class="check-source"><summary>show check source</summary><pre class="check-source">${esc(source)}</pre></details>`;
 }
 function hoverAttrs(indices, hl) {
   // Server-computed observed-call indices -> hover/lock illumination targets.
@@ -606,7 +616,8 @@ function renderContract(scenario, ev, score) {
       : contractItem(observed, 'required', {good: 'tools used', bad: 'no tools used'})));
   }
   if (scenario.has_outcome_fn) {
-    parts.push('<div class="muted">opaque outcome_fn — no transcript anchor; its verdict is the outcome detail above</div>');
+    parts.push('<div class="muted">opaque outcome_fn — no transcript anchor; its verdict is the outcome detail above</div>' +
+      sourceToggle(outcomeEv ? outcomeEv.outcome_fn_source : null));
   }
 
   // Trajectory expectations.
@@ -651,7 +662,11 @@ function renderContract(scenario, ev, score) {
     parts.push('<div class="muted">no tool-path expectations declared</div>');
   }
   if ((scenario.trajectory_checks || []).length) {
-    parts.push(`<div class="muted">opaque custom checks — no transcript anchor: ${esc(scenario.trajectory_checks.join(', '))} (verdicts in the trajectory detail)</div>`);
+    const checksEv = trajEv ? (trajEv.custom_checks || []) : [];
+    parts.push(`<div class="muted">opaque custom checks — no transcript anchor: ${esc(scenario.trajectory_checks.join(', '))} (verdicts in the trajectory detail)</div>` +
+      checksEv.map((check) => check.source
+        ? `<div class="muted" style="margin-left:1.2rem">${esc(check.name)}</div>` + sourceToggle(check.source)
+        : '').join(''));
   }
 
   // Constraint + integrity + cost.
@@ -701,10 +716,11 @@ function renderContract(scenario, ev, score) {
       if (entryEv && (entryEv.locators || []).length) {
         suffix += `<br><span class="muted">looked at: ${entryEv.locators.map((l) => esc(l)).join(' · ')}</span>`;
       }
+      const toggle = entryEv ? sourceToggle(entryEv.source) : '';
       if (constraintResult == null) {
-        return `<div class="contract-item ${extra.cls}" ${extra.attrs ?? ''}><span class="what">${what}${suffix}</span></div>`;
+        return `<div class="contract-item ${extra.cls}" ${extra.attrs ?? ''}><span class="what">${what}${suffix}</span></div>` + toggle;
       }
-      return contractItem(!violated, what + suffix, {good: 'held', bad: 'violated'}, extra);
+      return contractItem(!violated, what + suffix, {good: 'held', bad: 'violated'}, extra) + toggle;
     }).join(''));
   }
 
