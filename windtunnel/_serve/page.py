@@ -88,7 +88,19 @@ pre.stream { font-family: var(--mono); font-size: 0.82rem; white-space: pre-wrap
 button.plain { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.25rem 0.75rem; cursor: pointer; font-size: 0.85rem; }
 .empty { color: var(--muted); padding: 1rem 0; }
 #run-columns { display: grid; grid-template-columns: minmax(280px, 5fr) minmax(320px, 7fr); gap: 1rem; align-items: start; }
-@media (max-width: 900px) { #run-columns { grid-template-columns: 1fr; } }
+#run-columns > .pane { overflow-y: auto; max-height: calc(100vh - 3.5rem); position: sticky; top: 0.5rem; }
+@media (max-width: 900px) {
+  #run-columns { grid-template-columns: 1fr; }
+  #run-columns > .pane { max-height: none; position: static; }
+}
+.thought { padding: 0.4rem 0.75rem; font-size: 0.85rem; color: var(--muted); font-style: italic; white-space: pre-wrap; overflow-wrap: anywhere; border-top: 1px dashed var(--border); }
+.thought:first-child { border-top: none; }
+.call-group { border: 1px solid var(--border); border-radius: 6px; margin: 0.5rem 0; overflow: hidden; }
+.tool-call.illum-good, .tagchip.illum-good { background: var(--hl-good-bg); color: var(--hl-good-fg); box-shadow: inset 2px 0 0 var(--pass-fg); }
+.tool-call.illum-bad, .tagchip.illum-bad { background: var(--hl-bad-bg); color: var(--hl-bad-fg); box-shadow: inset 2px 0 0 var(--fail-fg); }
+.contract-hover { cursor: pointer; border-radius: 4px; }
+.contract-hover:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.contract-hover.locked { outline: 1px dashed var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .contract-item { display: flex; gap: 0.5rem; align-items: baseline; margin: 0.2rem 0; font-size: 0.87rem; }
 .contract-item .verdict-word { font-family: var(--mono); font-size: 0.75rem; font-weight: 600; white-space: nowrap; }
 .contract-item.good .verdict-word { color: var(--pass-fg); }
@@ -218,17 +230,33 @@ async function showRun(runId) {
   container.innerHTML = renderRunScreen(runId, run, evidence, row);
   container.querySelectorAll('button[data-scroll]').forEach((b) => b.addEventListener('click', () => {
     const target = document.getElementById(b.dataset.scroll);
-    if (target) target.scrollIntoView({behavior: 'smooth', block: 'start'});
+    if (!target) return;
+    // Scroll within the target's own pane (nested scroll container), not the page.
+    const pane = target.closest('.pane');
+    if (pane) {
+      const delta = target.getBoundingClientRect().top - pane.getBoundingClientRect().top;
+      pane.scrollTo({top: pane.scrollTop + delta - 6, behavior: 'smooth'});
+    } else {
+      target.scrollIntoView({behavior: 'smooth', block: 'start'});
+    }
   }));
+  wireIllumination(container);
 }
 
 function verdictWord(good, goodText, badText) {
   return `<span class="verdict-word">${good ? '✓ ' + esc(goodText) : '✗ ' + esc(badText)}</span>`;
 }
-function contractItem(good, what, note) {
-  return `<div class="contract-item ${good ? 'good' : 'bad'}">` +
+function contractItem(good, what, note, extra) {
+  const cls = (extra && extra.cls) ? ' ' + extra.cls : '';
+  const attrs = (extra && extra.attrs) ? ' ' + extra.attrs : '';
+  return `<div class="contract-item ${good ? 'good' : 'bad'}${cls}"${attrs}>` +
     verdictWord(good, note.good, note.bad) +
     `<span class="what">${what}</span></div>`;
+}
+function hoverAttrs(indices, hl) {
+  // Server-computed observed-call indices -> hover/lock illumination targets.
+  if (!indices || !indices.length) return null;
+  return {cls: 'contract-hover', attrs: `data-targets="${indices.join(',')}" data-hl="${hl}" title="hover to highlight in the transcript; click to lock"`};
 }
 
 function renderRunScreen(runId, run, evidencePayload, row) {
@@ -277,11 +305,46 @@ function renderRunScreen(runId, run, evidencePayload, row) {
 
   parts.push(renderLineage(runId, row));
   parts.push('<div id="run-columns">');
-  parts.push('<div class="panel">' + renderContract(scenario, ev, score) + '</div>');
-  parts.push('<div class="panel">' + renderTranscript(trace, ev) + '</div>');
+  parts.push('<div class="panel pane">' + renderContract(scenario, ev, score) + '</div>');
+  parts.push('<div class="panel pane">' + renderTranscript(trace, ev, score) + '</div>');
   parts.push('</div>');
   parts.push(renderExperimentPanel(runId));
   return parts.join('');
+}
+
+// ── hover-to-illuminate / click-to-lock ──────────────────────────────────────
+// Contract entries carry data-targets (observed-call indices computed by the
+// SERVER in evidence.trajectory) and data-hl (good/bad). Transcript call
+// nodes carry data-obs="<index>". Hovering illuminates; clicking locks the
+// highlight so it survives scrolling; click again (or another entry) to
+// unlock/switch.
+let lockedEntry = null;
+function applyIllum(entry, on) {
+  const cls = 'illum-' + (entry.dataset.hl || 'good');
+  (entry.dataset.targets || '').split(',').filter(Boolean).forEach((index) => {
+    document.querySelectorAll(`[data-obs="${index}"]`).forEach((node) =>
+      node.classList.toggle(cls, on));
+  });
+}
+function wireIllumination(container) {
+  lockedEntry = null;
+  container.querySelectorAll('.contract-hover').forEach((entry) => {
+    entry.addEventListener('mouseenter', () => { if (!lockedEntry) applyIllum(entry, true); });
+    entry.addEventListener('mouseleave', () => { if (!lockedEntry) applyIllum(entry, false); });
+    entry.addEventListener('click', () => {
+      if (lockedEntry === entry) {
+        applyIllum(entry, false);
+        entry.classList.remove('locked');
+        lockedEntry = null;
+        applyIllum(entry, true); // still hovered
+        return;
+      }
+      if (lockedEntry) { applyIllum(lockedEntry, false); lockedEntry.classList.remove('locked'); }
+      lockedEntry = entry;
+      entry.classList.add('locked');
+      applyIllum(entry, true);
+    });
+  });
 }
 
 // ── before/after lineage ─────────────────────────────────────────────────────
@@ -481,7 +544,8 @@ function renderContract(scenario, ev, score) {
       if (!info) return `<div class="contract-item"><span class="what">must call ${what}</span></div>`;
       const via = info.satisfied
         ? ` <span class="muted">via ${esc(info.matched_calls.map((i) => trajEv.observed_calls[i]).join(', '))}</span>` : '';
-      return contractItem(info.satisfied, `must call ${what}${via}`, {good: 'called', bad: 'never called'});
+      return contractItem(info.satisfied, `must call ${what}${via}`,
+        {good: 'called', bad: 'never called'}, hoverAttrs(info.matched_calls, 'good'));
     }).join(''));
     if (scenario.order_matters) {
       const ordered = trajEv ? trajEv.order_satisfied : null;
@@ -497,7 +561,8 @@ function renderContract(scenario, ev, score) {
       if (!info) return `<div class="contract-item"><span class="what">never call ${esc(name)}</span></div>`;
       const via = info.violated
         ? ` <span class="muted">saw ${esc(info.offending_calls.map((i) => trajEv.observed_calls[i]).join(', '))}</span>` : '';
-      return contractItem(!info.violated, `never call ${esc(name)}${via}`, {good: 'clean', bad: 'called'});
+      return contractItem(!info.violated, `never call ${esc(name)}${via}`,
+        {good: 'clean', bad: 'called'}, hoverAttrs(info.offending_calls, 'bad'));
     }).join(''));
   }
   if (!mustCall.length && !forbiddenCalls.length) {
@@ -509,11 +574,30 @@ function renderContract(scenario, ev, score) {
 
   // Constraint + integrity + cost.
   parts.push('<h3 id="ev-constraint">Constraint</h3>');
-  const policies = scenario.policies || [];
-  parts.push(policies.length
-    ? policies.map((p) => `<div class="contract-item"><span class="what">${esc(p.name)}${p.effect_class ? ` [${esc(p.effect_class)}]` : ''}</span></div>`).join('') +
-      '<div class="muted">policy predicates are opaque callables — failed names appear in the constraint detail</div>'
-    : '<div class="muted">no policies declared</div>');
+  // Ground truth for what gated THIS run is the sidecar's recorded policy
+  // list (it includes policies attached at sweep time, e.g. by a runtime
+  // plugin's pre_run) — prefer it over the current pack definition. An old
+  // sidecar without the key is honest absence, never "no policies declared".
+  const recordedPolicies = score && score.scenario ? score.scenario.policies : undefined;
+  const policies = recordedPolicies !== undefined ? recordedPolicies : scenario.policies;
+  const constraintResult = score ? score.constraint : null;
+  if (policies === undefined || policies === null) {
+    parts.push('<div class="muted">policy declarations were not recorded for this run' +
+      (constraintResult && constraintResult.passed === false
+        ? ' — the failed policy names are in the constraint detail above' : '') + '</div>');
+  } else if (!policies.length) {
+    parts.push('<div class="muted">no policies declared</div>');
+  } else {
+    parts.push(policies.map((p) => {
+      // A policy predicate is an opaque callable; its verdict lives in the
+      // constraint detail, which names each failed policy in quotes.
+      const violated = !!(constraintResult && constraintResult.passed === false &&
+        (constraintResult.detail || '').includes(`'${p.name}'`));
+      const what = `${esc(p.name)}${p.effect_class ? ` [${esc(p.effect_class)}]` : ''}`;
+      if (constraintResult == null) return `<div class="contract-item"><span class="what">${what}</span></div>`;
+      return contractItem(!violated, what, {good: 'held', bad: 'violated'});
+    }).join(''));
+  }
 
   parts.push('<h3 id="ev-integrity">Perturbations (integrity)</h3>');
   const perturbations = scenario.perturbations || [];
@@ -554,37 +638,106 @@ function renderHighlighted(content, spans) {
   return parts.join('');
 }
 
-function callStatuses(trajEv) {
-  // index in observed_calls → 'good' (satisfied a must_call) / 'bad' (forbidden).
-  const status = new Map();
-  if (!trajEv) return status;
-  for (const entry of trajEv.must_call) {
-    for (const index of entry.matched_calls) status.set(index, 'good');
-  }
-  for (const entry of trajEv.forbidden_calls) {
-    for (const index of entry.offending_calls) status.set(index, 'bad'); // bad wins
-  }
-  return status;
+function callDetailFor(trajEv, obsIndex) {
+  if (obsIndex == null || !trajEv) return null;
+  return (trajEv.observed_call_details || [])[obsIndex] || null;
+}
+function callStatusClass(detail) {
+  if (!detail) return '';
+  if (detail.forbidden.length) return 'bad'; // bad wins over good
+  if (detail.must_call_entries.length) return 'good';
+  return '';
 }
 
-function renderTranscript(trace, ev) {
-  const parts = ['<h2>Transcript</h2>'];
+// Transcript: strict chronology in three sections — the user message(s),
+// the tool-call trajectory, the final assistant output. The stored turn
+// structure may aggregate (one assistant turn carrying the final text AND
+// every tool call), so chronology is reconstructed: a non-final assistant
+// turn's content renders as a thought beside its calls; the scored turn's
+// content renders LAST, as the final output, after the trajectory it
+// produced.
+function renderTranscript(trace, ev, score) {
   const outcomeEv = ev ? ev.outcome : null;
   const trajEv = ev ? ev.trajectory : null;
-  const answerIndex = outcomeEv ? outcomeEv.answer_turn_index : null;
-  const statuses = callStatuses(trajEv);
-  const observed = trajEv ? trajEv.observed_calls : [];
-  // Name → status for coloring transcript tool-call blocks; index-accurate
-  // coloring lives in the observed-calls strip below.
-  const nameStatus = new Map();
-  observed.forEach((name, index) => {
-    const st = statuses.get(index);
-    if (st === 'bad' || (st && !nameStatus.has(name))) nameStatus.set(name, st);
-  });
+  const turns = trace.turns || [];
+  let answerIndex = outcomeEv ? outcomeEv.answer_turn_index : null;
+  if (answerIndex == null) {
+    for (let i = turns.length - 1; i >= 0; i--) {
+      if (turns[i].role === 'assistant') { answerIndex = i; break; }
+    }
+  }
+  const source = trajEv ? trajEv.evidence_source : null;
+  const parts = ['<h2>Transcript</h2>'];
 
-  (trace.turns || []).forEach((turn, index) => {
+  // (a) the user message(s), chronological.
+  const userTurns = turns.filter((turn) => turn.role === 'user');
+  parts.push(`<h3 id="user-section">User message${userTurns.length > 1 ? 's' : ''}</h3>`);
+  parts.push(userTurns.length
+    ? userTurns.map((turn) => `<div class="turn"><div class="role">user</div>
+        <div class="content">${esc(turn.content)}</div></div>`).join('')
+    : '<div class="muted">no user turns recorded</div>');
+
+  // (b) the tool-call trajectory: thought + calls + results per turn, in order.
+  // Observed-call indices: when evidence comes from the transcript, the
+  // server's observed_calls order IS this iteration order over named calls,
+  // so data-obs tags line up with the server-computed match indices.
+  parts.push(`<h3 id="trajectory-section">Tool-call trajectory` +
+    (source ? ` <span class="muted">evidence: ${esc(source)}</span>` : '') + '</h3>');
+  let obsCursor = 0;
+  const groups = [];
+  turns.forEach((turn, index) => {
+    const isUser = turn.role === 'user';
+    const isFinal = index === answerIndex;
+    // The index cursor mirrors the server's extraction exactly: every named
+    // call in turn order counts, whatever the turn's role.
+    const calls = turn.tool_calls || [];
+    const results = turn.tool_results || [];
+    if (isUser && !calls.length && !results.length) return; // rendered in (a)
+    const inner = [];
+    if (!isUser && turn.role !== 'assistant') {
+      // e.g. a tool-role turn: its content is a result in the trajectory.
+      if ((turn.content || '').trim() || calls.length || results.length) {
+        inner.push(`<div class="tool-call">${esc(turn.role)}: ${esc(turn.content)}</div>`);
+      }
+    } else if (!isUser && !isFinal && (turn.content || '').trim()) {
+      // Intermediate assistant text = the thought before/between calls.
+      inner.push(`<div class="thought">${esc(turn.content)}</div>`);
+    }
+    for (const call of calls) {
+      const name = call.function?.name ?? call.name;
+      const args = call.function?.arguments ?? JSON.stringify(call.args ?? {});
+      const obsIndex = (source === 'transcript' && name) ? obsCursor++ : null;
+      const detail = callDetailFor(trajEv, obsIndex);
+      const obsAttr = obsIndex != null ? ` data-obs="${obsIndex}"` : '';
+      inner.push(`<div class="tool-call ${callStatusClass(detail)}"${obsAttr}>tool_call ${esc(name ?? '?')}(${esc(args)})</div>`);
+    }
+    for (const result of results) {
+      inner.push(`<div class="tool-call">tool_result ${esc(JSON.stringify(result))}</div>`);
+    }
+    if (inner.length) groups.push(`<div class="call-group">${inner.join('')}</div>`);
+  });
+  parts.push(groups.join('') || '<div class="muted">no tool calls recorded</div>');
+
+  // Server-witnessed calls are the authoritative observed path when a
+  // logging mock was in play — data-obs tags live here in that mode.
+  const witnessed = trace.mcp_calls || [];
+  if (witnessed.length) {
+    parts.push('<h3>Witnessed at the mock server</h3>' + witnessed.map((call, index) => {
+      const obsIndex = source === 'server-witnessed' ? index : null;
+      const detail = callDetailFor(trajEv, obsIndex);
+      const obsAttr = obsIndex != null ? ` data-obs="${obsIndex}"` : '';
+      return `<div class="tool-call ${callStatusClass(detail)}"${obsAttr}>${esc(call.tool_name)} ← ${esc(JSON.stringify(call.args ?? {}))}</div>`;
+    }).join(''));
+  }
+
+  // (c) the final assistant output, with evidence spans.
+  parts.push('<h3 id="final-output">Final output</h3>');
+  const finalTurn = answerIndex != null ? turns[answerIndex] : null;
+  if (finalTurn == null) {
+    parts.push('<div class="muted">no assistant turn recorded</div>');
+  } else {
     let content;
-    if (index === answerIndex && outcomeEv) {
+    if (outcomeEv && answerIndex === outcomeEv.answer_turn_index) {
       const spans = [];
       for (const group of outcomeEv.fact_groups) {
         for (const span of group.spans) spans.push({...span, cls: 'hl-good', title: 'target fact: ' + span.fact});
@@ -595,37 +748,14 @@ function renderTranscript(trace, ev) {
       for (const fact of outcomeEv.forbidden_facts) {
         for (const span of fact.spans) spans.push({...span, cls: 'hl-bad', title: 'forbidden fact asserted: ' + fact.fact});
       }
-      content = renderHighlighted(turn.content ?? '', spans);
+      content = renderHighlighted(finalTurn.content ?? '', spans);
     } else {
-      content = esc(turn.content);
+      content = esc(finalTurn.content);
     }
-    const toolCalls = (turn.tool_calls || []).map((call) => {
-      const name = call.function?.name ?? call.name ?? '?';
-      const args = call.function?.arguments ?? JSON.stringify(call.args ?? {});
-      const cls = nameStatus.get(name) ?? '';
-      return `<div class="tool-call ${cls}">tool_call ${esc(name)}(${esc(args)})</div>`;
-    }).join('');
-    const toolResults = (turn.tool_results || []).map((result) =>
-      `<div class="tool-call">tool_result ${esc(JSON.stringify(result))}</div>`).join('');
-    const roleNote = index === answerIndex ? ' · scored turn' : '';
-    parts.push(`<div class="turn"><div class="role">${esc(turn.role)}${roleNote}</div>
-      <div class="content">${content}</div>${toolCalls}${toolResults}</div>`);
-  });
+    parts.push(`<div class="turn"><div class="role">assistant · scored turn</div>
+      <div class="content">${content}</div></div>`);
+  }
 
-  if (observed.length) {
-    parts.push('<h3>Observed tool calls (' + esc(trajEv.evidence_source) + ')</h3><div class="call-strip">' +
-      observed.map((name, index) => {
-        const st = statuses.get(index);
-        return `<span class="tagchip ${st ?? ''}">${esc(name)}</span>`;
-      }).join('') + '</div>');
-  }
-  const witnessed = trace.mcp_calls || [];
-  if (witnessed.length) {
-    parts.push('<h3>Witnessed at the mock server</h3>' + witnessed.map((call) => {
-      const cls = nameStatus.get(call.tool_name) ?? '';
-      return `<div class="tool-call ${cls}">${esc(call.tool_name)} ← ${esc(JSON.stringify(call.args ?? {}))}</div>`;
-    }).join(''));
-  }
   if ((trace.worker_warnings || []).length) {
     parts.push(`<div class="muted">warnings: ${esc(trace.worker_warnings.join(' | '))}</div>`);
   }

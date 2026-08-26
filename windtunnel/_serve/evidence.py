@@ -165,7 +165,7 @@ def _trajectory_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
         source = "transcript"
         observed = extract_tool_names(trace)
 
-    must_call_entries = []
+    must_call_entries: list[dict[str, Any]] = []
     for entry in scenario.must_call:
         alternatives = _must_call_alternatives(entry)
         matched_indices = [
@@ -181,7 +181,7 @@ def _trajectory_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
             }
         )
 
-    forbidden_entries = []
+    forbidden_entries: list[dict[str, Any]] = []
     for name in scenario.forbidden_calls:
         offending = [
             index
@@ -214,9 +214,35 @@ def _trajectory_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
                 entry_index += 1
         order_satisfied = entry_index >= len(expected_alts)
 
+    # Per-observed-call annotations: which must_call entries each call
+    # satisfied and which forbidden names it matched — the server-computed
+    # source of truth for transcript highlighting (the page only maps these
+    # indices onto DOM nodes; it never re-implements name matching).
+    call_details = []
+    for index, name in enumerate(observed):
+        matched_entries = [
+            entry_index
+            for entry_index, entry in enumerate(must_call_entries)
+            if index in entry["matched_calls"]
+        ]
+        matched_forbidden = [
+            entry["name"]
+            for entry in forbidden_entries
+            if index in entry["offending_calls"]
+        ]
+        call_details.append(
+            {
+                "index": index,
+                "name": name,
+                "must_call_entries": matched_entries,
+                "forbidden": matched_forbidden,
+            }
+        )
+
     return {
         "evidence_source": source,
         "observed_calls": observed,
+        "observed_call_details": call_details,
         "must_call": must_call_entries,
         "forbidden_calls": forbidden_entries,
         "order_matters": bool(scenario.order_matters),

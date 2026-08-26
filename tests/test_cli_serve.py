@@ -40,7 +40,7 @@ import pytest
 _PACK_SOURCE_TEXT = '''\
 """Fixture scenario pack for the run-viewer tests."""
 from windtunnel.api.pack import ScenarioPack
-from windtunnel.api.scenario import Scenario
+from windtunnel.api.scenario import Policy, Scenario
 from windtunnel.api.score import FailureCost
 
 PACK = ScenarioPack(
@@ -59,6 +59,15 @@ PACK = ScenarioPack(
             must_call=["client_lookup"],
             requires_tool_use=True,
             failure_cost=FailureCost(severity="medium", customer_visible=True),
+        ),
+        Scenario(
+            name="hold_the_line",
+            prompt="say ok",
+            target_facts=[["ok"]],
+            # A policy that always fails: the outcome layer passes while the
+            # constraint layer alone carries the FAIL — the shape that must
+            # never render as "no policies declared" next to a red chip.
+            policies=[Policy(name="no_unverified_claims", predicate=lambda trace: False)],
         ),
     ],
 )
@@ -230,6 +239,7 @@ class TestLedgerParsing:
         assert {row["scenario_id"] for row in rows} == {
             "acknowledge_ok",
             "lookup_client_email",
+            "hold_the_line",
         }
         for row in rows:
             assert row["pack"] == "viewer_pack"
@@ -251,7 +261,7 @@ class TestRunResolution:
         from windtunnel._serve.data import load_ledger_rows
 
         rows = load_ledger_rows(runs_dir)["rows"]
-        failed = [row for row in rows if row["verdict"] == "FAIL"]
+        failed = [row for row in rows if row["scenario_id"] == "lookup_client_email"]
         return failed[0]["run_ids"][0]
 
     def test_resolves_trace_and_score_sidecar(self, seeded: SimpleNamespace) -> None:
@@ -385,7 +395,7 @@ class TestHttpEndpoints:
 
     def test_ledger_endpoint(self, viewer: SimpleNamespace) -> None:
         payload = _get_json(viewer.base, "/api/ledger")
-        assert len(payload["rows"]) == 2
+        assert len(payload["rows"]) == 3
         assert payload["rows"][0]["verdict"] in {"PASS", "FAIL"}
 
     def test_run_endpoint_round_trip(self, viewer: SimpleNamespace) -> None:
@@ -495,6 +505,76 @@ class TestEvidenceEndpoint:
             thread.join(timeout=5)
 
 
+class TestConstraintPolicyRecording:
+    """Regression: a run whose constraint layer fails must never present as
+    'no policies declared'. The sidecar records the policies that actually
+    gated the run (including any attached after authoring, e.g. at sweep
+    time), so the run screen can render the constraint contract even when
+    the current pack definition cannot reconstruct them."""
+
+    def _policy_run(self, base: str) -> dict:
+        rows = _get_json(base, "/api/ledger")["rows"]
+        row = next(r for r in rows if r["scenario_id"] == "hold_the_line")
+        return _get_json(base, f"/api/run/{row['run_ids'][0]}")
+
+    def test_sidecar_records_the_gating_policies(self, viewer: SimpleNamespace) -> None:
+        run = self._policy_run(viewer.base)
+        score = run["score"]
+        assert score["constraint"]["passed"] is False
+        assert "'no_unverified_claims'" in score["constraint"]["detail"]
+        assert score["scenario"]["policies"] == [
+            {"name": "no_unverified_claims", "effect_class": None}
+        ]
+
+    def test_recorded_policies_survive_without_pack_sources(
+        self, seeded: SimpleNamespace
+    ) -> None:
+        """The exact bug shape: serve without the run's pack. Evidence is
+        unavailable, but the sidecar still carries the policy names — the
+        UI renders them instead of claiming none were declared."""
+        from windtunnel._serve.server import build_server
+
+        server = build_server(runs_dir=seeded.runs_dir, packs=[], port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            host, port = server.bound_address
+            run = self._policy_run(f"http://{host}:{port}")
+            assert run["score"]["constraint"]["passed"] is False
+            assert [p["name"] for p in run["score"]["scenario"]["policies"]] == [
+                "no_unverified_claims"
+            ]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_sidecar_records_sweep_time_policy_attachments(self, tmp_path: Path) -> None:
+        """Policies appended to the Scenario AFTER authoring (the pre_run
+        seam) must land in the sidecar too — the pack definition alone can
+        never reconstruct them."""
+        from windtunnel._cli.storage import _write_score_sidecar
+        from windtunnel.api.scenario import Policy, Scenario
+        from windtunnel.api.score import LayerResult, Score
+
+        scenario = Scenario(name="attached_case", prompt="say ok", target_facts=[["ok"]])
+        scenario.policies.append(
+            Policy(name="attached_at_sweep_time", predicate=lambda trace: True)
+        )
+        score = Score(
+            outcome=LayerResult(True, "ok"),
+            trajectory=LayerResult(True, "ok"),
+            constraint=LayerResult(True, "ok"),
+            integrity=LayerResult(True, "ok"),
+        )
+        trace_path = tmp_path / "run.json"
+        sidecar_path = _write_score_sidecar(trace_path, score, scenario)
+        recorded = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        assert recorded["scenario"]["policies"] == [
+            {"name": "attached_at_sweep_time", "effect_class": None}
+        ]
+
+
 class TestEvidenceComputation:
     """compute_evidence over hand-built traces — the constructs the seeded
     in_memory runs cannot produce (witnessed mcp_calls, decorated names,
@@ -565,6 +645,62 @@ class TestEvidenceComputation:
         assert trajectory["forbidden_calls"] == [
             {"name": "delete_record", "violated": True, "offending_calls": [2]}
         ]
+
+    def test_observed_call_details_annotate_every_call(self) -> None:
+        """The hover-illumination source of truth is server-computed: each
+        observed call carries which must_call entries it satisfied and
+        which forbidden names it matched."""
+        from windtunnel._serve.evidence import compute_evidence
+        from windtunnel.api.scenario import Scenario
+
+        scenario = Scenario(
+            name="evidence_case",
+            prompt="go",
+            must_call=[["client_lookup", "order_query"], "order_update"],
+            forbidden_calls=["delete_record"],
+        )
+        trace = self._trace(
+            turns=[self._turn("assistant", "done")],
+            mcp_calls=[
+                {"tool_name": "inventory_check", "args": {}, "result": "", "timestamp_ms": 1},
+                {"tool_name": "order_query", "args": {}, "result": "", "timestamp_ms": 2},
+                {"tool_name": "delete_record", "args": {}, "result": "", "timestamp_ms": 3},
+                {"tool_name": "order_update", "args": {}, "result": "", "timestamp_ms": 4},
+            ],
+        )
+        trajectory = compute_evidence(scenario, trace)["trajectory"]
+        assert trajectory["observed_call_details"] == [
+            {"index": 0, "name": "inventory_check", "must_call_entries": [], "forbidden": []},
+            {"index": 1, "name": "order_query", "must_call_entries": [0], "forbidden": []},
+            {"index": 2, "name": "delete_record", "must_call_entries": [],
+             "forbidden": ["delete_record"]},
+            {"index": 3, "name": "order_update", "must_call_entries": [1], "forbidden": []},
+        ]
+
+    def test_transcript_observed_order_matches_per_turn_call_order(self) -> None:
+        """The client tags transcript call nodes with observed indices by
+        walking turns/calls in order, skipping nameless calls — assert the
+        server's observed_calls order is exactly that walk."""
+        from windtunnel._serve.evidence import compute_evidence
+        from windtunnel.api.scenario import Scenario
+
+        scenario = Scenario(name="evidence_case", prompt="go", must_call=["write_file"])
+        trace = self._trace(
+            turns=[
+                self._turn("assistant", "first I read the file", tool_calls=[
+                    {"id": "c1", "name": "read_file", "args": {}},
+                    {"id": "c2", "args": {}},  # nameless: not observed
+                ]),
+                self._turn("assistant", "now I write it back", tool_calls=[
+                    {"id": "c3", "function": {"name": "write_file", "arguments": "{}"}},
+                ]),
+                self._turn("assistant", "done"),
+            ],
+        )
+        trajectory = compute_evidence(scenario, trace)["trajectory"]
+        assert trajectory["evidence_source"] == "transcript"
+        assert trajectory["observed_calls"] == ["read_file", "write_file"]
+        assert trajectory["must_call"][0]["matched_calls"] == [1]
 
     def test_transcript_fallback_source(self) -> None:
         from windtunnel._serve.evidence import compute_evidence
