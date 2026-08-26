@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/viewing-runs.md at 6b26c6623e82 — do not edit; edit docs/viewing-runs.md. -->
+<!-- GENERATED from docs/viewing-runs.md at 6f1dd80092fc — do not edit; edit docs/viewing-runs.md. -->
 ---
 description: "Task guide for wt serve — the local, read-only web viewer over a runs/ directory: ledger dashboard, run drill-down, scenario browser, and live JSONL tail."
 ---
@@ -102,8 +102,12 @@ expectation was met or missed:
 - a policy that returns an anchored verdict (`PolicyVerdict` with
   `EvidenceAnchor` references — see [writing a
   scenario](writing-a-scenario.md)) is hoverable like any call entry: its
-  witnessed-call and span anchors illuminate, and its free-text locators
-  render as "looked at: …" under the entry. Entries with nothing to
+  witnessed-call and span anchors illuminate, an observation anchor whose
+  entry the server can pair with a rendered call (a recognizable tool
+  name, matched by name + occurrence order) illuminates that call, and
+  everything else — free-text locators, unpaired observation anchors —
+  renders as "looked at: observations.tool_results[3] — …" under the
+  entry. Entries with nothing to
   illuminate — plain-predicate policies, custom `TrajectoryCheck`s,
   `outcome_fn` — are visibly non-interactive and say so ("opaque policy —
   no transcript anchor"); nothing ever looks hoverable and does nothing.

@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/writing-a-scenario.md at 88405aea7feb — do not edit; edit docs/writing-a-scenario.md. -->
+<!-- GENERATED from docs/writing-a-scenario.md at b44a0d279621 — do not edit; edit docs/writing-a-scenario.md. -->
 ---
 description: "Reference for authoring backend-agnostic Scenario objects, scoring fields, perturbations, dimensions, and scenario packs."
 ---
@@ -306,7 +306,8 @@ Three anchor kinds, all pointing at data already frozen on the trace:
 |---|---|---|
 | `witnessed_call` | `call_index` (+ `note`) | one entry of `trace.mcp_calls`, chronological order |
 | `span` | `turn_index`, `start`, `end` (+ `note`) | a half-open character range in one turn's content |
-| `locator` | `note` (required) | an opaque free-text location (a file path, an observation key) — rendered as text, never resolved |
+| `observation` | `key`, optional `index` (+ `note`) | a list frozen into `trace.observations` (e.g. a probe's `tool_results`), optionally one entry of it — for runtime-local tool evidence, where a `witnessed_call` reference would be fabricated. Shape-only: contents are never interpreted |
+| `locator` | `note` (required) | an opaque free-text location (a file path, an external record id) — rendered as text, never resolved |
 
 Fully backward compatible: plain-bool policies are unchanged, and a policy
 that returns no anchors is honestly presented as opaque ("no transcript
