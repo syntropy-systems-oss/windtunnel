@@ -81,7 +81,7 @@ class NumberFact:
 
 # ─── Policy ───────────────────────────────────────────────────────────────────
 
-EvidenceAnchorKind = Literal["witnessed_call", "span", "locator"]
+EvidenceAnchorKind = Literal["witnessed_call", "span", "locator", "observation"]
 
 
 @dataclass(frozen=True)
@@ -90,7 +90,7 @@ class EvidenceAnchor:
 
     Anchors let an evidence surface (the run viewer) illuminate exactly
     WHERE a policy looked, instead of treating every policy as an opaque
-    predicate. Three kinds, all pointing at data already frozen on the
+    predicate. Four kinds, all pointing at data already frozen on the
     Trace — an anchor never references anything the trace does not carry:
 
     - kind="witnessed_call": ``call_index`` into the server-witnessed call
@@ -98,9 +98,16 @@ class EvidenceAnchor:
       evidence surfaces render the witnessed list.
     - kind="span": ``turn_index`` into ``trace.turns`` plus a half-open
       ``[start, end)`` character range in that turn's content.
+    - kind="observation": ``key`` names a list frozen into
+      ``trace.observations`` (e.g. a probe's "tool_results"), ``index``
+      optionally selects one entry of it. Shape-only: Wind Tunnel never
+      interprets observation contents — the anchor identifies the entry a
+      policy judged, for runtime-local evidence that lives in
+      observations rather than the MCP call log (where a witnessed_call
+      reference would be fabricated).
     - kind="locator": ``note`` is an opaque free-text location (a file
-      path, an observation key, an external record id). Rendered as text
-      ("looked at: …"), never resolved or fetched by the framework.
+      path, an external record id). Rendered as text ("looked at: …"),
+      never resolved or fetched by the framework.
 
     ``note`` is optional context for the other kinds ("the retry", "the
     duplicate send") and required for locators.
@@ -111,6 +118,8 @@ class EvidenceAnchor:
     turn_index: int | None = None
     start: int | None = None
     end: int | None = None
+    key: str | None = None
+    index: int | None = None
     note: str = ""
 
     def __post_init__(self) -> None:
@@ -119,6 +128,7 @@ class EvidenceAnchor:
                 raise ValueError("witnessed_call anchor requires call_index >= 0")
             if self.turn_index is not None or self.start is not None or self.end is not None:
                 raise ValueError("witnessed_call anchor takes only call_index (+ note)")
+            self._reject_observation_fields()
         elif self.kind == "span":
             if self.turn_index is None or self.turn_index < 0:
                 raise ValueError("span anchor requires turn_index >= 0")
@@ -126,13 +136,28 @@ class EvidenceAnchor:
                 raise ValueError("span anchor requires 0 <= start < end")
             if self.call_index is not None:
                 raise ValueError("span anchor takes turn_index/start/end (+ note), not call_index")
+            self._reject_observation_fields()
+        elif self.kind == "observation":
+            if self.key is None or not self.key.strip():
+                raise ValueError("observation anchor requires a non-empty key")
+            if self.index is not None and self.index < 0:
+                raise ValueError("observation anchor index must be >= 0 when given")
+            if self.call_index is not None or self.turn_index is not None:
+                raise ValueError("observation anchor takes key/index (+ note) only")
+            if self.start is not None or self.end is not None:
+                raise ValueError("observation anchor takes key/index (+ note) only")
         elif self.kind == "locator":
             if not self.note.strip():
                 raise ValueError("locator anchor requires a non-empty note")
             if self.call_index is not None or self.turn_index is not None:
                 raise ValueError("locator anchor carries only its note")
+            self._reject_observation_fields()
         else:
             raise ValueError(f"unknown evidence anchor kind: {self.kind!r}")
+
+    def _reject_observation_fields(self) -> None:
+        if self.key is not None or self.index is not None:
+            raise ValueError(f"{self.kind} anchor does not take key/index")
 
 
 @dataclass(frozen=True)

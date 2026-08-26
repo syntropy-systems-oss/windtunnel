@@ -84,6 +84,36 @@ class TestEvidenceAnchorShape:
         with pytest.raises(ValueError):
             EvidenceAnchor(kind="paragraph")  # type: ignore[arg-type]
 
+    def test_observation_anchor(self) -> None:
+        anchor = EvidenceAnchor(kind="observation", key="tool_results", index=3, note="the retry")
+        assert (anchor.key, anchor.index) == ("tool_results", 3)
+        # index is optional — an anchor may reference the whole list.
+        assert EvidenceAnchor(kind="observation", key="tool_starts").index is None
+
+    def test_observation_requires_a_key_and_valid_index(self) -> None:
+        with pytest.raises(ValueError):
+            EvidenceAnchor(kind="observation")
+        with pytest.raises(ValueError):
+            EvidenceAnchor(kind="observation", key="  ")
+        with pytest.raises(ValueError):
+            EvidenceAnchor(kind="observation", key="tool_results", index=-1)
+
+    def test_observation_rejects_other_kinds_fields(self) -> None:
+        with pytest.raises(ValueError):
+            EvidenceAnchor(kind="observation", key="tool_results", call_index=0)
+        with pytest.raises(ValueError):
+            EvidenceAnchor(kind="observation", key="tool_results", turn_index=1)
+        with pytest.raises(ValueError):
+            EvidenceAnchor(kind="observation", key="tool_results", start=0, end=2)
+
+    def test_existing_kinds_reject_observation_fields(self) -> None:
+        with pytest.raises(ValueError):
+            EvidenceAnchor(kind="witnessed_call", call_index=0, key="tool_results")
+        with pytest.raises(ValueError):
+            EvidenceAnchor(kind="span", turn_index=0, start=0, end=1, index=2)
+        with pytest.raises(ValueError):
+            EvidenceAnchor(kind="locator", note="x", key="tool_results")
+
 
 class TestPolicyVerdictShape:
     def test_anchor_list_coerced_to_tuple(self) -> None:
@@ -200,6 +230,77 @@ class TestConstraintEvidenceRecomputation:
             {"turn_index": 1, "start": 0, "end": 2, "note": ""}
         ]
         assert entry["locators"] == ["workspace/notes.txt"]
+
+    def test_observation_anchor_round_trip_with_name_order_mapping(self) -> None:
+        """Observation anchors surface on the endpoint payload; entries whose
+        anchored observation carries a recognizable tool name map onto the
+        claimed-call walk by name + occurrence order, everything else stays
+        unmapped (claim_index None) and renders as text."""
+        from windtunnel._serve.evidence import compute_evidence
+        from windtunnel.api.trace import Turn
+
+        trace = _trace()
+        trace.turns.append(
+            Turn(
+                role="assistant",
+                content="done",
+                tool_calls=[
+                    {"id": "c1", "name": "mcp_acme_ops_client_lookup", "args": {}},
+                    {"id": "c2", "name": "mcp_acme_ops_client_lookup", "args": {}},
+                ],
+                tool_results=[],
+                latency_ms=1.0,
+            )
+        )
+        trace.observations["tool_results"] = [
+            {"tool_name": "client_lookup", "status": "ok"},
+            {"tool_name": "client_lookup", "status": "retried"},
+            {"payload": "no name field here"},
+        ]
+        scenario = Scenario(
+            name="policy_case",
+            prompt="go",
+            policies=[Policy(
+                name="retry_was_recorded",
+                predicate=lambda t: PolicyVerdict(
+                    passed=True,
+                    anchors=[
+                        EvidenceAnchor(kind="observation", key="tool_results", index=1,
+                                       note="the retry"),
+                        EvidenceAnchor(kind="observation", key="tool_results", index=2),
+                        EvidenceAnchor(kind="observation", key="tool_starts", index=0),
+                    ],
+                ),
+            )],
+        )
+        entry = compute_evidence(scenario, trace)["constraint"]["policies"][0]
+        anchors = entry["observation_anchors"]
+        # Second occurrence of client_lookup maps to the second claimed call.
+        assert anchors[0] == {"key": "tool_results", "index": 1, "note": "the retry",
+                              "claim_index": 1}
+        # No recognizable name field → unmapped, honest text rendering.
+        assert anchors[1]["claim_index"] is None
+        # Key absent from observations → unmapped.
+        assert anchors[2]["claim_index"] is None
+        assert entry["anchorable"] is True  # at least one anchor mapped
+
+    def test_unmapped_only_observation_anchors_are_not_anchorable(self) -> None:
+        from windtunnel._serve.evidence import compute_evidence
+
+        scenario = Scenario(
+            name="policy_case",
+            prompt="go",
+            policies=[Policy(
+                name="looked_at_probe_output",
+                predicate=lambda t: PolicyVerdict(
+                    passed=True,
+                    anchors=[EvidenceAnchor(kind="observation", key="tool_results", index=0)],
+                ),
+            )],
+        )
+        entry = compute_evidence(scenario, _trace())["constraint"]["policies"][0]
+        assert entry["observation_anchors"][0]["claim_index"] is None
+        assert entry["anchorable"] is False  # renders like a locator, not hoverable
 
     def test_check_source_is_introspected_for_def_based_callables(self) -> None:
         """'What exactly is windtunnel expecting?' — the evidence endpoint

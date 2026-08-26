@@ -368,6 +368,49 @@ def _trajectory_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
 # ─── constraint / integrity ──────────────────────────────────────────────────
 
 
+def _observation_claim_index(
+    trace: Trace, key: str, index: int | None, claimed: list[str]
+) -> int | None:
+    """Best-effort map of an observation anchor onto the claimed-call walk.
+
+    Shape-only, never interpreting observation contents: when the anchored
+    entry is a dict carrying a string ``tool_name`` (or ``name``) field —
+    the same recognizable-field sniffing the live tail uses — the entry's
+    occurrence rank of that name within its list pairs with the matching
+    claimed call of the same rank (decoration-tolerant, both directions).
+    Anything else — missing key, out-of-range index, non-dict entry, no
+    name field, rank divergence — returns None and the anchor renders as
+    text instead of illuminating. Honest absence, never a fabricated match.
+    """
+    if index is None:
+        return None
+    sequence = trace.observations.get(key) if isinstance(trace.observations, dict) else None
+    if not isinstance(sequence, list) or not 0 <= index < len(sequence):
+        return None
+    entry = sequence[index]
+    if not isinstance(entry, dict):
+        return None
+    name = entry.get("tool_name") or entry.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+
+    def _entry_name(item: Any) -> str | None:
+        if not isinstance(item, dict):
+            return None
+        value = item.get("tool_name") or item.get("name")
+        return value if isinstance(value, str) else None
+
+    rank = sum(1 for prior in sequence[:index] if _entry_name(prior) == name)
+    matches = [
+        position
+        for position, claimed_name in enumerate(claimed)
+        if claimed_name == name
+        or tool_name_matches(name, claimed_name)
+        or tool_name_matches(claimed_name, name)
+    ]
+    return matches[rank] if rank < len(matches) else None
+
+
 def _constraint_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
     """Per-policy evidence: anchors when the policy offers them, honesty when not.
 
@@ -384,6 +427,7 @@ def _constraint_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
     interactive entries.
     """
     entries: list[dict[str, Any]] = []
+    claimed = extract_tool_names(trace)
     for policy in scenario.policies:
         entry: dict[str, Any] = {
             "name": policy.name,
@@ -393,6 +437,7 @@ def _constraint_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
             "detail": None,
             "call_anchors": [],
             "span_anchors": [],
+            "observation_anchors": [],
             "locators": [],
             "source": _callable_source(policy.predicate),
         }
@@ -419,9 +464,29 @@ def _constraint_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
                             "note": anchor.note,
                         }
                     )
+                elif anchor.kind == "observation":
+                    # claim_index: best-effort tool-name+order map onto the
+                    # claimed-call walk; None renders as locator-style text.
+                    entry["observation_anchors"].append(
+                        {
+                            "key": anchor.key,
+                            "index": anchor.index,
+                            "note": anchor.note,
+                            "claim_index": _observation_claim_index(
+                                trace, anchor.key or "", anchor.index, claimed
+                            ),
+                        }
+                    )
                 else:  # locator
                     entry["locators"].append(anchor.note)
-            entry["anchorable"] = bool(entry["call_anchors"] or entry["span_anchors"])
+            entry["anchorable"] = bool(
+                entry["call_anchors"]
+                or entry["span_anchors"]
+                or any(
+                    anchor["claim_index"] is not None
+                    for anchor in entry["observation_anchors"]
+                )
+            )
         else:
             entry["recomputed_passed"] = bool(result)
         entries.append(entry)

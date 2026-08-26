@@ -380,6 +380,10 @@ function illumSelectors(entry) {
   if (entry.dataset.policyTarget !== undefined) {
     selectors.push(`[data-policy="${entry.dataset.policyTarget}"]`);
   }
+  // Directly-claimed targets (mapped observation anchors).
+  (entry.dataset.claimTargets || '').split(',').filter(Boolean).forEach((index) => {
+    selectors.push(`[data-claim="${index}"]`);
+  });
   return selectors;
 }
 function applyIllum(entry, on) {
@@ -699,10 +703,14 @@ function renderContract(scenario, ev, score) {
       let extra = null;
       let suffix = '';
       if (entryEv && entryEv.anchorable) {
-        // Anchorable: hover/lock illuminates the anchored calls/spans.
+        // Anchorable: hover/lock illuminates the anchored calls/spans, plus
+        // any observation anchors the server mapped onto claimed calls.
         const targets = (entryEv.call_anchors || []).map((a) => a.call_index);
+        const claimTargets = (entryEv.observation_anchors || [])
+          .filter((a) => a.claim_index != null).map((a) => a.claim_index);
         const attrs = [`data-hl="${violated ? 'bad' : 'good'}"`];
         if (targets.length) attrs.push(`data-targets="${targets.join(',')}"`);
+        if (claimTargets.length) attrs.push(`data-claim-targets="${claimTargets.join(',')}"`);
         if ((entryEv.span_anchors || []).length) attrs.push(`data-policy-target="${evIndex}"`);
         extra = {cls: 'contract-hover',
                  attrs: attrs.join(' ') + ' title="hover to highlight in the transcript; click to lock"'};
@@ -713,8 +721,16 @@ function renderContract(scenario, ev, score) {
         extra = {cls: 'no-anchor'};
         suffix = ' <span class="muted">opaque policy — no transcript anchor</span>';
       }
-      if (entryEv && (entryEv.locators || []).length) {
-        suffix += `<br><span class="muted">looked at: ${entryEv.locators.map((l) => esc(l)).join(' · ')}</span>`;
+      // Unmapped observation anchors + free-text locators render as text.
+      const lookedAt = [
+        ...(entryEv ? (entryEv.observation_anchors || []) : [])
+          .filter((a) => a.claim_index == null)
+          .map((a) => `observations.${a.key}` + (a.index != null ? `[${a.index}]` : '') +
+            (a.note ? ` — ${a.note}` : '')),
+        ...(entryEv ? (entryEv.locators || []) : []),
+      ];
+      if (lookedAt.length) {
+        suffix += `<br><span class="muted">looked at: ${lookedAt.map((l) => esc(l)).join(' · ')}</span>`;
       }
       const toggle = entryEv ? sourceToggle(entryEv.source) : '';
       if (constraintResult == null) {
