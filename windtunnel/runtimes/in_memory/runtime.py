@@ -23,7 +23,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from windtunnel.spi.agent_runtime import AgentConfig, AgentHandle, Message, Response
+from windtunnel.spi.agent_runtime import (
+    AgentConfig,
+    AgentHandle,
+    KnobSpec,
+    Message,
+    Response,
+)
 
 # One scripted reply: plain text, or {"content": ..., "tool_calls": [...]}.
 ScriptedEntry = str | dict[str, Any]
@@ -144,10 +150,36 @@ class InMemoryRuntime:
         self._surface = surface
         self.provisions: list[tuple[AgentConfig, _InMemoryHandle]] = []
 
+    def describe_knobs(self) -> list[KnobSpec]:
+        """Declare the scripted runtime's one adjustable parameter.
+
+        This is the KnobIntrospectableRuntime conformance reference: the
+        "scripted_response" knob replaces the whole script with a single
+        content-only reply for a run — the zero-infrastructure way to
+        exercise the knob → rerun → re-verdict loop end to end.
+        """
+        first = self._responses[0] if self._responses else None
+        return [
+            KnobSpec(
+                name="scripted_response",
+                kind="text",
+                value=first if isinstance(first, str) else None,
+                description=(
+                    "Replace every scripted reply with this single "
+                    "content-only response for the run."
+                ),
+                scope="provision",
+            )
+        ]
+
     def provision(self, config: AgentConfig, mcps: list[Any] | None = None) -> AgentHandle:
         # mcps: ignored — InMemoryRuntime is network-free; the MCP handles are
         # not needed because send() returns scripted responses.
-        handle = _InMemoryHandle(self._responses, surface=self._surface)
+        responses = self._responses
+        override = config.knobs.get("scripted_response")
+        if isinstance(override, str):
+            responses = [override]
+        handle = _InMemoryHandle(responses, surface=self._surface)
         self.provisions.append((config, handle))
         return handle
     accepts_runner_managed_mcps = False

@@ -9,12 +9,16 @@ from windtunnel.spi.agent_runtime import (
     AgentConfig,
     AgentHandle,
     AgentRuntime,
+    KnobIntrospectableRuntime,
+    KnobKind,
+    KnobSpec,
     Message,
     ModelSpec,
     Response,
     RunnerMCPConfigurableRuntime,
     SamplingConfig,
     SurfaceIntrospectableAgentHandle,
+    normalize_knob_overrides,
 )
 from windtunnel.spi.hooks import Hook, HookArtifact, HookContext
 from windtunnel.spi.mcp_server import (
@@ -37,9 +41,10 @@ from windtunnel.spi.runtime_plugin import RuntimePlugin
 from windtunnel.spi.state_probe import StateProbe
 
 __all__ = [
-    "AgentConfig", "AgentHandle", "AgentRuntime", "Message", "ModelSpec",
+    "AgentConfig", "AgentHandle", "AgentRuntime", "KnobIntrospectableRuntime",
+    "KnobKind", "KnobSpec", "Message", "ModelSpec",
     "Response", "RunnerMCPConfigurableRuntime", "SamplingConfig",
-    "SurfaceIntrospectableAgentHandle",
+    "SurfaceIntrospectableAgentHandle", "normalize_knob_overrides",
     "Hook", "HookArtifact", "HookContext",
     "FailureInjectableMCPHandle", "MCPCall", "MCPHandle", "MCPServer", "MCPSpec",
     "ToolDefinitionIntrospectableMCPHandle", "ToolIntrospectableMCPHandle",

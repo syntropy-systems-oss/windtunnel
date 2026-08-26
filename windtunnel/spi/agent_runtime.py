@@ -54,7 +54,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 # ─── Data types ───────────────────────────────────────────────────────────────
 
@@ -112,6 +112,104 @@ class MCPSpec:
     url: str
 
 
+KnobKind = Literal["text", "enum", "number", "flag"]
+KNOB_KINDS: tuple[KnobKind, ...] = ("text", "enum", "number", "flag")
+
+
+@dataclass(frozen=True)
+class KnobSpec:
+    """One adjustable runtime parameter — the generic experiment surface.
+
+    A runtime may declare "what are the knobs here": the parameters an
+    operator can adjust between runs of the same scenario (steering text,
+    a routing mode, a retry budget, a feature toggle). Wind Tunnel never
+    knows what a knob MEANS — only its shape. The framework carries the
+    declaration to experiment surfaces (`wt serve --experiment`, `wt run
+    --knob`) and carries the override values back through
+    ``AgentConfig.knobs``; interpreting them is entirely the runtime's
+    business.
+
+    name:        the override key. Runtime-chosen, stable across runs.
+    kind:        "text" (free string), "enum" (one of ``choices``),
+                 "number" (int/float), or "flag" (boolean).
+    value:       the CURRENT value, for display/pre-fill. None = unknown
+                 or unset. Must be JSON-serializable.
+    choices:     the allowed values — required for kind="enum", meaningless
+                 otherwise.
+    description: one operator-facing line: what turning this knob does.
+    scope:       free-form label for where the knob applies (e.g. "run",
+                 "provision", "session"). Informational; Wind Tunnel
+                 attaches no policy to it.
+    """
+
+    name: str
+    kind: KnobKind
+    value: Any = None
+    choices: tuple[str, ...] | None = None
+    description: str = ""
+    scope: str = "run"
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("knob name must not be empty")
+        if self.kind not in KNOB_KINDS:
+            raise ValueError(f"unknown knob kind: {self.kind!r}")
+        if self.kind == "enum" and not self.choices:
+            raise ValueError(f"enum knob {self.name!r} requires non-empty choices")
+        if self.kind != "enum" and self.choices is not None:
+            raise ValueError(f"knob {self.name!r}: choices are only valid for kind='enum'")
+
+
+def normalize_knob_overrides(
+    specs: list[KnobSpec], overrides: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """Validate and coerce a knob-overrides mapping against declared specs.
+
+    Returns ``(normalized, errors)``. Overrides arrive as typed JSON values
+    (the experiment endpoint) or as raw CLI strings (``--knob NAME=VALUE``),
+    so string values for number/flag kinds are coerced ("3" -> 3.0,
+    "true"/"false" -> bool). Unknown names, non-member enum values, and
+    uncoercible values are errors; validation is strict because an
+    experiment that silently dropped an override would falsify its own
+    before/after comparison.
+    """
+    by_name = {spec.name: spec for spec in specs}
+    normalized: dict[str, Any] = {}
+    errors: list[str] = []
+    for name, raw in overrides.items():
+        spec = by_name.get(name)
+        if spec is None:
+            declared = ", ".join(sorted(by_name)) or "none"
+            errors.append(f"unknown knob {name!r} (declared: {declared})")
+            continue
+        if spec.kind == "text":
+            if not isinstance(raw, str):
+                errors.append(f"knob {name!r} expects text, got {type(raw).__name__}")
+                continue
+            normalized[name] = raw
+        elif spec.kind == "enum":
+            if not isinstance(raw, str) or raw not in (spec.choices or ()):
+                errors.append(f"knob {name!r} expects one of {list(spec.choices or ())}, got {raw!r}")
+                continue
+            normalized[name] = raw
+        elif spec.kind == "number":
+            if isinstance(raw, bool) or not isinstance(raw, int | float | str):
+                errors.append(f"knob {name!r} expects a number, got {type(raw).__name__}")
+                continue
+            try:
+                normalized[name] = float(raw) if not isinstance(raw, int | float) else raw
+            except ValueError:
+                errors.append(f"knob {name!r} expects a number, got {raw!r}")
+        elif spec.kind == "flag":
+            if isinstance(raw, bool):
+                normalized[name] = raw
+            elif isinstance(raw, str) and raw.lower() in ("true", "false"):
+                normalized[name] = raw.lower() == "true"
+            else:
+                errors.append(f"knob {name!r} expects true/false, got {raw!r}")
+    return normalized, errors
+
+
 @dataclass
 class AgentConfig:
     """Platform-agnostic configuration for one agent under test.
@@ -133,6 +231,13 @@ class AgentConfig:
                     (typically greedy).
     agent_id:       human-readable identifier recorded in the Trace.
     variant_id:     variant label recorded in the Trace (e.g. "prod_v5").
+    knobs:          opaque knob-override mapping for this run, keyed by the
+                    names a KnobIntrospectableRuntime declares. Wind Tunnel
+                    passes it through provision() untouched — it never
+                    interprets the values. Runtimes that declare no knobs
+                    may ignore it entirely; an empty mapping (the default)
+                    means "no overrides" and preserves today's behavior
+                    exactly.
     """
     agent_id: str = "agent"
     variant_id: str = "default"
@@ -142,6 +247,7 @@ class AgentConfig:
     mcp_servers: list[MCPSpec] = field(default_factory=list)
     model: ModelSpec | None = None
     sampling: SamplingConfig | None = None
+    knobs: dict[str, Any] = field(default_factory=dict)
 
 
 # ─── Protocols ────────────────────────────────────────────────────────────────
@@ -325,4 +431,33 @@ class RunnerMCPConfigurableRuntime(Protocol):
     @property
     def accepts_runner_managed_mcps(self) -> bool:
         """Whether Wind Tunnel should start and pass scenario-pack MCPs."""
+        ...
+
+
+@runtime_checkable
+class KnobIntrospectableRuntime(Protocol):
+    """Optional AgentRuntime capability: declare adjustable parameters.
+
+    Separate from AgentRuntime so existing runtimes remain conformant —
+    the same optional-capability pattern as SurfaceIntrospectableAgentHandle
+    and RunnerMCPConfigurableRuntime. A runtime that declares nothing
+    behaves exactly as today.
+
+    Implement it when the runtime has parameters an operator should be
+    able to adjust between runs of the same scenario. The declaration is
+    read on the CONSTRUCTED runtime (after RuntimePlugin.build(), before
+    provision()), so it must not require live infrastructure. Overrides
+    come back through ``AgentConfig.knobs`` on provision(); the runtime
+    applies them however it sees fit — Wind Tunnel never interprets a
+    knob's value, only validates its shape against the declared KnobSpec.
+    """
+
+    def describe_knobs(self) -> list[KnobSpec]:
+        """Return the adjustable parameters this runtime exposes.
+
+        Order is presentation order. Names must be unique. Return [] when
+        nothing is currently adjustable (still counts as declaring the
+        capability — an experiment surface will show "no knobs" instead
+        of "unknown").
+        """
         ...

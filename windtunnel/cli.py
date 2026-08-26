@@ -3,7 +3,8 @@
 Subcommands:
     wt run      [--scenario S]... [--tag TAG]... [--pack PACK]...
                 [--owner OWNER]... [--soul PATH] [--runtime RUNTIME]
-                [--label LABEL] [--runs N] [--format junit|json --out FILE]
+                [--label LABEL] [--runs N] [--knob NAME=VALUE]...
+                [--format junit|json --out FILE]
     wt selftest [--scenario S]... [--tag TAG]... [--pack PACK]...
                 --runtime RUNTIME [--format junit|json --out FILE]
     wt rescore  (--runs DIR | --trace PATH...) [--write]
@@ -16,6 +17,7 @@ Subcommands:
     wt triage   [--runs DIR] [--classifier rule_based]
     wt serve    [--runs-dir DIR] [--port PORT] [--host HOST]
                 [--pack-source SOURCE]... [--live-glob PATTERN]
+                [--experiment --runtime RUNTIME]
     wt skill    path | install [--dest DIR] [--copy]
 
 Design: argparse (stdlib) — no click dependency. Each subcommand is a
@@ -373,6 +375,25 @@ def _cmd_run(args: argparse.Namespace) -> int:
     plugin = _resolve_runtime_plugin(runtime_name)
     runtime = _build_runtime(runtime_name, label, soul_path=args.soul, _plugin=plugin)
 
+    # Knob overrides (--knob NAME=VALUE): validated strictly against the
+    # runtime's declared KnobSpecs when it is knob-introspectable; passed
+    # through opaquely when the runtime declares nothing (Wind Tunnel never
+    # interprets knob values — see spi.agent_runtime.KnobIntrospectableRuntime).
+    knob_overrides = _parse_knob_overrides(getattr(args, "knob", None) or [])
+    if knob_overrides is None:
+        return 2
+    describe_knobs = getattr(runtime, "describe_knobs", None)
+    if knob_overrides and callable(describe_knobs):
+        from windtunnel.spi.agent_runtime import normalize_knob_overrides  # noqa: PLC0415
+
+        knob_overrides, knob_errors = normalize_knob_overrides(
+            list(describe_knobs()), knob_overrides
+        )
+        if knob_errors:
+            for error in knob_errors:
+                print(f"wt run: {error}", file=sys.stderr)
+            return 2
+
     # Discover scenario packs (built-ins + the "windtunnel.scenario_packs"
     # entry-point group). The pack is the unit that carries a dim's scenarios,
     # its mock-MCP factory, and the transport-only flag — see windtunnel.api.pack.
@@ -423,6 +444,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         variant_id=label,
         system_prompt=system_prompt,
         persona_doc=persona_doc,
+        knobs=knob_overrides,
     )
 
     # Platform-specific bench prep (runtime-pluggable seam): the resolved
@@ -618,6 +640,18 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # docstring for the full pre_run/post_run contract.
         if post_run is not None:
             post_run(runtime, scenarios, runtime_name)
+
+
+def _parse_knob_overrides(raw_flags: list[str]) -> dict[str, str] | None:
+    """Parse repeated --knob NAME=VALUE flags, or None on a usage error."""
+    overrides: dict[str, str] = {}
+    for raw in raw_flags:
+        name, sep, value = raw.partition("=")
+        if not sep or not name.strip():
+            print(f"wt run: --knob must be NAME=VALUE, got {raw!r}", file=sys.stderr)
+            return None
+        overrides[name.strip()] = value
+    return overrides
 
 
 # ─── rescore ─────────────────────────────────────────────────────────────────
@@ -1344,14 +1378,48 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     packs are discovered exactly like `wt run`: built-in dims, the
     "windtunnel.scenario_packs" entry-point group, and any --pack-source.
 
-    The server never writes: it only implements GET, and nothing under the
-    runs/ directory (or anywhere else) is mutated by any endpoint.
+    By default the server never writes: it only implements GET, and nothing
+    under the runs/ directory (or anywhere else) is mutated by any endpoint.
+    --experiment opts in to ONE write path — a POST that spawns a scoped
+    `wt run` subprocess rerunning a single scenario with knob overrides;
+    the server process itself still writes nothing.
     """
+    from windtunnel._serve.experiment import ExperimentRunner  # noqa: PLC0415
     from windtunnel._serve.server import build_server  # noqa: PLC0415
 
     runs_dir = Path(args.runs_dir)
     pack_sources = args.pack_source or []
     packs = _discover_scenario_packs(pack_sources) if pack_sources else _discover_scenario_packs()
+
+    experiment = None
+    if args.experiment:
+        if not args.runtime:
+            print(
+                "wt serve: --experiment requires --runtime (the runtime reruns execute against).",
+                file=sys.stderr,
+            )
+            return 2
+        # Read the knob declaration from a CONSTRUCTED (never provisioned)
+        # runtime — the same build path `wt run` uses. A runtime that cannot
+        # even construct here still serves; the knob panel reports why.
+        knob_specs = None
+        knob_error = None
+        try:
+            runtime = _build_runtime(args.runtime, "wt_serve", soul_path=None)
+            describe_knobs = getattr(runtime, "describe_knobs", None)
+            if callable(describe_knobs):
+                knob_specs = list(describe_knobs())
+        except SystemExit:
+            raise
+        except Exception as exc:  # noqa: BLE001 - degrade to "knobs unavailable"
+            knob_error = f"runtime could not be constructed for introspection: {exc}"
+        experiment = ExperimentRunner(
+            runtime_name=args.runtime,
+            runs_dir=runs_dir,
+            pack_sources=pack_sources,
+            knob_specs=knob_specs,
+            knob_error=knob_error,
+        )
 
     try:
         server = build_server(
@@ -1361,6 +1429,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             host=args.host,
             port=args.port,
             wt_version=_wt_version(),
+            experiment=experiment,
         )
     except OSError as exc:
         print(f"wt serve: could not bind {args.host}:{args.port}: {exc}", file=sys.stderr)
@@ -1370,7 +1439,15 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     print(f"wt serve: viewing {runs_dir} at http://{host}:{port}/", file=sys.stderr)
     if args.live_glob:
         print(f"wt serve: live-tailing JSONL files matching {args.live_glob!r}", file=sys.stderr)
-    print("wt serve: read-only — Ctrl-C to stop.", file=sys.stderr)
+    if experiment is not None:
+        print(
+            f"wt serve: EXPERIMENT MODE — scoped reruns enabled against "
+            f"runtime {args.runtime!r}.",
+            file=sys.stderr,
+        )
+        print("wt serve: Ctrl-C to stop.", file=sys.stderr)
+    else:
+        print("wt serve: read-only — Ctrl-C to stop.", file=sys.stderr)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -1577,6 +1654,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="LABEL",
         help="Variant label for this run (recorded in traces).",
+    )
+    run_p.add_argument(
+        "--knob",
+        action="append",
+        metavar="NAME=VALUE",
+        default=None,
+        help="Override one runtime knob for this run. Repeat for "
+        "multiple. Validated against the runtime's declared "
+        "KnobSpecs when it is knob-introspectable; passed "
+        "through opaquely otherwise. Wind Tunnel never "
+        "interprets knob values.",
     )
     run_p.add_argument(
         "--runs",
@@ -1974,6 +2062,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Tail JSONL files matching this glob and stream newly "
         "appended lines to the viewer's Live tab. Generic by design: "
         "point it at whatever JSONL your runtime writes.",
+    )
+    serve_p.add_argument(
+        "--experiment",
+        action="store_true",
+        help="Enable scoped scenario reruns from the run screen: the "
+        "runtime's declared knobs become adjustable and a rerun "
+        "spawns `wt run` for exactly that scenario with the "
+        "overrides. Off by default — without it the server is "
+        "read-only by construction. Requires --runtime.",
+    )
+    serve_p.add_argument(
+        "--runtime",
+        default=None,
+        metavar="RUNTIME",
+        help="Runtime for --experiment reruns and knob introspection. "
+        "Resolved exactly like `wt run --runtime`.",
     )
 
     # ── skill ────────────────────────────────────────────────────────────────

@@ -55,8 +55,10 @@ EXPECTED_API_EXPORTS = (
 )
 
 EXPECTED_SPI_EXPORTS = (
-    "AgentConfig", "AgentHandle", "AgentRuntime", "Message", "ModelSpec", "Response",
+    "AgentConfig", "AgentHandle", "AgentRuntime", "KnobIntrospectableRuntime",
+    "KnobKind", "KnobSpec", "Message", "ModelSpec", "Response",
     "RunnerMCPConfigurableRuntime", "SamplingConfig", "SurfaceIntrospectableAgentHandle",
+    "normalize_knob_overrides",
     "Hook", "HookArtifact", "HookContext", "FailureInjectableMCPHandle", "MCPCall",
     "MCPHandle", "MCPServer", "MCPSpec", "ToolDefinitionIntrospectableMCPHandle",
     "ToolIntrospectableMCPHandle", "RuntimePlugin", "ReferenceCapableAgentRuntime",
@@ -79,7 +81,7 @@ EXPECTED_DATACLASS_FIELDS = {
     Score: ("outcome", "trajectory", "constraint", "integrity", "failure_cost"),
     AgentConfig: (
         "agent_id", "variant_id", "system_prompt", "persona_doc", "skills", "mcp_servers",
-        "model", "sampling",
+        "model", "sampling", "knobs",
     ),
     SamplingConfig: ("temperature", "top_p", "tool_choice", "max_tokens"),
     ReferenceToolCall: ("name", "arguments"),
