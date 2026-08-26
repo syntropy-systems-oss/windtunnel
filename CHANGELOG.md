@@ -8,6 +8,12 @@
 * **serve:** full-screen run view with span-level evidence highlighting — scenario contract beside the transcript, matched facts green, asserted forbidden facts and offending tool calls red, recomputed via span variants of the core scoring matchers (equivalence-pinned)
 * **spi:** knob introspection — an optional KnobIntrospectableRuntime capability declares a runtime's adjustable parameters (KnobSpec: text/enum/number/flag) and overrides flow back opaquely through AgentConfig.knobs; wt run gains --knob NAME=VALUE with strict validation against the declaration
 * **serve:** wt serve --experiment — knob panel and scoped scenario reruns from the run screen: a POSTed rerun spawns wt run for exactly that scenario with the overrides, streams progress over SSE, and lands in the ledger under an exp-&lt;parent&gt; label with a before/after verdict delta; without the flag the server stays read-only by construction
+* **serve:** run-screen chronology and illumination — the transcript renders as user message → tool-call trajectory (thought + call + result groups when the trace stores intermediate assistant text) → final output; contract and transcript scroll as independent panes; hovering a must_call/forbidden_calls entry illuminates its matching tool calls (click to lock), driven by server-computed per-call match annotations
+
+
+### Bug Fixes
+
+* **scoring:** score sidecars now record the policies that gated the run (names + effect class) — including policies attached at sweep time by a runtime plugin — so run readers can no longer present a failed constraint layer as "no policies declared"; the run screen prefers this record and degrades to an honest "not recorded" for older sidecars
 
 ## [0.10.2](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.10.1...v0.10.2) (2026-07-18)
 

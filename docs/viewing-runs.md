@@ -39,12 +39,27 @@ Clicking a ledger row opens the run as a full screen of its own
 It loads the run's saved trace plus its `.score.json` sidecar — the same
 artifacts `wt report`, `wt triage`, and `wt rescore` consume — and puts the
 *why* front and center: every failing layer's `detail` string is the
-headline banner, above the scenario contract panel (user turns, target fact
-groups, `must_call` / `forbidden_calls`, declared perturbations, gate
-layers, failure cost) laid out beside the transcript — the conversation
-turns with their tool calls, and, when a logging mock was in play, the tool
-calls witnessed at the tool server itself (`mcp_calls`), independent of
-what the transcript claims.
+headline banner.
+
+Below it, two independently scrolling panes: the **scenario contract**
+(left — user turns, target fact groups, `must_call` / `forbidden_calls`,
+recorded policies, declared perturbations, gate layers, failure cost) stays
+visible while you scroll the **transcript** (right), which renders in
+strict chronology as three sections: the user message, the tool-call
+trajectory, and the final assistant output. When the trace stores
+intermediate assistant text between tool calls, each step renders as
+thought + call + result grouped; a trace that aggregates everything into
+one turn renders its calls without thoughts — the viewer never invents
+what the artifact doesn't carry. When a logging mock was in play, the tool
+calls witnessed at the tool server itself (`mcp_calls`) render as the
+authoritative observed path, independent of what the transcript claims.
+
+Constraint policies are read from the sidecar's record of what actually
+gated the run — including policies attached at sweep time (for example by
+a runtime plugin's `pre_run`), which a pack reload cannot reconstruct. A
+sidecar written before this record existed shows "policy declarations were
+not recorded", never a false "no policies declared" beside a failed
+constraint chip.
 
 ### Evidence highlighting
 
@@ -58,10 +73,17 @@ expectation was met or missed:
   disclaimed mention is not an assertion);
 - each contract entry carries its own verdict: "said" / "never said" for
   facts, "called via `<observed name>`" / "never called" for `must_call`,
-  "clean" / "called" for `forbidden_calls`, "applied" / "not applied" for
-  perturbation markers — and offending tool calls are flagged red in the
-  transcript and observed-call strip;
-- the layer chips in the banner jump to their evidence entries.
+  "clean" / "called" for `forbidden_calls`, "held" / "violated" for
+  recorded policies, "applied" / "not applied" for perturbation markers —
+  and offending tool calls are flagged red in the transcript;
+- hovering a `must_call` or `forbidden_calls` entry illuminates every
+  matching tool call in the transcript (green for required, red for
+  forbidden); clicking locks the highlight so it survives scrolling —
+  click again, or another entry, to unlock or switch. The matches are
+  computed server-side by the same `tool_name_matches` comparisons the
+  trajectory evaluator uses; a miss stays a contract-side "never called";
+- the layer chips in the banner jump to their evidence entries within the
+  contract pane.
 
 One design law governs this: **the viewer never disagrees with the
 scorer**. The span-returning matcher variants live beside the boolean
