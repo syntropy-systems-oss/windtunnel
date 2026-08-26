@@ -47,6 +47,19 @@ def _write_score_sidecar(
             "tags": list(getattr(scenario, "tags", []) or []),
             "must_call": getattr(scenario, "must_call", []),
             "forbidden_calls": getattr(scenario, "forbidden_calls", []),
+            # Record the policies that actually gated THIS run (names only —
+            # predicates are callables). This includes policies attached at
+            # sweep time (e.g. by a runtime plugin's pre_run), which a later
+            # pack reload cannot reconstruct: without this record, a reader
+            # of the sidecar would see a failed constraint layer next to a
+            # scenario that appears to declare no policies at all.
+            "policies": [
+                {
+                    "name": getattr(policy, "name", ""),
+                    "effect_class": getattr(policy, "effect_class", None),
+                }
+                for policy in getattr(scenario, "policies", []) or []
+            ],
             "gate_layers": list(gate_layers),
             "has_perturbations": bool(scenario.perturbations),
         },
