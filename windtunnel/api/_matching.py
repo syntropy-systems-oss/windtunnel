@@ -9,10 +9,135 @@ compatibility.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 from windtunnel.api._evidence import mcp_evidence_state
 from windtunnel.api.scenario import NumberFact
 from windtunnel.api.trace import Trace, Turn
+
+
+@dataclass(frozen=True)
+class TextSpan:
+    """Half-open ``[start, end)`` character offsets into a matched text.
+
+    Span-returning matcher variants exist so evidence surfaces (the run
+    viewer) can show *where* a fact matched, under one design law: a span
+    variant finds at least one span **iff** its boolean counterpart returns
+    True. The boolean matchers stay the scoring authority; spans only ever
+    decorate their verdict, never diverge from it.
+
+    Case-insensitive matchers compute on ``str.lower()`` of both sides, the
+    exact operation the boolean matchers use. For the rare Unicode texts
+    where lowering changes string length the boolean equivalence still
+    holds, but offsets then index the lowered text and may drift against
+    the original — a display caveat, never a verdict one.
+    """
+
+    start: int
+    end: int
+
+
+def find_fact_spans(text: str, fact: str) -> list[TextSpan]:
+    """Return every case-insensitive occurrence of ``fact`` in ``text``.
+
+    Non-empty iff ``fact.lower() in text.lower()`` — the exact membership
+    test ``match_fact_group`` applies per group member.
+    """
+    text_lower = text.lower()
+    fact_lower = fact.lower()
+    if not fact_lower:
+        return []
+    spans: list[TextSpan] = []
+    start = 0
+    while True:
+        index = text_lower.find(fact_lower, start)
+        if index == -1:
+            return spans
+        spans.append(TextSpan(start=index, end=index + len(fact_lower)))
+        start = index + len(fact_lower)
+
+
+def match_fact_group_spans(text: str, group: list[str]) -> list[tuple[str, TextSpan]]:
+    """Span variant of match_fact_group: every matching member's occurrences.
+
+    Non-empty iff ``match_fact_group(text, group)`` is True (any member of
+    the AND-of-OR group appears in the text).
+    """
+    return [(fact, span) for fact in group for span in find_fact_spans(text, fact)]
+
+
+def match_number_fact_span(answer: str, fact: NumberFact) -> TextSpan | None:
+    """Span variant of match_number_fact — same regex, same unit window.
+
+    Returns the span of the first word-boundary occurrence of the value
+    exactly when ``match_number_fact(answer, fact)`` is True: like the
+    boolean matcher, only the FIRST occurrence's ±30-character window is
+    checked for the unit, so a later occurrence near the unit does not
+    rescue a first occurrence that lacks it.
+    """
+    pattern = rf"\b{re.escape(str(fact.value))}\b"
+    match = re.search(pattern, answer)
+    if not match:
+        return None
+    span = TextSpan(start=match.start(), end=match.end())
+    if fact.unit is None:
+        return span
+    window_start = max(0, match.start() - 30)
+    window_end = min(len(answer), match.end() + 30)
+    unit_pattern = rf"\b{re.escape(fact.unit)}\b"
+    if re.search(unit_pattern, answer[window_start:window_end], re.IGNORECASE):
+        return span
+    return None
+
+
+def find_forbidden_assertion_spans(
+    text: str, forbidden: list[str], cues: Sequence[str]
+) -> list[tuple[str, TextSpan]]:
+    """Every ASSERTED (non-negated) forbidden-fact occurrence, with spans.
+
+    This is the single implementation of the negation-aware forbidden gate:
+    ``evaluators.has_any_forbidden`` is ``bool()`` of this scan, so the
+    boolean gate and the evidence spans cannot drift. See has_any_forbidden
+    for the semantics (word boundaries for bare numbers and single
+    identifiers, before-window clipped at the last clause boundary,
+    after-window clipped at the first sentence boundary).
+
+    Offsets index ``text.lower()`` — see the TextSpan docstring caveat.
+    """
+    t = text.lower()
+    assertions: list[tuple[str, TextSpan]] = []
+    for fact in forbidden:
+        f = fact.lower()
+        if not f:
+            continue
+        is_bare_number = f.strip().isdigit()
+        is_single_identifier = bool(re.fullmatch(r"[a-z_][a-z0-9_]*", f.strip()))
+        use_word_boundary = is_bare_number or is_single_identifier
+        start = 0
+        while True:
+            if use_word_boundary:
+                m = re.search(rf"\b{re.escape(f)}\b", t[start:])
+                if m is None:
+                    break
+                idx = start + m.start()
+            else:
+                idx = t.find(f, start)
+                if idx == -1:
+                    break
+            # Clip the BEFORE window at the LAST sentence/clause boundary so a
+            # negation in a PRIOR sentence/clause doesn't spuriously excuse
+            # this occurrence.
+            before_raw = t[max(0, idx - 30):idx]
+            before = re.split(r"[.!?;\n]", before_raw)[-1]
+            # Clip after-window at the first sentence/clause end so a negation
+            # in a later sentence doesn't spuriously excuse this occurrence.
+            after_raw = t[idx + len(f): idx + len(f) + 40]
+            after = re.split(r"[.!?\n]", after_raw, maxsplit=1)[0]
+            if not any(cue in (before + " " + after) for cue in cues):
+                assertions.append((fact, TextSpan(start=idx, end=idx + len(f))))
+            start = idx + len(f)
+    return assertions
 
 
 def extract_tool_names(trace: Trace) -> list[str]:

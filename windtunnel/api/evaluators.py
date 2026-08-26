@@ -55,7 +55,6 @@ Quality bars (must not regress):
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 from windtunnel.api._evidence import mcp_evidence_state
@@ -67,6 +66,9 @@ from windtunnel.api._matching import (
 )
 from windtunnel.api._matching import (
     extract_tool_names as _extract_tool_names,
+)
+from windtunnel.api._matching import (
+    find_forbidden_assertion_spans as _find_forbidden_assertion_spans,
 )
 from windtunnel.api._matching import (
     has_tool_calls as _has_tool_calls,
@@ -115,42 +117,12 @@ def has_any_forbidden(text: str, forbidden: list[str]) -> bool:
     The after-window is clipped at the first clause/sentence boundary
     ([.!?\\n]) so a negation in a LATER sentence doesn't excuse an earlier
     bare assertion.
+
+    Implementation note: this gate IS the span scanner
+    ``_matching.find_forbidden_assertion_spans`` — one algorithm serves both
+    the boolean verdict and the evidence spans, so they cannot drift.
     """
-    t = text.lower()
-    for fact in forbidden:
-        f = fact.lower()
-        # Use word-boundary regex for bare numbers AND single-identifier tokens
-        # (letters/digits/underscore only, no internal spaces) so "add" does not
-        # match "additional" and "multiply" does not match "multiplying".
-        is_bare_number = f.strip().isdigit()
-        is_single_identifier = bool(re.fullmatch(r"[a-z_][a-z0-9_]*", f.strip()))
-        use_word_boundary = is_bare_number or is_single_identifier
-        start = 0
-        while True:
-            if use_word_boundary:
-                m = re.search(rf"\b{re.escape(f)}\b", t[start:])
-                if m is None:
-                    break
-                idx = start + m.start()
-            else:
-                idx = t.find(f, start)
-                if idx == -1:
-                    break
-            # Clip the BEFORE window at the LAST sentence/clause boundary so a
-            # negation in a PRIOR sentence/clause ("add is not the bug. multiply is
-            # the bug" / "it is not add; multiply is wrong") doesn't spuriously
-            # excuse this occurrence. Includes ';' (clause) on top of the after
-            # window's sentence set — keep only the text after the last boundary.
-            before_raw = t[max(0, idx - 30):idx]
-            before = re.split(r"[.!?;\n]", before_raw)[-1]
-            # Clip after-window at the first sentence/clause end so a negation
-            # in a later sentence doesn't spuriously excuse this occurrence.
-            after_raw = t[idx + len(f): idx + len(f) + 40]
-            after = re.split(r"[.!?\n]", after_raw, maxsplit=1)[0]
-            if not any(cue in (before + " " + after) for cue in NEGATION_CUES):
-                return True  # asserted without negation → real false claim
-            start = idx + len(f)
-    return False
+    return bool(_find_forbidden_assertion_spans(text, forbidden, NEGATION_CUES))
 
 
 # ─── Outcome evaluator ────────────────────────────────────────────────────────
