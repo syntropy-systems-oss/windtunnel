@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/viewing-runs.md at 6f1dd80092fc — do not edit; edit docs/viewing-runs.md. -->
+<!-- GENERATED from docs/viewing-runs.md at 854a6e4d34d2 — do not edit; edit docs/viewing-runs.md. -->
 ---
 description: "Task guide for wt serve — the local, read-only web viewer over a runs/ directory: ledger dashboard, run drill-down, scenario browser, and live JSONL tail."
 ---
@@ -68,37 +68,40 @@ constraint chip.
 ### Evidence highlighting
 
 Scoring is pure over (Scenario, Trace), so the viewer re-runs the same
-matching primitives against the stored trace and shows *where* each
-expectation was met or missed:
+matching primitives against the stored trace and knows *where* each
+expectation was met or missed. One interaction model covers every
+evidence class — **status lives on the contract, illumination lives in
+the transcript, interaction bridges them**:
 
-- target facts and numbers that matched are highlighted green in the scored
-  assistant turn, at the exact spans the matcher found;
-- asserted forbidden facts are highlighted red (negation-aware — a
-  disclaimed mention is not an assertion);
-- each contract entry carries its own verdict: "said" / "never said" for
-  facts, "called via `<observed name>`" / "never called" for `must_call`,
-  "clean" / "called" for `forbidden_calls`, "held" / "violated" for
-  recorded policies, "applied" / "not applied" for perturbation markers —
-  and offending tool calls are flagged red in the transcript;
-- hovering a `must_call` or `forbidden_calls` entry illuminates every
-  matching tool call in the transcript (green for required, red for
-  forbidden); clicking locks the highlight so it survives scrolling —
-  click again, or another entry, to unlock or switch. Hover also scrolls
-  the transcript pane to the first lit match after a short hover-intent
-  dwell (locking scrolls immediately), so sweeping the cursor down the
-  contract never thrashes the pane. The baseline transcript stays
-  neutral — green/red appears only under illumination; at-rest status
-  lives on the contract side. Matches are computed server-side by the
-  same `tool_name_matches` comparisons the trajectory evaluator uses, at
-  token precision: the exact canonical name is marked inside a
-  platform-decorated call, not the whole block. When the evidence source
-  is the server's own call log, a server-computed witnessed→transcript
-  mapping (greedy in-order name walk) lights the corresponding claimed
-  call blocks too; a witnessed call the transcript never claimed is
-  labeled "no matching transcript call" rather than silently skipped. A
-  miss is precision too: "never called" carries the definitive red state
-  on the contract side — "no call matched — this is the failure" —
-  because absence has nothing to highlight;
+- the transcript is fully neutral at rest: fact/number spans,
+  forbidden-assertion spans, tool-call tokens, and policy anchors are
+  pre-rendered as invisible marks and nothing is lit until you interact;
+- hovering any anchorable contract entry — a fact group, a `NumberFact`,
+  a forbidden fact, a `must_call`, a `forbidden_calls`, an anchored
+  policy — illuminates exactly that entry's spans/tokens (green for
+  satisfied/found, red for violated/asserted) and, after a short
+  hover-intent dwell, scrolls the transcript pane to the first lit mark;
+- clicking toggles that entry's **lock** — each interactive entry carries
+  a checkbox showing its lock state, and multiple entries can be locked
+  at once, so you can build up a set of held highlights and scroll
+  freely. Hover adds a temporary layer on top of the lock-set; unhover
+  removes only that layer;
+- each contract entry keeps its at-rest verdict: "said" / "never said"
+  for facts, "called via `<observed name>`" / "never called" for
+  `must_call`, "clean" / "called" for `forbidden_calls`, "held" /
+  "violated" for recorded policies, "applied" / "not applied" for
+  perturbation markers;
+- matches are computed server-side by the same `tool_name_matches`
+  comparisons the trajectory evaluator uses, at token precision: the
+  exact canonical name is marked inside a platform-decorated call, not
+  the whole block. When the evidence source is the server's own call
+  log, a server-computed witnessed→transcript mapping (greedy in-order
+  name walk) lights the corresponding claimed call blocks too; a
+  witnessed call the transcript never claimed is labeled "no matching
+  transcript call" rather than silently skipped. A miss is precision
+  too: "never called" carries the definitive red state on the contract
+  side — "no call matched — this is the failure" — because absence has
+  nothing to highlight;
 - a policy that returns an anchored verdict (`PolicyVerdict` with
   `EvidenceAnchor` references — see [writing a
   scenario](writing-a-scenario.md)) is hoverable like any call entry: its
