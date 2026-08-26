@@ -145,6 +145,52 @@ def _must_call_alternatives(entry: str | list[str]) -> list[str]:
     return entry if isinstance(entry, list) else [entry]
 
 
+def _match_token_span(canonical: str, full: str) -> dict[str, Any] | None:
+    """Span of the canonical name inside an observed name, or None.
+
+    Mirrors tool_name_matches exactly: an exact match spans the whole name;
+    a decorated match (``mcp_acme_ops_client_lookup``, ``ops.client_lookup``)
+    spans the canonical suffix. The page marks precisely this token when a
+    contract entry is illuminated — the grep hit, not the whole block.
+    """
+    if not tool_name_matches(canonical, full):
+        return None
+    start = len(full) - len(canonical)
+    return {"text": canonical, "start": start, "end": len(full)}
+
+
+def _map_witnessed_to_transcript(
+    observed: list[str], claimed: list[str]
+) -> list[dict[str, Any]]:
+    """Map server-witnessed calls onto the transcript's claimed-call walk.
+
+    Greedy in-order walk: for each witnessed call, the next not-yet-consumed
+    claimed call whose name matches (in either decoration direction — the
+    server log usually holds canonical bare names while the transcript may
+    carry platform-decorated ones) becomes its transcript position. A
+    witnessed call with no match maps to ``transcript_index: None`` — the
+    explicit unmapped state for count/name divergence between what the
+    server saw and what the transcript claims. Claimed calls the walk skips
+    are simply never illuminated from the witnessed side.
+    """
+    mapping: list[dict[str, Any]] = []
+    cursor = 0
+    for index, witnessed_name in enumerate(observed):
+        found = None
+        for position in range(cursor, len(claimed)):
+            claimed_name = claimed[position]
+            if (
+                claimed_name == witnessed_name
+                or tool_name_matches(witnessed_name, claimed_name)
+                or tool_name_matches(claimed_name, witnessed_name)
+            ):
+                found = position
+                cursor = position + 1
+                break
+        mapping.append({"observed_index": index, "transcript_index": found})
+    return mapping
+
+
 def _trajectory_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
     """must_call / forbidden_calls evidence over the observed call list.
 
@@ -217,7 +263,12 @@ def _trajectory_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
     # Per-observed-call annotations: which must_call entries each call
     # satisfied and which forbidden names it matched — the server-computed
     # source of truth for transcript highlighting (the page only maps these
-    # indices onto DOM nodes; it never re-implements name matching).
+    # indices onto DOM nodes; it never re-implements name matching). Each
+    # entry also carries matched_token: the exact [start, end) span of the
+    # canonical name inside the observed (possibly platform-decorated)
+    # name, so the page can mark the precise token that matched rather
+    # than the whole call block. Built-in trajectory checks match on names
+    # only, so there are no argument-level anchors to compute.
     call_details = []
     for index, name in enumerate(observed):
         matched_entries = [
@@ -230,19 +281,47 @@ def _trajectory_evidence(scenario: Scenario, trace: Trace) -> dict[str, Any]:
             for entry in forbidden_entries
             if index in entry["offending_calls"]
         ]
+        # The token that matched: a forbidden name wins (it colors the call
+        # red), else the first matching must_call alternative.
+        token_candidates = list(matched_forbidden)
+        for entry_index in matched_entries:
+            entry_value = scenario.must_call[entry_index]
+            token_candidates.extend(_must_call_alternatives(entry_value))
+        matched_token = None
+        for canonical in token_candidates:
+            matched_token = _match_token_span(canonical, name)
+            if matched_token is not None:
+                break
         call_details.append(
             {
                 "index": index,
                 "name": name,
                 "must_call_entries": matched_entries,
                 "forbidden": matched_forbidden,
+                "matched_token": matched_token,
             }
         )
+
+    # Witnessed -> transcript mapping: when the evidence source is the
+    # server's own call log, the transcript pane still renders the trace's
+    # CLAIMED calls — a different list. Map each witnessed call onto the
+    # claimed walk (same enumeration order as extract_tool_names) by a
+    # greedy in-order name walk, so illumination can light both surfaces.
+    # A witnessed call with no matching claimed call maps to None — an
+    # explicit unmapped state the page must surface, never silence. For
+    # today's aggregated single-turn traces (every claimed call flattened
+    # into one assistant turn) the claimed walk is simply that turn's
+    # calls in stored order, so the mapping works without per-step turns.
+    transcript_call_map = None
+    if source == "server-witnessed":
+        claimed = extract_tool_names(trace)
+        transcript_call_map = _map_witnessed_to_transcript(observed, claimed)
 
     return {
         "evidence_source": source,
         "observed_calls": observed,
         "observed_call_details": call_details,
+        "transcript_call_map": transcript_call_map,
         "must_call": must_call_entries,
         "forbidden_calls": forbidden_entries,
         "order_matters": bool(scenario.order_matters),

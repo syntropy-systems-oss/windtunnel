@@ -87,12 +87,26 @@ dd { font-family: var(--mono); overflow-wrap: anywhere; }
 pre.stream { font-family: var(--mono); font-size: 0.82rem; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow-y: auto; padding: 0.5rem 0.75rem; background: color-mix(in srgb, var(--border) 30%, transparent); border-radius: 6px; }
 button.plain { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.25rem 0.75rem; cursor: pointer; font-size: 0.85rem; }
 .empty { color: var(--muted); padding: 1rem 0; }
-#run-columns { display: grid; grid-template-columns: minmax(280px, 5fr) minmax(320px, 7fr); gap: 1rem; align-items: start; }
-#run-columns > .pane { overflow-y: auto; max-height: calc(100vh - 3.5rem); position: sticky; top: 0.5rem; }
+/* Run view fills the viewport exactly: header rows take their natural
+   height, #run-columns flexes into the remainder, and the two panes are
+   the ONLY scrollers — no page-level scrollbar. */
+body.run-view { overflow: hidden; height: 100vh; }
+body.run-view #app { height: 100vh; display: flex; flex-direction: column; }
+body.run-view #run-screen { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+body.run-view #run-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#run-columns { display: grid; grid-template-columns: minmax(280px, 5fr) minmax(320px, 7fr); gap: 1rem; align-items: stretch; flex: 1; min-height: 0; }
+#run-columns > .pane { overflow-y: auto; min-height: 0; margin-bottom: 0.5rem; }
 @media (max-width: 900px) {
+  body.run-view { overflow: auto; height: auto; }
+  body.run-view #app, body.run-view #run-screen, body.run-view #run-content { height: auto; display: block; }
   #run-columns { grid-template-columns: 1fr; }
-  #run-columns > .pane { max-height: none; position: static; }
+  #run-columns > .pane { max-height: none; overflow: visible; }
 }
+#experiment-panel { border-top: 1px solid var(--border); margin-top: 1rem; padding-top: 0.75rem; }
+.tok { border-bottom: 2px solid currentColor; }
+.tool-call.illum-good .tok, .tagchip.illum-good .tok { background: var(--pass-fg); color: var(--pass-bg); border-radius: 2px; border-bottom: none; padding: 0 1px; }
+.tool-call.illum-bad .tok, .tagchip.illum-bad .tok { background: var(--fail-fg); color: var(--fail-bg); border-radius: 2px; border-bottom: none; padding: 0 1px; }
+.tool-call.unmapped { border-left: 2px dashed var(--muted); }
 .thought { padding: 0.4rem 0.75rem; font-size: 0.85rem; color: var(--muted); font-style: italic; white-space: pre-wrap; overflow-wrap: anywhere; border-top: 1px dashed var(--border); }
 .thought:first-child { border-top: none; }
 .call-group { border: 1px solid var(--border); border-radius: 6px; margin: 0.5rem 0; overflow: hidden; }
@@ -132,9 +146,10 @@ function route() {
   const match = location.hash.match(/^#\\/run\\/([A-Za-z0-9_-]+)$/);
   const runScreen = $('#run-screen');
   const main = $('#main-screen');
+  document.body.classList.toggle('run-view', !!match);
   if (match) {
     main.style.display = 'none';
-    runScreen.style.display = 'block';
+    runScreen.style.display = 'flex';
     showRun(match[1]);
   } else {
     runScreen.style.display = 'none';
@@ -303,12 +318,17 @@ function renderRunScreen(runId, run, evidencePayload, row) {
     parts.push(`<div class="muted">evidence highlighting unavailable: ${esc(reason)}</div>`);
   }
 
+  // Illumination context for this render: applyIllum lights both the
+  // witnessed list (data-obs) and, through the server-computed
+  // witnessed->transcript mapping, the claimed call blocks (data-claim).
+  window.RUN_TRAJ = available ? ev.trajectory : null;
+
   parts.push(renderLineage(runId, row));
   parts.push('<div id="run-columns">');
-  parts.push('<div class="panel pane">' + renderContract(scenario, ev, score) + '</div>');
+  parts.push('<div class="panel pane">' + renderContract(scenario, ev, score) +
+    renderExperimentPanel(runId) + '</div>');
   parts.push('<div class="panel pane">' + renderTranscript(trace, ev, score) + '</div>');
   parts.push('</div>');
-  parts.push(renderExperimentPanel(runId));
   return parts.join('');
 }
 
@@ -321,9 +341,20 @@ function renderRunScreen(runId, run, evidencePayload, row) {
 let lockedEntry = null;
 function applyIllum(entry, on) {
   const cls = 'illum-' + (entry.dataset.hl || 'good');
+  const traj = window.RUN_TRAJ || null;
   (entry.dataset.targets || '').split(',').filter(Boolean).forEach((index) => {
     document.querySelectorAll(`[data-obs="${index}"]`).forEach((node) =>
       node.classList.toggle(cls, on));
+    // Server-witnessed evidence: also light the CLAIMED transcript call the
+    // server mapped this witnessed call onto (data-claim tags follow the
+    // same claimed-call walk the mapping was computed against).
+    if (traj && traj.transcript_call_map) {
+      const mapped = traj.transcript_call_map[Number(index)];
+      if (mapped && mapped.transcript_index != null) {
+        document.querySelectorAll(`[data-claim="${mapped.transcript_index}"]`).forEach((node) =>
+          node.classList.toggle(cls, on));
+      }
+    }
   });
 }
 function wireIllumination(container) {
@@ -542,8 +573,11 @@ function renderContract(scenario, ev, score) {
       const what = esc(Array.isArray(entry) ? entry.join(' | ') : entry);
       const info = trajEv && trajEv.must_call[index];
       if (!info) return `<div class="contract-item"><span class="what">must call ${what}</span></div>`;
+      // Precision for ABSENCE: there is nothing to highlight in the
+      // transcript — the contract entry itself is the definitive red state.
       const via = info.satisfied
-        ? ` <span class="muted">via ${esc(info.matched_calls.map((i) => trajEv.observed_calls[i]).join(', '))}</span>` : '';
+        ? ` <span class="muted">via ${esc(info.matched_calls.map((i) => trajEv.observed_calls[i]).join(', '))}</span>`
+        : ' <span class="muted">no call matched — this is the failure</span>';
       return contractItem(info.satisfied, `must call ${what}${via}`,
         {good: 'called', bad: 'never called'}, hoverAttrs(info.matched_calls, 'good'));
     }).join(''));
@@ -648,6 +682,33 @@ function callStatusClass(detail) {
   if (detail.must_call_entries.length) return 'good';
   return '';
 }
+// Precision: wrap the server-computed matched token (always a suffix of the
+// observed name, by tool_name_matches construction) so illumination marks
+// the exact grep hit, not the whole block. The token TEXT comes from the
+// server; this only locates that suffix in the displayed name.
+function renderCallName(name, detail) {
+  const token = detail && detail.matched_token ? detail.matched_token.text : null;
+  const display = String(name ?? '?');
+  if (token && display.endsWith(token)) {
+    const prefix = display.slice(0, display.length - token.length);
+    return `${esc(prefix)}<span class="tok">${esc(token)}</span>`;
+  }
+  return esc(display);
+}
+// Inverse of the server's witnessed->transcript mapping: claimed-call walk
+// index -> the witnessed call's detail, so claimed blocks share status and
+// token precision in server-witnessed mode.
+function claimedDetailMap(trajEv) {
+  const map = new Map();
+  if (trajEv && trajEv.transcript_call_map) {
+    for (const entry of trajEv.transcript_call_map) {
+      if (entry.transcript_index != null) {
+        map.set(entry.transcript_index, callDetailFor(trajEv, entry.observed_index));
+      }
+    }
+  }
+  return map;
+}
 
 // Transcript: strict chronology in three sections — the user message(s),
 // the tool-call trajectory, the final assistant output. The stored turn
@@ -684,6 +745,7 @@ function renderTranscript(trace, ev, score) {
   parts.push(`<h3 id="trajectory-section">Tool-call trajectory` +
     (source ? ` <span class="muted">evidence: ${esc(source)}</span>` : '') + '</h3>');
   let obsCursor = 0;
+  const claimedByIndex = claimedDetailMap(trajEv);
   const groups = [];
   turns.forEach((turn, index) => {
     const isUser = turn.role === 'user';
@@ -706,10 +768,17 @@ function renderTranscript(trace, ev, score) {
     for (const call of calls) {
       const name = call.function?.name ?? call.name;
       const args = call.function?.arguments ?? JSON.stringify(call.args ?? {});
-      const obsIndex = (source === 'transcript' && name) ? obsCursor++ : null;
-      const detail = callDetailFor(trajEv, obsIndex);
-      const obsAttr = obsIndex != null ? ` data-obs="${obsIndex}"` : '';
-      inner.push(`<div class="tool-call ${callStatusClass(detail)}"${obsAttr}>tool_call ${esc(name ?? '?')}(${esc(args)})</div>`);
+      // data-claim follows the claimed-call walk (named calls in turn
+      // order) — the same enumeration the server's witnessed->transcript
+      // mapping targets. In transcript mode that walk IS the observed
+      // list, so the block is also its own data-obs target.
+      const claimIndex = name ? obsCursor++ : null;
+      const obsIndex = (source === 'transcript') ? claimIndex : null;
+      const detail = callDetailFor(trajEv, obsIndex) ??
+        (claimIndex != null ? claimedByIndex.get(claimIndex) ?? null : null);
+      const attrs = (claimIndex != null ? ` data-claim="${claimIndex}"` : '') +
+        (obsIndex != null ? ` data-obs="${obsIndex}"` : '');
+      inner.push(`<div class="tool-call ${callStatusClass(detail)}"${attrs}>tool_call ${renderCallName(name, detail)}(${esc(args)})</div>`);
     }
     for (const result of results) {
       inner.push(`<div class="tool-call">tool_result ${esc(JSON.stringify(result))}</div>`);
@@ -722,11 +791,19 @@ function renderTranscript(trace, ev, score) {
   // logging mock was in play — data-obs tags live here in that mode.
   const witnessed = trace.mcp_calls || [];
   if (witnessed.length) {
+    const callMap = (trajEv && trajEv.transcript_call_map) || null;
     parts.push('<h3>Witnessed at the mock server</h3>' + witnessed.map((call, index) => {
       const obsIndex = source === 'server-witnessed' ? index : null;
       const detail = callDetailFor(trajEv, obsIndex);
       const obsAttr = obsIndex != null ? ` data-obs="${obsIndex}"` : '';
-      return `<div class="tool-call ${callStatusClass(detail)}"${obsAttr}>${esc(call.tool_name)} ← ${esc(JSON.stringify(call.args ?? {}))}</div>`;
+      // Honest divergence indicator: the server saw this call but no
+      // transcript call maps to it (count/name divergence) — say so
+      // rather than silently illuminating nothing on the claimed side.
+      const mapped = callMap && obsIndex != null ? callMap[obsIndex] : null;
+      const unmapped = mapped != null && mapped.transcript_index == null;
+      const note = unmapped ? ' <span class="muted">· no matching transcript call</span>' : '';
+      return `<div class="tool-call ${callStatusClass(detail)}${unmapped ? ' unmapped' : ''}"${obsAttr}>` +
+        `${renderCallName(call.tool_name, detail)} ← ${esc(JSON.stringify(call.args ?? {}))}${note}</div>`;
     }).join(''));
   }
 

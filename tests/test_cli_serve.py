@@ -670,11 +670,109 @@ class TestEvidenceComputation:
         )
         trajectory = compute_evidence(scenario, trace)["trajectory"]
         assert trajectory["observed_call_details"] == [
-            {"index": 0, "name": "inventory_check", "must_call_entries": [], "forbidden": []},
-            {"index": 1, "name": "order_query", "must_call_entries": [0], "forbidden": []},
+            {"index": 0, "name": "inventory_check", "must_call_entries": [], "forbidden": [],
+             "matched_token": None},
+            {"index": 1, "name": "order_query", "must_call_entries": [0], "forbidden": [],
+             "matched_token": {"text": "order_query", "start": 0, "end": 11}},
             {"index": 2, "name": "delete_record", "must_call_entries": [],
-             "forbidden": ["delete_record"]},
-            {"index": 3, "name": "order_update", "must_call_entries": [1], "forbidden": []},
+             "forbidden": ["delete_record"],
+             "matched_token": {"text": "delete_record", "start": 0, "end": 13}},
+            {"index": 3, "name": "order_update", "must_call_entries": [1], "forbidden": [],
+             "matched_token": {"text": "order_update", "start": 0, "end": 12}},
+        ]
+
+    def test_matched_token_is_the_exact_suffix_of_a_decorated_name(self) -> None:
+        """Precision anchor: the token span marks the canonical name inside
+        the platform-decorated observed name — the exact grep hit."""
+        from windtunnel._serve.evidence import compute_evidence
+        from windtunnel.api.scenario import Scenario
+
+        scenario = Scenario(name="evidence_case", prompt="go", must_call=["client_lookup"])
+        trace = self._trace(
+            turns=[self._turn("assistant", "done")],
+            mcp_calls=[
+                {"tool_name": "mcp_acme_ops_client_lookup", "args": {}, "result": "",
+                 "timestamp_ms": 1},
+            ],
+        )
+        detail = compute_evidence(scenario, trace)["trajectory"]["observed_call_details"][0]
+        token = detail["matched_token"]
+        assert token == {"text": "client_lookup", "start": 13, "end": 26}
+        assert "mcp_acme_ops_client_lookup"[token["start"]:token["end"]] == "client_lookup"
+
+    def test_witnessed_to_transcript_mapping_on_an_aggregated_turn(self) -> None:
+        """Today's dominant trace shape: ONE assistant turn carrying every
+        claimed call. The mapping walks that flat list in stored order and
+        pairs each witnessed call with the next name-matching claimed call;
+        a witnessed call the transcript never claimed maps to None."""
+        from windtunnel._serve.evidence import compute_evidence
+        from windtunnel.api.scenario import Scenario
+
+        scenario = Scenario(name="evidence_case", prompt="go", must_call=["order_query"])
+        trace = self._trace(
+            turns=[
+                self._turn("assistant", "final answer", tool_calls=[
+                    # Aggregated: all claimed calls flattened into the scored turn,
+                    # platform-decorated names.
+                    {"id": "c1", "name": "mcp_acme_ops_client_lookup", "args": {}},
+                    {"id": "c2", "name": "mcp_acme_ops_order_query", "args": {}},
+                    {"id": "c3", "name": "mcp_acme_ops_order_query", "args": {}},
+                ]),
+            ],
+            mcp_calls=[
+                {"tool_name": "client_lookup", "args": {}, "result": "", "timestamp_ms": 1},
+                {"tool_name": "order_query", "args": {}, "result": "", "timestamp_ms": 2},
+                {"tool_name": "order_query", "args": {}, "result": "", "timestamp_ms": 3},
+                # Server saw this; the transcript never claimed it → unmapped.
+                {"tool_name": "inventory_check", "args": {}, "result": "", "timestamp_ms": 4},
+            ],
+        )
+        trajectory = compute_evidence(scenario, trace)["trajectory"]
+        assert trajectory["evidence_source"] == "server-witnessed"
+        assert trajectory["transcript_call_map"] == [
+            {"observed_index": 0, "transcript_index": 0},
+            {"observed_index": 1, "transcript_index": 1},
+            {"observed_index": 2, "transcript_index": 2},  # duplicates pair in order
+            {"observed_index": 3, "transcript_index": None},
+        ]
+
+    def test_transcript_source_has_no_call_map(self) -> None:
+        """In transcript mode the claimed walk IS the observed list — the
+        mapping would be the identity, so the server omits it (null)."""
+        from windtunnel._serve.evidence import compute_evidence
+        from windtunnel.api.scenario import Scenario
+
+        scenario = Scenario(name="evidence_case", prompt="go")
+        trace = self._trace(
+            turns=[self._turn("assistant", "done",
+                              tool_calls=[{"id": "c1", "name": "client_lookup", "args": {}}])],
+        )
+        assert compute_evidence(scenario, trace)["trajectory"]["transcript_call_map"] is None
+
+    def test_mapping_respects_order_not_just_names(self) -> None:
+        """Greedy in-order pairing: a witnessed call can only map FORWARD of
+        the previous match, so a scrambled transcript yields honest
+        unmapped states instead of crossing pairs."""
+        from windtunnel._serve.evidence import compute_evidence
+        from windtunnel.api.scenario import Scenario
+
+        scenario = Scenario(name="evidence_case", prompt="go")
+        trace = self._trace(
+            turns=[
+                self._turn("assistant", "final", tool_calls=[
+                    {"id": "c1", "name": "order_query", "args": {}},
+                    {"id": "c2", "name": "client_lookup", "args": {}},
+                ]),
+            ],
+            mcp_calls=[
+                {"tool_name": "client_lookup", "args": {}, "result": "", "timestamp_ms": 1},
+                {"tool_name": "order_query", "args": {}, "result": "", "timestamp_ms": 2},
+            ],
+        )
+        trajectory = compute_evidence(scenario, trace)["trajectory"]
+        assert trajectory["transcript_call_map"] == [
+            {"observed_index": 0, "transcript_index": 1},
+            {"observed_index": 1, "transcript_index": None},  # behind the cursor
         ]
 
     def test_transcript_observed_order_matches_per_turn_call_order(self) -> None:
