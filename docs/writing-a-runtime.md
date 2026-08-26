@@ -175,6 +175,40 @@ Also worth capturing if your platform exposes it: the **rendered prompt**
 auto-computed hash let you diff what the model *actually saw* across runs —
 the fastest way to catch template regressions.
 
+**Per-step turns (optional enrichment).** If your platform can reconstruct
+the agent loop step by step, ride Turn-shaped dicts on `response["turns"]`
+*alongside* the normal reply shape (never instead of it — the flat/choices
+content still feeds the conversation history):
+
+```python
+{
+  "content": final_text,                      # the normal reply, as always
+  "tool_calls": [...],
+  "turns": [
+    {"role": "assistant", "content": "first, look the client up",
+     "tool_calls": [...], "tool_results": [...]},   # one dict per step
+    {"role": "tool", "content": "lookup result payload"},
+    {"role": "assistant", "content": final_text},   # last assistant step
+  ],
+}
+```
+
+The runner adopts these verbatim into `Trace.turns` instead of
+synthesizing one aggregated assistant turn, so evidence surfaces get
+interstitial thought text, per-step tool calls, and shape-faithful
+`tool_results`. The contract is fail-closed and loud: each step carries
+exactly `role` ("assistant" or "tool") + `content`, plus any of
+`tool_calls` / `tool_results` / `latency_ms` / `rendered_prompt` /
+`error`; unknown or missing fields, and a last assistant step whose
+`content` differs from the reply text (answer-turn selection scores the
+last assistant turn), reject the whole list — the runner falls back to
+the aggregated turn and records a `response_turns_rejected: …` warning on
+the trace, never crashing the run. Per-step `error` markers thread into
+`Turn.error`; a response-level `error` lands on the final assistant step.
+When no step carries `latency_ms`, the measured `send()` latency is
+recorded on the final assistant step. Omit `turns` entirely and behavior
+is exactly as before.
+
 **Report failed turns as failures, not as content.** If your platform knows
 the turn errored (an inference timeout, a crashed worker, a gateway 5xx),
 put a non-empty string under `"error"` in the response (on the message or

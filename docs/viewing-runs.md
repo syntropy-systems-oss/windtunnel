@@ -105,7 +105,11 @@ expectation was met or missed:
   render as "looked at: …" under the entry. Entries with nothing to
   illuminate — plain-predicate policies, custom `TrajectoryCheck`s,
   `outcome_fn` — are visibly non-interactive and say so ("opaque policy —
-  no transcript anchor"); nothing ever looks hoverable and does nothing;
+  no transcript anchor"); nothing ever looks hoverable and does nothing.
+  For those opaque checks, "what exactly is windtunnel expecting" is one
+  click away: a "show check source" toggle renders the callable's own
+  source (read-only introspection of the loaded pack; unavailable source
+  — builtins, vanished files — keeps the plain opaque note);
 - the layer chips in the banner jump to their evidence entries within the
   contract pane.
 
