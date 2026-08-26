@@ -5,6 +5,7 @@
 ### Features
 
 * **cli:** wt serve — local read-only run viewer (ledger dashboard, run drill-down, scenario browser, --live-glob SSE tail)
+* **serve:** full-screen run view with span-level evidence highlighting — scenario contract beside the transcript, matched facts green, asserted forbidden facts and offending tool calls red, recomputed via span variants of the core scoring matchers (equivalence-pinned)
 
 ## [0.10.2](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.10.1...v0.10.2) (2026-07-18)
 

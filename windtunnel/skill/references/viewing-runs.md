@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/viewing-runs.md at 1674cdc7238d — do not edit; edit docs/viewing-runs.md. -->
+<!-- GENERATED from docs/viewing-runs.md at 8b279759ac0d — do not edit; edit docs/viewing-runs.md. -->
 ---
 description: "Task guide for wt serve — the local, read-only web viewer over a runs/ directory: ledger dashboard, run drill-down, scenario browser, and live JSONL tail."
 ---
@@ -33,16 +33,51 @@ the four per-layer pass rates, and the git SHA the sweep ran at. The page
 polls the ledger every few seconds, so a sweep writing right now appears as
 it lands; malformed or torn lines are skipped and counted, never fatal.
 
-## Run drill-down
+## Run screen
 
-Clicking a ledger row loads each run's saved trace plus its `.score.json`
-sidecar — the same artifacts `wt report`, `wt triage`, and `wt rescore`
-consume. The drill-down puts the *why* front and center: every failing
-layer's `detail` string is surfaced first, followed by all four layer
-verdicts (outcome, trajectory, constraint, integrity), the conversation
-turns with their tool calls, and — when a logging mock was in play — the
-tool calls witnessed at the tool server itself (`mcp_calls`), independent of
+Clicking a ledger row opens the run as a full screen of its own
+(`#/run/<run_id>` — deep-linkable, back button returns to the dashboard).
+It loads the run's saved trace plus its `.score.json` sidecar — the same
+artifacts `wt report`, `wt triage`, and `wt rescore` consume — and puts the
+*why* front and center: every failing layer's `detail` string is the
+headline banner, above the scenario contract panel (user turns, target fact
+groups, `must_call` / `forbidden_calls`, declared perturbations, gate
+layers, failure cost) laid out beside the transcript — the conversation
+turns with their tool calls, and, when a logging mock was in play, the tool
+calls witnessed at the tool server itself (`mcp_calls`), independent of
 what the transcript claims.
+
+### Evidence highlighting
+
+Scoring is pure over (Scenario, Trace), so the viewer re-runs the same
+matching primitives against the stored trace and shows *where* each
+expectation was met or missed:
+
+- target facts and numbers that matched are highlighted green in the scored
+  assistant turn, at the exact spans the matcher found;
+- asserted forbidden facts are highlighted red (negation-aware — a
+  disclaimed mention is not an assertion);
+- each contract entry carries its own verdict: "said" / "never said" for
+  facts, "called via `<observed name>`" / "never called" for `must_call`,
+  "clean" / "called" for `forbidden_calls`, "applied" / "not applied" for
+  perturbation markers — and offending tool calls are flagged red in the
+  transcript and observed-call strip;
+- the layer chips in the banner jump to their evidence entries.
+
+One design law governs this: **the viewer never disagrees with the
+scorer**. The span-returning matcher variants live beside the boolean
+matchers in core (`windtunnel.api._matching`), the forbidden-facts gate and
+its span scan are one algorithm, and an equivalence suite pins that a span
+is found exactly when the boolean matcher passes. Opaque callables —
+`outcome_fn`, `Policy` predicates, custom `TrajectoryCheck`s — are listed
+by name with their verdicts in the layer details; no span is ever
+fabricated for them.
+
+Evidence needs the run's scenario definition: packs are discovered exactly
+like `wt run`, so a run executed with a `--pack-source` needs `wt serve`
+started with the same flag. Without it the run screen still shows the
+transcript and the four layer details, and says evidence is unavailable
+rather than guessing.
 
 ## Scenario browser
 
