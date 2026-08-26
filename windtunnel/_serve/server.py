@@ -18,6 +18,18 @@ Endpoints:
     GET /api/scenarios  discovered pack/scenario summaries (the test cases)
     GET /api/live       SSE stream tailing JSONL files matching --live-glob
 
+Experiment mode (opt-in via `wt serve --experiment`, otherwise absent —
+the read-only posture stays: without it, ANY non-GET method gets the stock
+501, and these routes 404):
+    GET  /api/experiment/status   current/last rerun job
+    GET  /api/experiment/events   SSE stream of the rerun's output lines
+    POST /api/experiment/rerun    {"run_id", "knobs": {...}} — spawn a
+                                  scoped `wt run` of that run's scenario
+                                  with knob overrides; one in flight at a
+                                  time (409 on concurrency); strict knob
+                                  validation against the runtime's declared
+                                  KnobSpecs (400 on any mismatch)
+
 Live tail: generic by design. It watches whatever files match the glob,
 starts at end-of-file for files that already exist, streams each newly
 appended complete line as one SSE event, and restarts from the top when a
@@ -36,6 +48,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from windtunnel._serve import data as _data
+from windtunnel._serve.experiment import ExperimentRunner
 from windtunnel._serve.page import PAGE_HTML
 
 _LIVE_POLL_SECONDS = 0.5
@@ -54,15 +67,19 @@ class RunViewerServer(ThreadingHTTPServer):
         runs_dir: Path,
         pack_data: list[dict[str, Any]],
         scenario_index: dict[str, Any],
+        scenario_packs: dict[str, str],
         live_glob: str | None,
         wt_version: str,
+        experiment: ExperimentRunner | None,
     ) -> None:
         super().__init__(address, _RunViewerHandler)
         self.runs_dir = Path(runs_dir)
         self.pack_data = pack_data
         self.scenario_index = scenario_index
+        self.scenario_packs = scenario_packs
         self.live_glob = live_glob
         self.wt_version = wt_version
+        self.experiment = experiment
 
     @property
     def bound_address(self) -> tuple[str, int]:
@@ -80,6 +97,7 @@ def build_server(
     host: str = "127.0.0.1",
     port: int = 8686,
     wt_version: str = "unknown",
+    experiment: ExperimentRunner | None = None,
 ) -> RunViewerServer:
     """Bind the run viewer. port=0 asks the OS for an ephemeral port.
 
@@ -87,16 +105,22 @@ def build_server(
     affair, exactly like `wt run` resolving its selection once per
     invocation. Runs/ artifacts, by contrast, are re-read on every request so
     the dashboard follows a sweep that is writing right now.
+
+    experiment: None (the default) keeps the server read-only by
+    construction — do_POST refuses everything with the stock 501.
     """
     pack_data = _data.pack_summaries(packs)
     scenario_index = _data.scenarios_by_id(packs)
+    scenario_packs = _data.scenario_pack_names(packs)
     return RunViewerServer(
         (host, port),
         runs_dir=runs_dir,
         pack_data=pack_data,
         scenario_index=scenario_index,
+        scenario_packs=scenario_packs,
         live_glob=live_glob,
         wt_version=wt_version,
+        experiment=experiment,
     )
 
 
@@ -117,11 +141,15 @@ class _RunViewerHandler(BaseHTTPRequestHandler):
             if path == "/" or path == "/index.html":
                 self._send_html(PAGE_HTML)
             elif path == "/api/meta":
+                experiment = self.server.experiment
                 self._send_json(
                     {
                         "runs_dir": str(self.server.runs_dir),
                         "live_glob": self.server.live_glob,
                         "wt_version": self.server.wt_version,
+                        "experiment": experiment is not None,
+                        "runtime": experiment.runtime_name if experiment else None,
+                        "knobs": experiment.knobs_payload() if experiment else None,
                     }
                 )
             elif path == "/api/ledger":
@@ -140,10 +168,93 @@ class _RunViewerHandler(BaseHTTPRequestHandler):
                 self._send_json({"packs": self.server.pack_data})
             elif path == "/api/live":
                 self._stream_live()
+            elif path == "/api/experiment/status":
+                experiment = self.server.experiment
+                if experiment is None:
+                    self._send_json(
+                        {"error": "experiment mode is off; start wt serve with --experiment"},
+                        status=404,
+                    )
+                else:
+                    self._send_json(experiment.status())
+            elif path == "/api/experiment/events":
+                self._stream_experiment()
             else:
                 self._send_json({"error": "not found"}, status=404)
         except (BrokenPipeError, ConnectionResetError):
             pass  # client went away mid-response; nothing to clean up
+
+    def do_POST(self) -> None:  # noqa: N802 - stdlib handler naming
+        """POST exists ONLY in experiment mode, and only for one route.
+
+        Without --experiment the posture is identical to not implementing
+        POST at all: the stock 501 for every path, so the default server
+        remains read-only by construction.
+        """
+        experiment = self.server.experiment
+        if experiment is None:
+            self.send_error(501, "Unsupported method ('POST')")
+            return
+        path = urlparse(self.path).path
+        try:
+            if path == "/api/experiment/rerun":
+                self._handle_rerun(experiment)
+            else:
+                self._send_json({"error": "not found"}, status=404)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _handle_rerun(self, experiment: ExperimentRunner) -> None:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, json.JSONDecodeError):
+            self._send_json({"error": "request body must be a JSON object"}, status=400)
+            return
+        if not isinstance(body, dict):
+            self._send_json({"error": "request body must be a JSON object"}, status=400)
+            return
+
+        run_id = body.get("run_id")
+        overrides = body.get("knobs") or {}
+        if not isinstance(run_id, str) or not run_id:
+            self._send_json({"error": "run_id is required"}, status=400)
+            return
+        if not isinstance(overrides, dict):
+            self._send_json({"error": "knobs must be an object"}, status=400)
+            return
+
+        trace_path = _data.resolve_run_path(self.server.runs_dir, run_id)
+        if trace_path is None:
+            self._send_json({"error": f"no stored trace for run_id {run_id!r}"}, status=404)
+            return
+        try:
+            scenario_id = str(
+                json.loads(trace_path.read_text(encoding="utf-8")).get("scenario_id")
+            )
+        except (OSError, json.JSONDecodeError):
+            self._send_json({"error": "trace could not be read"}, status=500)
+            return
+        pack_name = self.server.scenario_packs.get(scenario_id)
+        if pack_name is None:
+            self._send_json(
+                {
+                    "error": (
+                        f"scenario {scenario_id!r} is not among the discovered packs — "
+                        "start wt serve with the --pack-source this run was executed with"
+                    )
+                },
+                status=400,
+            )
+            return
+
+        status, payload = experiment.start(
+            parent_run_id=run_id,
+            scenario_id=scenario_id,
+            pack_name=pack_name,
+            overrides=overrides,
+        )
+        self._send_json(payload, status=status)
 
     # ── responses ────────────────────────────────────────────────────────────
 
@@ -260,6 +371,40 @@ class _RunViewerHandler(BaseHTTPRequestHandler):
             elif now - last_keepalive >= _LIVE_KEEPALIVE_SECONDS:
                 self._sse_comment("keep-alive")
                 last_keepalive = now
+            time.sleep(_LIVE_POLL_SECONDS)
+
+    def _stream_experiment(self) -> None:
+        """SSE stream of the current/last rerun's output lines.
+
+        Replays the buffered lines from the top, then follows the live
+        subprocess; the stream closes when the job finishes (or immediately
+        after replay when no job is running), so a client reads one
+        complete progress log per connection.
+        """
+        experiment = self.server.experiment
+        if experiment is None:
+            self._send_json(
+                {"error": "experiment mode is off; start wt serve with --experiment"},
+                status=404,
+            )
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        cursor = 0
+        while True:
+            lines = experiment.output_lines()
+            while cursor < len(lines):
+                self._sse_event({"line": lines[cursor]})
+                cursor += 1
+            if experiment.job_finished():
+                status = experiment.status()
+                self._sse_event({"done": True, "job": status["job"]})
+                return
             time.sleep(_LIVE_POLL_SECONDS)
 
     def _sse_event(self, payload: dict[str, Any]) -> None:

@@ -275,11 +275,147 @@ function renderRunScreen(runId, run, evidencePayload, row) {
     parts.push(`<div class="muted">evidence highlighting unavailable: ${esc(reason)}</div>`);
   }
 
+  parts.push(renderLineage(runId, row));
   parts.push('<div id="run-columns">');
   parts.push('<div class="panel">' + renderContract(scenario, ev, score) + '</div>');
   parts.push('<div class="panel">' + renderTranscript(trace, ev) + '</div>');
   parts.push('</div>');
+  parts.push(renderExperimentPanel(runId));
   return parts.join('');
+}
+
+// ── before/after lineage ─────────────────────────────────────────────────────
+// Experiment reruns carry label exp-<parent run_id[:8]>-<HHMMSS>; the parent
+// is resolved client-side by prefix-matching run ids in the ledger.
+const EXP_LABEL_RE = /^exp-([A-Za-z0-9]{8})-/;
+function findRowByRunPrefix(prefix) {
+  return ledgerRows.find((r) => (r.run_ids || []).some((id) => id.startsWith(prefix))) || null;
+}
+function renderLineage(runId, row) {
+  const parts = [];
+  if (row && EXP_LABEL_RE.test(row.label || '')) {
+    const parentRow = findRowByRunPrefix(row.label.match(EXP_LABEL_RE)[1]);
+    if (parentRow) {
+      const parentId = parentRow.run_ids[0];
+      parts.push(`<div class="panel"><div class="group-head">
+        <span class="muted">experiment of</span>
+        <a class="tagchip" href="#/run/${esc(parentId)}">${esc(parentRow.scenario_id)} · ${esc(parentId.slice(0, 8))}</a>
+        <span class="muted">verdict</span> ${chip(parentRow.verdict)} <span class="muted">→</span> ${chip(row.verdict)}
+        ${parentRow.verdict === row.verdict ? '<span class="muted">(unchanged)</span>' : '<span class="tagchip">changed</span>'}
+      </div></div>`);
+    }
+  }
+  if (row) {
+    const children = ledgerRows.filter((r) => (r.label || '').startsWith('exp-' + runId.slice(0, 8) + '-'));
+    if (children.length) {
+      parts.push('<div class="panel"><div class="group-head"><span class="muted">experiments varying this run:</span>' +
+        children.map((child) => {
+          const childId = (child.run_ids || [])[0];
+          return `<a class="tagchip" href="#/run/${esc(childId)}">${esc(child.label)}</a> ${chip(row.verdict)}<span class="muted">→</span>${chip(child.verdict)}`;
+        }).join(' ') + '</div></div>');
+    }
+  }
+  return parts.join('');
+}
+
+// ── experiment panel (knobs + rerun) ─────────────────────────────────────────
+function renderExperimentPanel(runId) {
+  const meta = window.META || {};
+  if (!meta.experiment) return '';
+  const knobInfo = meta.knobs || {declared: false, knobs: [], detail: null};
+  const parts = [`<div class="panel" id="experiment-panel"><h2>Experiment</h2>
+    <div class="muted">runtime: ${esc(meta.runtime)} — adjust knobs, rerun exactly this scenario, and compare verdicts.</div>`];
+  if (!knobInfo.declared) {
+    parts.push(`<div class="muted">${esc(knobInfo.detail || 'runtime declares no knobs')}</div>`);
+  } else if (!knobInfo.knobs.length) {
+    parts.push('<div class="muted">runtime declares no knobs — a rerun repeats the scenario unchanged</div>');
+  } else {
+    parts.push(knobInfo.knobs.map((knob, index) => {
+      const id = `knob-${index}`;
+      let input;
+      if (knob.kind === 'enum') {
+        input = `<select id="${id}" data-knob="${esc(knob.name)}" data-kind="enum">` +
+          knob.choices.map((choice) => `<option${choice === knob.value ? ' selected' : ''}>${esc(choice)}</option>`).join('') + '</select>';
+      } else if (knob.kind === 'flag') {
+        input = `<input type="checkbox" id="${id}" data-knob="${esc(knob.name)}" data-kind="flag"${knob.value ? ' checked' : ''}>`;
+      } else if (knob.kind === 'number') {
+        input = `<input type="number" id="${id}" data-knob="${esc(knob.name)}" data-kind="number" value="${esc(knob.value ?? '')}">`;
+      } else {
+        input = `<textarea id="${id}" data-knob="${esc(knob.name)}" data-kind="text" data-initial="${esc(knob.value ?? '')}" rows="2" style="width:100%">${esc(knob.value ?? '')}</textarea>`;
+      }
+      return `<div class="contract-item"><span class="what" title="${esc(knob.description)}">${esc(knob.name)} <span class="muted">(${esc(knob.kind)} · ${esc(knob.scope)})</span></span></div>${input}`;
+    }).join(''));
+  }
+  parts.push(`<div class="group-head" style="margin-top:0.75rem">
+    <button class="plain" id="rerun-btn">Rerun this scenario</button>
+    <span class="muted" id="rerun-status"></span></div>
+    <pre class="stream" id="rerun-log" style="display:none"></pre></div>`);
+  // Wire after insertion.
+  setTimeout(() => {
+    const btn = document.getElementById('rerun-btn');
+    if (btn) btn.addEventListener('click', () => startRerun(runId));
+  }, 0);
+  return parts.join('');
+}
+
+function collectKnobOverrides() {
+  const overrides = {};
+  document.querySelectorAll('#experiment-panel [data-knob]').forEach((el) => {
+    const kind = el.dataset.kind;
+    if (kind === 'flag') overrides[el.dataset.knob] = el.checked;
+    else if (kind === 'number') { if (el.value !== '') overrides[el.dataset.knob] = Number(el.value); }
+    else if (kind === 'text') { if (el.value !== (el.dataset.initial ?? '')) overrides[el.dataset.knob] = el.value; }
+    else overrides[el.dataset.knob] = el.value;
+  });
+  return overrides;
+}
+
+async function startRerun(runId) {
+  const statusEl = document.getElementById('rerun-status');
+  const logEl = document.getElementById('rerun-log');
+  statusEl.textContent = 'starting…';
+  let payload;
+  try {
+    const response = await fetch('/api/experiment/rerun', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({run_id: runId, knobs: collectKnobOverrides()}),
+    });
+    payload = await response.json();
+    if (!response.ok) {
+      statusEl.textContent = 'refused: ' + (Array.isArray(payload.detail) ? payload.detail.join('; ') : (payload.error || response.status));
+      return;
+    }
+  } catch (err) {
+    statusEl.textContent = 'failed: ' + err.message;
+    return;
+  }
+  const label = payload.job.label;
+  statusEl.textContent = `running as ${label}…`;
+  logEl.style.display = 'block';
+  logEl.textContent = '';
+  const source = new EventSource('/api/experiment/events');
+  source.onmessage = async (event) => {
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    if (data.line !== undefined) {
+      logEl.append(document.createTextNode((logEl.textContent ? '\\n' : '') + data.line));
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    if (data.done) {
+      source.close();
+      const rc = data.job ? data.job.returncode : null;
+      await refreshLedger();
+      const childRow = ledgerRows.find((r) => r.label === label);
+      if (childRow && (childRow.run_ids || []).length) {
+        statusEl.innerHTML = `finished (exit ${esc(rc)}) — ` +
+          `<a class="tagchip" href="#/run/${esc(childRow.run_ids[0])}">open ${esc(label)}</a> ${chip(childRow.verdict)}`;
+      } else {
+        statusEl.textContent = `finished (exit ${rc}); ledger row not visible yet — refresh the dashboard`;
+      }
+    }
+  };
+  source.onerror = () => { source.close(); };
 }
 
 function renderContract(scenario, ev, score) {

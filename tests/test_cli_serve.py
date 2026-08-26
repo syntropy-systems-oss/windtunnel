@@ -10,6 +10,10 @@ Covers:
     (Scenario, Trace) via the scoring matchers, and degrades gracefully when
     the scenario is not among the discovered packs
   - the server is read-only: GET-only, and the runs/ directory is never modified
+  - experiment mode (--experiment): knob declaration on /api/meta, scoped
+    rerun POST (strict knob validation, one in flight, experiment label
+    linking back to the parent run), SSE progress; and the auth posture —
+    without the flag, POST keeps the stock 501 and the experiment routes 404
   - live watch: SSE tail streams appended complete JSONL lines, never history
     or torn lines
   - leak hygiene: the new source files bake in no absolute paths, hostnames,
@@ -127,6 +131,50 @@ def viewer(seeded: SimpleNamespace) -> SimpleNamespace:
 def _get_json(base: str, path: str) -> dict:
     with urllib.request.urlopen(base + path, timeout=10) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _post_json(base: str, path: str, body: dict) -> tuple[int, dict]:
+    request = urllib.request.Request(
+        base + path,
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
+@pytest.fixture(scope="module")
+def experiment_viewer(seeded: SimpleNamespace) -> SimpleNamespace:
+    """An experiment-mode viewer over the seeded runs/ (in_memory runtime)."""
+    from windtunnel._cli.runtime_discovery import _build_runtime
+    from windtunnel._cli.scenario_discovery import _load_scenario_pack_source
+    from windtunnel._serve.experiment import ExperimentRunner
+    from windtunnel._serve.server import build_server
+
+    runtime = _build_runtime("in_memory", "wt_serve", soul_path=None)
+    experiment = ExperimentRunner(
+        runtime_name="in_memory",
+        runs_dir=seeded.runs_dir,
+        pack_sources=[seeded.pack_source],
+        knob_specs=list(runtime.describe_knobs()),
+    )
+    server = build_server(
+        runs_dir=seeded.runs_dir,
+        packs=[_load_scenario_pack_source(seeded.pack_source)],
+        experiment=experiment,
+        port=0,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.bound_address
+    yield SimpleNamespace(base=f"http://{host}:{port}", runs_dir=seeded.runs_dir)
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=5)
 
 
 class TestServeHelp:
@@ -654,6 +702,130 @@ class TestReadOnlyByConstruction:
         assert self._fingerprint(viewer.runs_dir) == before
 
 
+class TestExperimentAuthPosture:
+    """Without --experiment the server keeps the read-only construction:
+    POST anywhere is the stock 501, and the experiment routes do not exist."""
+
+    def test_post_rerun_is_501_without_experiment(self, viewer: SimpleNamespace) -> None:
+        request = urllib.request.Request(
+            viewer.base + "/api/experiment/rerun", data=b"{}", method="POST"
+        )
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(request, timeout=10)
+        assert excinfo.value.code == 501
+
+    def test_experiment_status_404_without_experiment(self, viewer: SimpleNamespace) -> None:
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(viewer.base + "/api/experiment/status", timeout=10)
+        assert excinfo.value.code == 404
+
+    def test_meta_reports_experiment_off(self, viewer: SimpleNamespace) -> None:
+        assert _get_json(viewer.base, "/api/meta")["experiment"] is False
+
+    def test_serve_experiment_requires_runtime(self) -> None:
+        result = _wt("serve", "--experiment")
+        assert result.returncode == 2
+        assert "--runtime" in result.stderr
+
+
+class TestExperimentMode:
+    def _run_id_for(self, base: str, scenario_id: str) -> str:
+        rows = _get_json(base, "/api/ledger")["rows"]
+        return next(r for r in rows if r["scenario_id"] == scenario_id)["run_ids"][0]
+
+    def _wait_finished(self, base: str, timeout: float = 60.0) -> dict:
+        import time
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            job = _get_json(base, "/api/experiment/status")["job"]
+            if job is not None and not job["running"]:
+                return job
+            time.sleep(0.25)
+        raise AssertionError("rerun did not finish in time")
+
+    def test_meta_declares_the_runtime_knobs(self, experiment_viewer: SimpleNamespace) -> None:
+        meta = _get_json(experiment_viewer.base, "/api/meta")
+        assert meta["experiment"] is True
+        assert meta["runtime"] == "in_memory"
+        assert meta["knobs"]["declared"] is True
+        assert [k["name"] for k in meta["knobs"]["knobs"]] == ["scripted_response"]
+        assert meta["knobs"]["knobs"][0]["kind"] == "text"
+
+    def test_invalid_knob_is_refused_400(self, experiment_viewer: SimpleNamespace) -> None:
+        run_id = self._run_id_for(experiment_viewer.base, "acknowledge_ok")
+        status, payload = _post_json(
+            experiment_viewer.base,
+            "/api/experiment/rerun",
+            {"run_id": run_id, "knobs": {"unlisted": "x"}},
+        )
+        assert status == 400
+        assert "unknown knob" in " ".join(payload["detail"])
+
+    def test_unknown_run_is_404(self, experiment_viewer: SimpleNamespace) -> None:
+        status, _payload = _post_json(
+            experiment_viewer.base, "/api/experiment/rerun", {"run_id": "missing"}
+        )
+        assert status == 404
+
+    def test_rerun_flips_verdict_and_links_back(
+        self, experiment_viewer: SimpleNamespace
+    ) -> None:
+        """The owner's loop, end to end: adjust a knob, rerun exactly that
+        scenario, and the new ledger row (experiment label -> parent run)
+        shows the verdict delta PASS -> FAIL."""
+        base = experiment_viewer.base
+        parent_rows = _get_json(base, "/api/ledger")["rows"]
+        parent = next(r for r in parent_rows if r["scenario_id"] == "acknowledge_ok")
+        assert parent["verdict"] == "PASS"
+        run_id = parent["run_ids"][0]
+
+        status, payload = _post_json(
+            base,
+            "/api/experiment/rerun",
+            {"run_id": run_id, "knobs": {"scripted_response": "that is not an acknowledgement"}},
+        )
+        assert status == 202
+        label = payload["job"]["label"]
+        assert label.startswith(f"exp-{run_id[:8]}-")
+
+        # One in flight at a time: an immediate second request is refused.
+        status2, payload2 = _post_json(
+            base, "/api/experiment/rerun", {"run_id": run_id, "knobs": {}}
+        )
+        if status2 != 409:  # the first rerun may already have finished
+            assert status2 == 202
+        else:
+            assert "in flight" in payload2["error"]
+
+        job = self._wait_finished(base)
+        assert job["returncode"] == 1  # the knobbed response misses the target fact
+
+        rows = _get_json(base, "/api/ledger")["rows"]
+        child = next(r for r in rows if r["label"] == label)
+        assert child["scenario_id"] == "acknowledge_ok"
+        assert (parent["verdict"], child["verdict"]) == ("PASS", "FAIL")
+
+        # SSE progress replays the buffered rerun output and closes with done.
+        response = urllib.request.urlopen(base + "/api/experiment/events", timeout=10)
+        events = []
+        for raw in response:
+            line = raw.decode("utf-8").strip()
+            if line.startswith("data: "):
+                events.append(json.loads(line.removeprefix("data: ")))
+        assert events and events[-1]["done"] is True
+        assert any("acknowledge_ok" in event.get("line", "") for event in events)
+
+    def test_experiment_runs_dir_writes_come_from_the_subprocess_only(
+        self, experiment_viewer: SimpleNamespace
+    ) -> None:
+        """The serve process itself still never writes: after the rerun test,
+        every artifact under runs/ was produced by the wt run subprocess
+        (the ledger's newest row carries the experiment label)."""
+        rows = _get_json(experiment_viewer.base, "/api/ledger")["rows"]
+        assert any(r["label"].startswith("exp-") for r in rows)
+
+
 class TestLiveWatch:
     def test_tail_streams_new_complete_lines_only(self, viewer: SimpleNamespace) -> None:
         log_path = viewer.live_dir / "session.jsonl"
@@ -719,9 +891,11 @@ class TestNoEnvironmentLeak:
         "windtunnel/_serve/__init__.py",
         "windtunnel/_serve/data.py",
         "windtunnel/_serve/evidence.py",
+        "windtunnel/_serve/experiment.py",
         "windtunnel/_serve/server.py",
         "windtunnel/_serve/page.py",
         "tests/test_cli_serve.py",
+        "tests/test_knobs.py",
         "tests/test_matching_spans.py",
         "docs/viewing-runs.md",
     )

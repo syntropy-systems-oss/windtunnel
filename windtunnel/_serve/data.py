@@ -144,6 +144,20 @@ def scenarios_by_id(packs: list[ScenarioPack]) -> dict[str, Scenario]:
     return index
 
 
+def scenario_pack_names(packs: list[ScenarioPack]) -> dict[str, str]:
+    """Map scenario name -> owning pack name (first pack wins, as above).
+
+    The experiment rerun needs the owning pack so its scoped `wt run` can
+    pass --pack and select exactly the definition this viewer displays.
+    """
+    index: dict[str, str] = {}
+    for pack in packs:
+        pack_name = str(getattr(pack, "name", ""))
+        for scenario in getattr(pack, "scenarios", []) or []:
+            index.setdefault(str(getattr(scenario, "name", "")), pack_name)
+    return index
+
+
 def pack_summaries(packs: list[ScenarioPack]) -> list[dict[str, Any]]:
     """Summarize discovered packs for the scenario browser.
 
