@@ -9,6 +9,7 @@
 * **spi:** knob introspection — an optional KnobIntrospectableRuntime capability declares a runtime's adjustable parameters (KnobSpec: text/enum/number/flag) and overrides flow back opaquely through AgentConfig.knobs; wt run gains --knob NAME=VALUE with strict validation against the declaration
 * **serve:** wt serve --experiment — knob panel and scoped scenario reruns from the run screen: a POSTed rerun spawns wt run for exactly that scenario with the overrides, streams progress over SSE, and lands in the ledger under an exp-&lt;parent&gt; label with a before/after verdict delta; without the flag the server stays read-only by construction
 * **serve:** run-screen chronology and illumination — the transcript renders as user message → tool-call trajectory (thought + call + result groups when the trace stores intermediate assistant text) → final output; contract and transcript scroll as independent panes; hovering a must_call/forbidden_calls entry illuminates its matching tool calls (click to lock), driven by server-computed per-call match annotations
+* **serve:** precision illumination and exact-viewport layout — the run view fills header+panes exactly (panes are the only scrollers); illumination marks the exact matched token inside a decorated call name; a server-computed witnessed→transcript mapping lights the claimed call blocks alongside the witnessed list, with an explicit "no matching transcript call" state on divergence; absence checks state their failure on the contract side
 
 
 ### Bug Fixes

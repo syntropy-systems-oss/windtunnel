@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/viewing-runs.md at dce705942770 — do not edit; edit docs/viewing-runs.md. -->
+<!-- GENERATED from docs/viewing-runs.md at 0cd4f15243ad — do not edit; edit docs/viewing-runs.md. -->
 ---
 description: "Task guide for wt serve — the local, read-only web viewer over a runs/ directory: ledger dashboard, run drill-down, scenario browser, and live JSONL tail."
 ---
@@ -42,7 +42,10 @@ artifacts `wt report`, `wt triage`, and `wt rescore` consume — and puts the
 *why* front and center: every failing layer's `detail` string is the
 headline banner.
 
-Below it, two independently scrolling panes: the **scenario contract**
+The run view fills the viewport exactly — header plus panes, no
+page-level scrollbar; the two panes are the only scrollers.
+
+Below the banner, two independently scrolling panes: the **scenario contract**
 (left — user turns, target fact groups, `must_call` / `forbidden_calls`,
 recorded policies, declared perturbations, gate layers, failure cost) stays
 visible while you scroll the **transcript** (right), which renders in
@@ -82,7 +85,15 @@ expectation was met or missed:
   forbidden); clicking locks the highlight so it survives scrolling —
   click again, or another entry, to unlock or switch. The matches are
   computed server-side by the same `tool_name_matches` comparisons the
-  trajectory evaluator uses; a miss stays a contract-side "never called";
+  trajectory evaluator uses, at token precision: the exact canonical name
+  is marked inside a platform-decorated call, not the whole block. When
+  the evidence source is the server's own call log, a server-computed
+  witnessed→transcript mapping (greedy in-order name walk) lights the
+  corresponding claimed call blocks too; a witnessed call the transcript
+  never claimed is labeled "no matching transcript call" rather than
+  silently skipped. A miss is precision too: "never called" carries the
+  definitive red state on the contract side — "no call matched — this is
+  the failure" — because absence has nothing to highlight;
 - the layer chips in the banner jump to their evidence entries within the
   contract pane.
 
