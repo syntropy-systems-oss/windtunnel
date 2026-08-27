@@ -184,6 +184,25 @@ available), and advances automatically after each judgment, so you can
 sit and label continuously — building a preference dataset straight from
 bench artifacts.
 
+The queue also filters by verdict — human annotation complements the
+verifier, it never repeats it: a PASS-vs-FAIL pair is already ranked by
+scoring, so asking a human about it re-does the verifier's job.
+
+- **both-pass** (the default): only pairs where both ledger verdicts are
+  `PASS` — `PASS_WITH_VARIANCE` counts as non-passing here, per the
+  harness's own fail-closed law;
+- **tie-break**: pairs the scoring is fully indifferent between — equal
+  verdict within the passing family (`PASS` or `PASS_WITH_VARIANCE`),
+  equal `pass_rate`, and equal `failure_risk` (the ledger row
+  aggregates, compared exactly — they come from the same arithmetic).
+  Two `PASS` runs always tie; two equal-rate variance arms tie; `PASS`
+  never ties with `PASS_WITH_VARIANCE`. These are the pairs where a
+  human judgment adds maximal information;
+- **all**: no verdict filtering, kept for other annotation uses.
+
+Progress counts reflect the active mode and filter. The compare route
+itself is unfiltered — a deep link can still compare anything.
+
 ## Experiment mode: knobs and scoped reruns
 
 ```bash
