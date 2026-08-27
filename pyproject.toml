@@ -67,6 +67,10 @@ docs = [
     "mkdocs-material>=9.5",
 ]
 dev = [
+    # V8 for executing the wt serve page's JS in tests (render regressions
+    # against real trace shapes, no browser required). Tests importorskip
+    # it, so environments without a wheel still run the rest of the suite.
+    "mini-racer>=0.12",
     "mypy>=1.10",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",

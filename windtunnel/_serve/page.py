@@ -982,6 +982,15 @@ function renderTranscript(trace, ev, score, side = '') {
     return spans.length ? renderHighlighted(content ?? '', spans) : esc(content);
   };
 
+  // System context (per-step traces may record the system turn): not part
+  // of the trajectory — collapsed above the user message.
+  const systemTurns = turns.filter((turn) => turn.role === 'system' && (turn.content || '').trim());
+  if (systemTurns.length) {
+    parts.push('<details><summary class="muted">system context</summary>' +
+      systemTurns.map((turn) => `<div class="turn"><div class="role">system</div>
+        <div class="content">${esc(turn.content)}</div></div>`).join('') + '</details>');
+  }
+
   // (a) the user message(s), chronological.
   const userEntries = turns.map((turn, index) => [turn, index])
     .filter(([turn]) => turn.role === 'user');
@@ -1009,7 +1018,11 @@ function renderTranscript(trace, ev, score, side = '') {
     const results = turn.tool_results || [];
     if (isUser && !calls.length && !results.length) return; // rendered in (a)
     const inner = [];
-    if (!isUser && turn.role !== 'assistant') {
+    if (turn.role === 'system') {
+      // Rendered as system context above — a system prompt is not a step
+      // of the trajectory. (Its calls, if any, still walk the cursor.)
+      if (!calls.length) return;
+    } else if (!isUser && turn.role !== 'assistant') {
       // e.g. a tool-role turn: its content is a result in the trajectory.
       if ((turn.content || '').trim() || calls.length || results.length) {
         inner.push(`<div class="tool-call">${esc(turn.role)}: ${esc(turn.content)}</div>`);
@@ -1062,11 +1075,24 @@ function renderTranscript(trace, ev, score, side = '') {
     }).join(''));
   }
 
-  // (c) the final assistant output, with evidence spans.
+  // (c) the final assistant output, with evidence spans. Always the LAST
+  // assistant turn — the same selection the scorer's answer-turn rule
+  // makes — evidence or no evidence, aggregated or per-step.
   parts.push('<h3 id="final-output">Final output</h3>');
   const finalTurn = answerIndex != null ? turns[answerIndex] : null;
   if (finalTurn == null) {
     parts.push('<div class="muted">no assistant turn recorded</div>');
+  } else if (!(finalTurn.content || '').trim()) {
+    // An empty scored turn must SAY it is empty — a silent blank box reads
+    // as a rendering failure. Explain what the trace shows: the run ended
+    // on a tool call, a runtime error, or genuinely no final text.
+    const why = finalTurn.error
+      ? `the runtime reported an error for this turn: ${esc(finalTurn.error)}`
+      : ((finalTurn.tool_calls || []).length
+          ? 'the run ended on a tool call (see the last trajectory step) with no final text'
+          : 'the trace records no text for it');
+    parts.push(`<div class="turn"><div class="role">assistant · scored turn</div>
+      <div class="content muted">the scored turn is empty — ${why}</div></div>`);
   } else {
     let content;
     if (outcomeEv && answerIndex === outcomeEv.answer_turn_index) {

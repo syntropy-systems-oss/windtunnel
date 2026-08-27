@@ -1028,6 +1028,139 @@ class TestUnifiedIllumination:
         assert "lockedEntries.delete(entry)" in js  # unlock removes one member
 
 
+class TestFinalOutputSelection:
+    """The final-output section must render the LAST assistant turn with the
+    trajectory strictly before it — evidence or no evidence, aggregated or
+    per-step, role:"tool"/"system" turns interleaved or not. Rendering runs
+    in a real JS engine against the page's actual code; the server side runs
+    with NO pack sources (evidence unavailable), the exact path where the
+    fallback selection must hold."""
+
+    @pytest.fixture(scope="class")
+    def js(self):
+        MiniRacer = pytest.importorskip("py_mini_racer").MiniRacer
+        from windtunnel._serve.page import _JS
+
+        ctx = MiniRacer()
+        ctx.eval(
+            "var window = {};"
+            "var document = { querySelector: function(){return null;},"
+            "  querySelectorAll: function(){return [];},"
+            "  getElementById: function(){return null;},"
+            "  addEventListener: function(){},"
+            "  body: {classList: {toggle: function(){}}} };"
+            "var location = { hash: '' }; var history = { back: function(){} };"
+            "var fetch = function(){ return Promise.reject(new Error('offline')); };"
+            "var EventSource = function(){};"
+            "var setInterval = function(){}; var setTimeout = function(){return 0;};"
+            "var clearTimeout = function(){};"
+        )
+        ctx.eval(_JS)
+        return ctx
+
+    def _per_step_trace(self, final_content: str, final_calls: list) -> dict:
+        """A per-step trace in the shape trace writers emit: system + user +
+        assistant steps with interleaved tool-role turns."""
+        return {
+            "run_id": "render-case",
+            "scenario_id": "count_the_orders",
+            "turns": [
+                {"role": "system", "content": "operating notes", "tool_calls": [], "tool_results": []},
+                {"role": "user", "content": "how many units?", "tool_calls": [], "tool_results": []},
+                {"role": "assistant", "content": "",
+                 "tool_calls": [{"id": "c1", "name": "client_lookup", "args": {}},
+                                {"id": "c2", "name": "order_query", "args": {}}],
+                 "tool_results": []},
+                {"role": "tool", "content": "lookup result payload", "tool_calls": [], "tool_results": []},
+                {"role": "tool", "content": "order rows payload", "tool_calls": [], "tool_results": []},
+                {"role": "assistant", "content": "",
+                 "tool_calls": [{"id": "c3", "name": "order_update", "args": {}}],
+                 "tool_results": []},
+                {"role": "tool", "content": "update acknowledged", "tool_calls": [], "tool_results": []},
+                {"role": "assistant", "content": final_content,
+                 "tool_calls": final_calls, "tool_results": []},
+            ],
+            "mcp_calls": [],
+            "worker_warnings": [],
+        }
+
+    def test_no_evidence_final_output_is_the_last_assistant_turn(self, js) -> None:
+        import json as json_module
+
+        trace = self._per_step_trace("the order total is 12 units", [])
+        js.eval(f"var T = {json_module.dumps(trace)};")
+        html = js.eval("renderTranscript(T, null, null)")
+        final_section = html.split("Final output</h3>")[1]
+        assert "the order total is 12 units" in final_section
+        # Trajectory strictly before the final output, and the final text
+        # never leaks into the trajectory as a thought.
+        trajectory_section = html.split("Tool-call trajectory")[1].split("Final output</h3>")[0]
+        assert "client_lookup" in trajectory_section
+        assert "order_update" in trajectory_section
+        assert "the order total is 12 units" not in trajectory_section
+        # The system turn is context above, never a trajectory step.
+        assert 'tool-call">system:' not in html
+        assert "system context" in html
+
+    def test_empty_final_turn_explains_itself(self, js) -> None:
+        """A run that ended mid-loop (last assistant turn: no text, one tool
+        call) must say so — a silent blank box reads as a rendering bug."""
+        import json as json_module
+
+        trace = self._per_step_trace("", [{"id": "c9", "name": "order_query", "args": {}}])
+        js.eval(f"var T = {json_module.dumps(trace)};")
+        html = js.eval("renderTranscript(T, null, null)")
+        final_section = html.split("Final output</h3>")[1]
+        assert "the scored turn is empty" in final_section
+        assert "ended on a tool call" in final_section
+        # Its tool call still renders as the last trajectory step.
+        trajectory_section = html.split("Tool-call trajectory")[1].split("Final output</h3>")[0]
+        assert trajectory_section.count("order_query") == 2  # step 1 + the final call
+
+    def test_errored_final_turn_reports_the_runtime_error(self, js) -> None:
+        import json as json_module
+
+        trace = self._per_step_trace("", [])
+        trace["turns"][-1]["error"] = "inference worker timed out"
+        js.eval(f"var T = {json_module.dumps(trace)};")
+        html = js.eval("renderTranscript(T, null, null)")
+        final_section = html.split("Final output</h3>")[1]
+        assert "inference worker timed out" in final_section
+
+    def test_no_pack_source_server_serves_the_per_step_trace(self, tmp_path: Path) -> None:
+        """Server half of the regression: a per-step trace stored under a
+        runs dir served with NO pack sources — evidence degrades, the raw
+        trace round-trips untouched for the renderer."""
+        import json as json_module
+
+        from windtunnel._serve.server import build_server
+
+        trace = self._per_step_trace("the order total is 12 units", [])
+        trace["run_id"] = "rendercase-full-id"
+        # Filename carries the run_id[:8] prefix, per storage_path convention.
+        trace_path = (tmp_path / "count_the_orders" / "wt-cli" / "exam" / "m" / "q"
+                      / "20260827T000000000000Z_renderca.json")
+        trace_path.parent.mkdir(parents=True)
+        trace_path.write_text(json_module.dumps(trace), encoding="utf-8")
+
+        server = build_server(runs_dir=tmp_path, packs=[], port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            host, port = server.bound_address
+            base = f"http://{host}:{port}"
+            run = _get_json(base, "/api/run/rendercase-full-id")
+            assert [t["role"] for t in run["trace"]["turns"]] == [
+                "system", "user", "assistant", "tool", "tool", "assistant", "tool", "assistant",
+            ]
+            evidence = _get_json(base, "/api/run/rendercase-full-id/evidence")
+            assert evidence["available"] is False  # the exact no-evidence path
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+
 class TestBoundedHeaderRows:
     """The run route pins body to 100vh with the panes as the only
     scrollers, so header rows must NEVER grow with data volume — a large
