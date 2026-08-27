@@ -1217,7 +1217,8 @@ function annotateBar(progress) {
     parts.push('<span class="muted">preference capture is off — start wt serve with --annotate to record judgments</span>');
   }
   if (progress) {
-    parts.push(`<span class="muted">${esc(progress.labeled)} labeled / ${esc(progress.available)} available</span>`);
+    const left = progress.remaining == null ? '' : ` / ${esc(progress.remaining)} left`;
+    parts.push(`<span class="muted">${esc(progress.labeled)} labeled / ${esc(progress.available)} available${left}</span>`);
     parts.push(`<label class="muted">pairs: <select id="queue-mode">` +
       ['both', 'within', 'cross'].map((m) =>
         `<option${(window.QUEUE_MODE || 'both') === m ? ' selected' : ''}>${m}</option>`).join('') +
@@ -1231,6 +1232,13 @@ function annotateBar(progress) {
   return parts.join('');
 }
 
+// Prior judgments are also the duplicate guard. The queue never offers a
+// pair this annotator has settled, but #/compare/<a>/<b> is deep-linkable
+// and the sibling list reaches any pair at all — so if a judgment of mine
+// is already on record for the two runs on screen, the controls go dead
+// rather than inviting a second, contradictory row. Nothing is ever
+// removed from the file to achieve this: the history stays, the button
+// stops.
 async function loadPriorJudgments(runIdA, runIdB) {
   const target = document.getElementById('prior-judgments');
   if (!target) return;
@@ -1238,6 +1246,16 @@ async function loadPriorJudgments(runIdA, runIdB) {
   try { payload = await fetchJSON('/api/annotations?run_id=' + encodeURIComponent(runIdA)); } catch { return; }
   const rows = (payload.rows || []).filter((row) =>
     [row.run_id_a, row.run_id_b].includes(runIdB));
+  const meta = window.META || {};
+  const mine = rows.filter((row) => meta.annotate && row.annotator === meta.annotator);
+  if (mine.length) {
+    ['prefer-a', 'prefer-b', 'prefer-none'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) { el.disabled = true; el.title = 'you already judged this pair'; }
+    });
+    const statusEl = document.getElementById('annotate-status');
+    if (statusEl && !statusEl.textContent) statusEl.textContent = 'already judged by you';
+  }
   if (!rows.length) { target.innerHTML = ''; return; }
   target.innerHTML = '<div class="panel"><div class="group-head"><span class="muted">previously recorded for this pair:</span></div>' +
     rows.map((row) => `<div class="contract-item"><span class="what">${judgmentLine(row, runIdA, runIdB)}</span></div>`).join('') +
@@ -1247,6 +1265,13 @@ async function loadPriorJudgments(runIdA, runIdB) {
 async function submitJudgment(preferred) {
   if (!compareState || !window.META || !window.META.annotate) return;
   const statusEl = document.getElementById('annotate-status');
+  // The keyboard shortcuts reach this directly, so the duplicate guard is
+  // enforced here too, not only by the disabled buttons.
+  const noneButton = document.getElementById('prefer-none');
+  if (noneButton && noneButton.disabled) {
+    if (statusEl) statusEl.textContent = 'already judged by you — nothing recorded';
+    return;
+  }
   let payload;
   try {
     const response = await fetch('/api/annotate', {
@@ -1264,7 +1289,10 @@ async function submitJudgment(preferred) {
     return;
   }
   const said = preferred == null ? 'no preference' : 'prefer ' + preferred.toUpperCase();
-  if (statusEl) statusEl.textContent = `recorded: ${said} ✓`;
+  // `duplicate` on a queue-served pair would mean the queue offered
+  // something it had already retired — surface it rather than hide it.
+  const again = payload.duplicate ? ' (pair judged before)' : '';
+  if (statusEl) statusEl.textContent = `recorded: ${said}${again} ✓`;
   if (compareState.queue) showQueue();
   else loadPriorJudgments(compareState.a, compareState.b);
 }

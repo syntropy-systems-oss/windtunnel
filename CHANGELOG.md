@@ -24,6 +24,7 @@
 
 * **scoring:** a gated outcome layer no longer passes vacuously on an empty scored turn — a blank/whitespace final assistant turn FAILs outcome with an honest detail unless the scenario opts in with allow_empty_answer=True; diagnostic-only (non-gated) outcome keeps the legacy behavior. Traces gain an optional Turn.error marker so runtimes can report "this turn failed inside the platform" instead of smuggling error text into content — a scored turn carrying it makes the run INVALID, never an agent pass or failure
 * **scoring:** score sidecars now record the policies that gated the run (names + effect class) — including policies attached at sweep time by a runtime plugin — so run readers can no longer present a failed constraint layer as "no policies declared"; the run screen prefers this record and degrades to an honest "not recorded" for older sidecars
+* **serve:** the labeling queue no longer reads as one comparison repeating — offers are ordered by coverage (the pair whose runs this annotator has seen least) instead of enumeration order, which pinned one run on the A side for as many rounds as it had siblings; the queue never offers a pair already judged (a no-preference null retires it exactly like a decisive verdict, under every mode and filter), reaching one another way disables the controls, and progress reports how many are left
 
 ## [0.10.2](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.10.1...v0.10.2) (2026-07-18)
 

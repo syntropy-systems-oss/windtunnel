@@ -194,16 +194,38 @@ def pair_key(run_id_a: str, run_id_b: str) -> tuple[str, str]:
     return (run_id_a, run_id_b) if run_id_a <= run_id_b else (run_id_b, run_id_a)
 
 
-def annotated_pair_keys(runs_dir: Path, annotator: str) -> set[tuple[str, str]]:
-    """Pairs this annotator has already judged (order-independent)."""
+def annotator_history(
+    runs_dir: Path, annotator: str
+) -> tuple[set[tuple[str, str]], dict[str, int]]:
+    """One annotator's record: pairs judged, and how often each run was seen.
+
+    EVERY recorded judgment counts, `"a"` and `"b"` and the no-preference
+    `null` alike. "These two are indistinguishable" is an answer, not the
+    absence of one, so a null retires its pair from that annotator's queue
+    exactly like a decisive verdict — asking again would only collect the
+    same shrug twice.
+
+    Read fresh on every call: the store is an append-only file that the
+    annotator is writing to as they label, and a cached view of it would
+    re-offer whatever it had not noticed yet.
+    """
     keys: set[tuple[str, str]] = set()
+    exposure: dict[str, int] = {}
     for row in read_annotations(runs_dir)["rows"]:
         if row.get("annotator") != annotator:
             continue
         run_id_a, run_id_b = row.get("run_id_a"), row.get("run_id_b")
-        if isinstance(run_id_a, str) and isinstance(run_id_b, str):
-            keys.add(pair_key(run_id_a, run_id_b))
-    return keys
+        if not (isinstance(run_id_a, str) and isinstance(run_id_b, str)):
+            continue
+        keys.add(pair_key(run_id_a, run_id_b))
+        for run_id in (run_id_a, run_id_b):
+            exposure[run_id] = exposure.get(run_id, 0) + 1
+    return keys, exposure
+
+
+def annotated_pair_keys(runs_dir: Path, annotator: str) -> set[tuple[str, str]]:
+    """Pairs this annotator has already judged (order-independent)."""
+    return annotator_history(runs_dir, annotator)[0]
 
 
 def next_unlabeled_pair(
@@ -213,19 +235,47 @@ def next_unlabeled_pair(
     mode: PairMode,
     verdict_filter: VerdictFilter = DEFAULT_VERDICT_FILTER,
 ) -> dict[str, Any]:
-    """The queue: first pair this annotator has not judged, plus progress.
+    """The queue: the least-seen pair this annotator has not judged.
+
+    Selection is coverage-first, not enumeration-first. `enumerate_pairs`
+    walks `combinations` index order, which is depth-first: every partner
+    of the first run before the second run is ever offered, and one whole
+    scenario before the next. Served straight down that order the queue
+    pins one run on the A side for as many rounds as it has siblings —
+    and because sampled completions of one passing scenario render alike,
+    that reads as the SAME comparison handed back over and over. The
+    annotator shrugs at it repeatedly instead of labeling anything new.
+
+    So candidates are ordered by how often this annotator has already seen
+    each of the two runs; the enumeration index breaks ties, keeping the
+    choice deterministic. Every judgment moves the queue to runs it has
+    shown least, which spreads offers across arms and scenarios and covers
+    every run once before asking about any run twice.
 
     Progress counts reflect the active mode AND verdict filter.
     """
     pairs = enumerate_pairs(ledger_rows, mode, verdict_filter)
-    done = annotated_pair_keys(runs_dir, annotator)
+    done, exposure = annotator_history(runs_dir, annotator)
     remaining = [
-        (a, b) for a, b in pairs if pair_key(a["run_id"], b["run_id"]) not in done
+        (index, entry_a, entry_b)
+        for index, (entry_a, entry_b) in enumerate(pairs)
+        if pair_key(entry_a["run_id"], entry_b["run_id"]) not in done
     ]
-    progress = {"labeled": len(pairs) - len(remaining), "available": len(pairs)}
+    progress = {
+        "labeled": len(pairs) - len(remaining),
+        "available": len(pairs),
+        "remaining": len(remaining),
+    }
     if not remaining:
         return {"pair": None, "progress": progress}
-    entry_a, entry_b = remaining[0]
+    _, entry_a, entry_b = min(
+        remaining,
+        key=lambda candidate: (
+            exposure.get(candidate[1]["run_id"], 0)
+            + exposure.get(candidate[2]["run_id"], 0),
+            candidate[0],
+        ),
+    )
     return {"pair": {"a": entry_a, "b": entry_b}, "progress": progress}
 
 

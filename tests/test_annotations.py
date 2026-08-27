@@ -20,6 +20,8 @@ from types import SimpleNamespace
 import pytest
 
 from windtunnel._serve.annotate import (
+    PAIR_MODES,
+    VERDICT_FILTERS,
     annotated_pair_keys,
     append_annotation,
     enumerate_pairs,
@@ -127,7 +129,7 @@ class TestVerdictFilters:
 
     def test_progress_reflects_the_active_filter(self, tmp_path: Path) -> None:
         both_pass = next_unlabeled_pair(tmp_path, _VERDICT_ROWS, "reviewer-1", "both")
-        assert both_pass["progress"] == {"labeled": 0, "available": 1}  # default filter
+        assert both_pass["progress"] == {"labeled": 0, "available": 1, "remaining": 1}
         tie = next_unlabeled_pair(tmp_path, _VERDICT_ROWS, "reviewer-1", "both", "tie-break")
         assert tie["progress"]["available"] == 2
         everything = next_unlabeled_pair(tmp_path, _VERDICT_ROWS, "reviewer-1", "both", "all")
@@ -182,7 +184,7 @@ class TestAnnotationStore:
 class TestQueueSkipLogic:
     def test_annotated_pairs_are_skipped_per_annotator(self, tmp_path: Path) -> None:
         first = next_unlabeled_pair(tmp_path, _LEDGER_ROWS, "reviewer-1", "both", "all")
-        assert first["progress"] == {"labeled": 0, "available": 3}
+        assert first["progress"] == {"labeled": 0, "available": 3, "remaining": 3}
         pair = first["pair"]
         # Record the judgment with the pair REVERSED — identity is
         # order-independent, so the queue must still skip it.
@@ -193,13 +195,13 @@ class TestQueueSkipLogic:
             preferred="b", annotator="reviewer-1",
         )
         second = next_unlabeled_pair(tmp_path, _LEDGER_ROWS, "reviewer-1", "both", "all")
-        assert second["progress"] == {"labeled": 1, "available": 3}
+        assert second["progress"] == {"labeled": 1, "available": 3, "remaining": 2}
         assert pair_key(
             second["pair"]["a"]["run_id"], second["pair"]["b"]["run_id"]
         ) != pair_key(pair["a"]["run_id"], pair["b"]["run_id"])
         # A different annotator still sees the pair.
         other = next_unlabeled_pair(tmp_path, _LEDGER_ROWS, "reviewer-2", "both", "all")
-        assert other["progress"] == {"labeled": 0, "available": 3}
+        assert other["progress"] == {"labeled": 0, "available": 3, "remaining": 3}
 
     def test_exhausted_queue_reports_done(self, tmp_path: Path) -> None:
         for a, b in enumerate_pairs(_LEDGER_ROWS, "within"):
@@ -211,7 +213,7 @@ class TestQueueSkipLogic:
             )
         result = next_unlabeled_pair(tmp_path, _LEDGER_ROWS, "reviewer-1", "within")
         assert result["pair"] is None
-        assert result["progress"] == {"labeled": 1, "available": 1}
+        assert result["progress"] == {"labeled": 1, "available": 1, "remaining": 0}
 
     def test_annotated_pair_keys_are_order_independent(self, tmp_path: Path) -> None:
         append_annotation(
@@ -220,6 +222,112 @@ class TestQueueSkipLogic:
         )
         assert annotated_pair_keys(tmp_path, "reviewer-1") == {("run-1", "run-2")}
         assert annotated_pair_keys(tmp_path, "reviewer-2") == set()
+
+
+# The shape a real sweep produces, and the shape the queue got stuck on:
+# one scenario sampled eight times under each of three passing arms — 24
+# sibling runs, 276 both-pass pairs, every one of them a candidate.
+_SWEEP_ROWS = [
+    {
+        "scenario_id": "acknowledge_ok",
+        "label": f"arm-{arm}",
+        "run_ids": [f"run-{arm}{index}" for index in range(8)],
+        "verdict": "PASS", "pass_rate": 1.0, "failure_risk": 0.0,
+        "ts": f"2026-08-27T0{arm}:00:00Z",
+    }
+    for arm in (1, 2, 3)
+]
+
+
+def _judge(runs_dir: Path, pair: dict, preferred: str | None, annotator: str) -> None:
+    """Record one judgment for a pair the queue just served."""
+    append_annotation(
+        runs_dir,
+        scenario_id=pair["a"]["scenario_id"],
+        label_a=pair["a"]["label"], run_id_a=pair["a"]["run_id"],
+        label_b=pair["b"]["label"], run_id_b=pair["b"]["run_id"],
+        preferred=preferred, annotator=annotator,
+    )
+
+
+class TestNoPreferenceRetiresThePair:
+    """A no-preference judgment IS a judgment.
+
+    "These two are indistinguishable" is an answer, not the absence of
+    one, so a null retires the pair from that annotator's queue exactly
+    like a decisive verdict — under every mode and every verdict filter.
+    """
+
+    @pytest.mark.parametrize("verdict_filter", VERDICT_FILTERS)
+    @pytest.mark.parametrize("mode", PAIR_MODES)
+    def test_null_judgment_retires_the_pair(
+        self, tmp_path: Path, mode: str, verdict_filter: str
+    ) -> None:
+        first = next_unlabeled_pair(tmp_path, _SWEEP_ROWS, "reviewer-1", mode, verdict_filter)
+        pair = first["pair"]
+        assert pair is not None, f"{mode}/{verdict_filter} should offer a pair to judge"
+        assert first["progress"]["labeled"] == 0
+        _judge(tmp_path, pair, None, "reviewer-1")
+
+        second = next_unlabeled_pair(tmp_path, _SWEEP_ROWS, "reviewer-1", mode, verdict_filter)
+        assert second["pair"] is not None
+        assert pair_key(
+            second["pair"]["a"]["run_id"], second["pair"]["b"]["run_id"]
+        ) != pair_key(pair["a"]["run_id"], pair["b"]["run_id"])
+        assert second["progress"]["labeled"] == 1
+        assert second["progress"]["remaining"] == first["progress"]["remaining"] - 1
+
+
+class TestQueueAdvances:
+    """The live regression: a labeling session that never moved on.
+
+    An annotator recorded 34 straight no-preference judgments believing the
+    queue kept handing back the same comparison. Each offer was in fact a
+    distinct pair — but every one of the first 23 held the *same run on the
+    A side*, differing only in which sibling sat opposite it. Two passing
+    samples of one scenario render alike, so a queue that walks enumeration
+    order pins one run for as many rounds as it has siblings and reads as
+    one pair repeating. The queue must spread its offers instead.
+    """
+
+    def _drain(self, runs_dir: Path, rounds: int) -> list[tuple[str, str]]:
+        offers: list[tuple[str, str]] = []
+        for _ in range(rounds):
+            result = next_unlabeled_pair(runs_dir, _SWEEP_ROWS, "reviewer-1", "both")
+            pair = result["pair"]
+            assert pair is not None
+            offers.append((pair["a"]["run_id"], pair["b"]["run_id"]))
+            _judge(runs_dir, pair, None, "reviewer-1")
+        return offers
+
+    def test_no_pair_is_ever_offered_twice(self, tmp_path: Path) -> None:
+        offers = self._drain(tmp_path, 34)
+        keys = [pair_key(a, b) for a, b in offers]
+        assert len(set(keys)) == len(keys)  # 34 judgments, 34 distinct pairs
+
+    def test_consecutive_offers_share_no_run(self, tmp_path: Path) -> None:
+        # 24 runs: the first 12 offers should cover every run exactly once
+        # rather than pinning one run on the A side for 23 rounds.
+        offers = self._drain(tmp_path, 12)
+        for (previous_a, previous_b), (next_a, next_b) in zip(offers, offers[1:]):
+            assert {previous_a, previous_b}.isdisjoint({next_a, next_b}), (
+                f"offer {next_a}/{next_b} repeats a run from {previous_a}/{previous_b}"
+            )
+        assert len({run_id for offer in offers for run_id in offer}) == 24
+
+    def test_the_first_cycle_covers_every_arm_evenly(self, tmp_path: Path) -> None:
+        # The stuck queue spent its first 23 rounds inside one run's sibling
+        # list. A coverage-first queue shows every run of every arm once
+        # before it asks about any run a second time.
+        offers = self._drain(tmp_path, 12)
+        arms = sorted(run_id[4] for offer in offers for run_id in offer)
+        assert arms == ["1"] * 8 + ["2"] * 8 + ["3"] * 8
+
+    def test_progress_counts_what_is_left(self, tmp_path: Path) -> None:
+        available = len(enumerate_pairs(_SWEEP_ROWS, "both", "both-pass"))
+        self._drain(tmp_path, 5)
+        progress = next_unlabeled_pair(tmp_path, _SWEEP_ROWS, "reviewer-1", "both")["progress"]
+        assert progress == {"labeled": 5, "available": available, "remaining": available - 5}
 
 
 # ─── HTTP surface ────────────────────────────────────────────────────────────
@@ -328,7 +436,9 @@ class TestAnnotateHttpSurface:
         base = annotate_viewer.base
         default = _get(base, "/api/annotate/queue?mode=both")
         explicit = _get(base, "/api/annotate/queue?mode=both&filter=both-pass")
-        assert default["progress"] == explicit["progress"] == {"labeled": 0, "available": 3}
+        assert default["progress"] == explicit["progress"] == {
+            "labeled": 0, "available": 3, "remaining": 3,
+        }
         # The FAIL-FAIL lookup_total pair appears only without the filter.
         unfiltered = _get(base, "/api/annotate/queue?mode=both&filter=all")
         assert unfiltered["progress"]["available"] == 4
@@ -338,7 +448,7 @@ class TestAnnotateHttpSurface:
     def test_full_labeling_round_trip(self, annotate_viewer: SimpleNamespace) -> None:
         base = annotate_viewer.base
         queue = _get(base, "/api/annotate/queue?mode=both")
-        assert queue["progress"] == {"labeled": 0, "available": 3}
+        assert queue["progress"] == {"labeled": 0, "available": 3, "remaining": 3}
         pair = queue["pair"]
         status, payload = _post(base, "/api/annotate", {
             "run_id_a": pair["a"]["run_id"],
@@ -346,6 +456,7 @@ class TestAnnotateHttpSurface:
             "preferred": "b",
         })
         assert status == 200
+        assert payload["duplicate"] is False  # first judgment of this pair
         annotation = payload["annotation"]
         assert annotation["preferred"] == "b"
         assert annotation["annotator"] == "reviewer-1"
@@ -360,6 +471,48 @@ class TestAnnotateHttpSurface:
         assert after["progress"]["labeled"] == 1
         involving = _get(base, f"/api/annotations?run_id={pair['a']['run_id']}")
         assert involving["rows"][0] == annotation
+
+    def test_duplicate_judgment_appends_but_is_never_offered_again(
+        self, annotate_viewer: SimpleNamespace
+    ) -> None:
+        """The duplicate guard, from both sides.
+
+        A pair this annotator has judged can still be reached — the compare
+        route is deep-linkable and a stale tab still has its buttons — so a
+        second POST is accepted and appended: the store is append-only and
+        history is history. What must not happen is the QUEUE handing that
+        pair back, under any mode or filter.
+        """
+        base = annotate_viewer.base
+        judged = _get(base, "/api/annotations")["rows"][0]  # newest first
+        path = annotate_viewer.runs_dir / "annotations.ndjsonl"
+        before = len(path.read_text().splitlines())
+
+        status, payload = _post(base, "/api/annotate", {
+            # Reversed on purpose: pair identity is order-independent.
+            "run_id_a": judged["run_id_b"],
+            "run_id_b": judged["run_id_a"],
+            "preferred": "a",
+        })
+        assert status == 200
+        assert payload["written"] is True
+        assert payload["duplicate"] is True
+        assert len(path.read_text().splitlines()) == before + 1  # appended, not deduplicated
+
+        settled = {judged["run_id_a"], judged["run_id_b"]}
+        for mode in ("both", "within", "cross"):
+            for verdict_filter in ("both-pass", "tie-break", "all"):
+                queue = _get(base, f"/api/annotate/queue?mode={mode}&filter={verdict_filter}")
+                pair = queue["pair"]
+                if pair is None:
+                    continue
+                assert {pair["a"]["run_id"], pair["b"]["run_id"]} != settled
+
+    def test_queue_reports_how_many_are_left(self, annotate_viewer: SimpleNamespace) -> None:
+        queue = _get(annotate_viewer.base, "/api/annotate/queue?mode=both&filter=all")
+        progress = queue["progress"]
+        assert progress["labeled"] + progress["remaining"] == progress["available"]
+        assert progress["remaining"] > 0 and queue["pair"] is not None
 
     def test_post_validation(self, annotate_viewer: SimpleNamespace) -> None:
         base = annotate_viewer.base

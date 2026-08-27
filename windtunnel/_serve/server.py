@@ -39,16 +39,22 @@ the read-only posture stays: without it, ANY non-GET method gets the stock
 Annotate mode (opt-in via `wt serve --annotate`; same posture rules —
 without it these routes 404 and POST keeps the stock 501 unless
 --experiment enabled it for its own route):
-    GET  /api/annotate/queue      next unlabeled sibling pair for this
+    GET  /api/annotate/queue      next unjudged sibling pair for this
                                   annotator (?mode=within|cross|both,
                                   ?filter=both-pass|tie-break|all —
                                   default both-pass: human annotation
                                   complements the verifier, it never
-                                  repeats it) + progress
+                                  repeats it) + progress (labeled /
+                                  available / remaining)
     POST /api/annotate            {"run_id_a", "run_id_b",
                                   "preferred": "a"|"b"|null} — append one
                                   judgment row to runs/annotations.ndjsonl
-                                  (append-only; runs are never edited)
+                                  (append-only; runs are never edited).
+                                  Replies {"written", "duplicate",
+                                  "annotation"}; `duplicate` marks a pair
+                                  this annotator already judged — the row
+                                  is still appended, but the queue must
+                                  never have offered it
 
 Live tail: generic by design. It watches whatever files match the glob,
 starts at end-of-file for files that already exist, streams each newly
@@ -346,6 +352,15 @@ class _RunViewerHandler(BaseHTTPRequestHandler):
             )
             return
 
+        # A re-judgment of a pair this annotator already settled is appended
+        # like any other row — the store is append-only and history is
+        # history, so nothing here rewrites or drops a line. But the queue
+        # must never have offered this pair, so say so in the response: the
+        # page uses it to disable the controls, and a `duplicate` coming
+        # back from a queue-served pair is a bug worth seeing.
+        duplicate = _annotate.pair_key(run_id_a, run_id_b) in _annotate.annotated_pair_keys(
+            self.server.runs_dir, annotator
+        )
         try:
             record = _annotate.append_annotation(
                 self.server.runs_dir,
@@ -360,7 +375,7 @@ class _RunViewerHandler(BaseHTTPRequestHandler):
         except OSError as exc:
             self._send_json({"error": f"could not append annotation: {exc}"}, status=500)
             return
-        self._send_json({"written": True, "annotation": record})
+        self._send_json({"written": True, "duplicate": duplicate, "annotation": record})
 
     def _handle_rerun(self, experiment: ExperimentRunner) -> None:
         try:

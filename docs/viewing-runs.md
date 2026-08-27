@@ -180,9 +180,33 @@ run screens and the compare view — read tolerantly like the ledger.
 `#/queue` is the fast-labeling loop: the server picks the next sibling
 pair this annotator hasn't judged (within-label pairs, cross-label pairs,
 or both — a selector on the view), shows progress (n labeled / n
-available), and advances automatically after each judgment, so you can
-sit and label continuously — building a preference dataset straight from
-bench artifacts.
+available / n left), and advances automatically after each judgment, so
+you can sit and label continuously — building a preference dataset
+straight from bench artifacts.
+
+Every recorded judgment retires its pair for that annotator, **including
+"no preference"**: "these two are indistinguishable" is an answer, not
+the absence of one, and re-asking would only collect the same shrug
+twice. Pair identity is order-independent, so a pair judged as B-vs-A is
+retired for A-vs-B too.
+
+Offers are ordered by coverage, not by enumeration: the queue serves the
+pair whose two runs it has shown this annotator least often. A sweep
+sampling one scenario eight times per arm produces hundreds of pairs that
+differ only in which sibling sits opposite the same run, and walking them
+in enumeration order pins one run on the A side for as many rounds as it
+has siblings — sampled completions of one passing scenario render alike,
+so that reads as the same comparison handed back over and over. Coverage
+order shows every run once before asking about any run twice, so each
+judgment moves both panes somewhere visibly new. Ties fall back to
+enumeration order, so the queue stays deterministic.
+
+The queue never offers a pair you have already judged. Reaching one
+another way — a `#/compare/<a>/<b>` deep link, a stale tab — disables the
+judgment controls and says so instead. A judgment posted for such a pair
+anyway is still appended: the store is append-only, so a re-judgment is
+recorded as its own row rather than replacing or deduplicating the
+earlier one, and the response flags it as a duplicate.
 
 The queue also filters by verdict — human annotation complements the
 verifier, it never repeats it: a PASS-vs-FAIL pair is already ranked by
