@@ -40,8 +40,11 @@ Annotate mode (opt-in via `wt serve --annotate`; same posture rules —
 without it these routes 404 and POST keeps the stock 501 unless
 --experiment enabled it for its own route):
     GET  /api/annotate/queue      next unlabeled sibling pair for this
-                                  annotator (?mode=within|cross|both) +
-                                  progress
+                                  annotator (?mode=within|cross|both,
+                                  ?filter=both-pass|tie-break|all —
+                                  default both-pass: human annotation
+                                  complements the verifier, it never
+                                  repeats it) + progress
     POST /api/annotate            {"run_id_a", "run_id_b",
                                   "preferred": "a"|"b"|null} — append one
                                   judgment row to runs/annotations.ndjsonl
@@ -215,16 +218,32 @@ class _RunViewerHandler(BaseHTTPRequestHandler):
                 else:
                     query = parse_qs(urlparse(self.path).query)
                     mode = (query.get("mode") or ["both"])[0]
+                    verdict_filter = (
+                        query.get("filter") or [_annotate.DEFAULT_VERDICT_FILTER]
+                    )[0]
                     if mode not in _annotate.PAIR_MODES:
                         self._send_json(
                             {"error": f"mode must be one of {list(_annotate.PAIR_MODES)}"},
+                            status=400,
+                        )
+                    elif verdict_filter not in _annotate.VERDICT_FILTERS:
+                        self._send_json(
+                            {
+                                "error": (
+                                    f"filter must be one of {list(_annotate.VERDICT_FILTERS)}"
+                                )
+                            },
                             status=400,
                         )
                     else:
                         ledger = _data.load_ledger_rows(self.server.runs_dir)
                         self._send_json(
                             _annotate.next_unlabeled_pair(
-                                self.server.runs_dir, ledger["rows"], annotator, mode
+                                self.server.runs_dir,
+                                ledger["rows"],
+                                annotator,
+                                mode,
+                                verdict_filter,
                             )
                         )
             elif path == "/api/experiment/status":

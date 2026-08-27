@@ -75,6 +75,67 @@ class TestPairEnumeration:
         assert sibling_runs(_LEDGER_ROWS, "missing")["siblings"] == []
 
 
+# One scenario across verdict shapes: two PASS samples, a FAIL, two
+# equal-rate PASS_WITH_VARIANCE arms, and one at a different rate.
+_VERDICT_ROWS = [
+    {"scenario_id": "acknowledge_ok", "label": "candidate", "run_ids": ["run-p1", "run-p2"],
+     "verdict": "PASS", "pass_rate": 1.0, "failure_risk": 0.0, "ts": "2026-08-27T01:00:00Z"},
+    {"scenario_id": "acknowledge_ok", "label": "baseline", "run_ids": ["run-f1"],
+     "verdict": "FAIL", "pass_rate": 0.0, "failure_risk": 4.0, "ts": "2026-08-27T02:00:00Z"},
+    {"scenario_id": "acknowledge_ok", "label": "sampled-a", "run_ids": ["run-v1"],
+     "verdict": "PASS_WITH_VARIANCE", "pass_rate": 0.5, "failure_risk": 2.0,
+     "ts": "2026-08-27T03:00:00Z"},
+    {"scenario_id": "acknowledge_ok", "label": "sampled-b", "run_ids": ["run-v2"],
+     "verdict": "PASS_WITH_VARIANCE", "pass_rate": 0.5, "failure_risk": 2.0,
+     "ts": "2026-08-27T04:00:00Z"},
+    {"scenario_id": "acknowledge_ok", "label": "sampled-c", "run_ids": ["run-v3"],
+     "verdict": "PASS_WITH_VARIANCE", "pass_rate": 0.75, "failure_risk": 1.0,
+     "ts": "2026-08-27T05:00:00Z"},
+]
+
+
+class TestVerdictFilters:
+    """Human annotation complements the verifier, it never repeats it: the
+    verdict filters keep already-ranked pairs out of the labeling loop."""
+
+    def _ids(self, pairs) -> set[tuple[str, str]]:
+        return {(a["run_id"], b["run_id"]) for a, b in pairs}
+
+    def test_both_pass_keeps_only_pass_pass_pairs(self) -> None:
+        pairs = enumerate_pairs(_VERDICT_ROWS, "both", "both-pass")
+        assert self._ids(pairs) == {("run-p1", "run-p2")}
+
+    def test_both_pass_treats_variance_as_non_passing(self) -> None:
+        # PASS_WITH_VARIANCE is non-passing here, per the harness's own law:
+        # even a variance-vs-variance pair is excluded from both-pass.
+        pairs = enumerate_pairs(_VERDICT_ROWS, "cross", "both-pass")
+        assert pairs == []
+
+    def test_tie_break_requires_full_aggregate_equality(self) -> None:
+        pairs = enumerate_pairs(_VERDICT_ROWS, "both", "tie-break")
+        assert self._ids(pairs) == {
+            ("run-p1", "run-p2"),   # PASS ties with PASS (1.0 / 0.0)
+            ("run-v1", "run-v2"),   # equal-rate variance arms tie
+        }
+        # run-v3 (different pass_rate/failure_risk) ties with nothing, and
+        # PASS never ties with PASS_WITH_VARIANCE.
+
+    def test_all_is_unfiltered(self) -> None:
+        assert len(enumerate_pairs(_VERDICT_ROWS, "both", "all")) == len(
+            enumerate_pairs(_VERDICT_ROWS, "both")
+        )
+
+    def test_progress_reflects_the_active_filter(self, tmp_path: Path) -> None:
+        both_pass = next_unlabeled_pair(tmp_path, _VERDICT_ROWS, "reviewer-1", "both")
+        assert both_pass["progress"] == {"labeled": 0, "available": 1}  # default filter
+        tie = next_unlabeled_pair(tmp_path, _VERDICT_ROWS, "reviewer-1", "both", "tie-break")
+        assert tie["progress"]["available"] == 2
+        everything = next_unlabeled_pair(tmp_path, _VERDICT_ROWS, "reviewer-1", "both", "all")
+        assert everything["progress"]["available"] == len(
+            enumerate_pairs(_VERDICT_ROWS, "both", "all")
+        )
+
+
 class TestAnnotationStore:
     def test_append_shape_and_read_back(self, tmp_path: Path) -> None:
         record = append_annotation(
@@ -120,7 +181,7 @@ class TestAnnotationStore:
 
 class TestQueueSkipLogic:
     def test_annotated_pairs_are_skipped_per_annotator(self, tmp_path: Path) -> None:
-        first = next_unlabeled_pair(tmp_path, _LEDGER_ROWS, "reviewer-1", "both")
+        first = next_unlabeled_pair(tmp_path, _LEDGER_ROWS, "reviewer-1", "both", "all")
         assert first["progress"] == {"labeled": 0, "available": 3}
         pair = first["pair"]
         # Record the judgment with the pair REVERSED — identity is
@@ -131,13 +192,13 @@ class TestQueueSkipLogic:
             label_b=pair["a"]["label"], run_id_b=pair["a"]["run_id"],
             preferred="b", annotator="reviewer-1",
         )
-        second = next_unlabeled_pair(tmp_path, _LEDGER_ROWS, "reviewer-1", "both")
+        second = next_unlabeled_pair(tmp_path, _LEDGER_ROWS, "reviewer-1", "both", "all")
         assert second["progress"] == {"labeled": 1, "available": 3}
         assert pair_key(
             second["pair"]["a"]["run_id"], second["pair"]["b"]["run_id"]
         ) != pair_key(pair["a"]["run_id"], pair["b"]["run_id"])
         # A different annotator still sees the pair.
-        other = next_unlabeled_pair(tmp_path, _LEDGER_ROWS, "reviewer-2", "both")
+        other = next_unlabeled_pair(tmp_path, _LEDGER_ROWS, "reviewer-2", "both", "all")
         assert other["progress"] == {"labeled": 0, "available": 3}
 
     def test_exhausted_queue_reports_done(self, tmp_path: Path) -> None:
@@ -173,6 +234,7 @@ PACK = ScenarioPack(
     scenarios=[
         Scenario(name="acknowledge_ok", prompt="say ok", target_facts=[["ok"]]),
         Scenario(name="count_the_orders", prompt="say ok", target_facts=[["ok"]]),
+        Scenario(name="lookup_total", prompt="how many units?", target_facts=[["12 units"]]),
     ],
 )
 '''
@@ -191,17 +253,21 @@ def annotate_viewer(tmp_path_factory: pytest.TempPathFactory) -> SimpleNamespace
     pack_path.write_text(_PACK_SOURCE_TEXT, encoding="utf-8")
     pack_source = f"{pack_path}:PACK"
     runs_dir = root / "runs"
-    for scenario, label in (
-        ("acknowledge_ok", "candidate"),
-        ("acknowledge_ok", "candidate"),
-        ("acknowledge_ok", "baseline"),
-        ("count_the_orders", "candidate"),
+    for scenario, label, expected_rc in (
+        ("acknowledge_ok", "candidate", 0),
+        ("acknowledge_ok", "candidate", 0),
+        ("acknowledge_ok", "baseline", 0),
+        ("count_the_orders", "candidate", 0),
+        # A failing sibling pair (the scripted runtime answers "ok"): kept
+        # out of the default queue, visible under filter=all.
+        ("lookup_total", "candidate", 1),
+        ("lookup_total", "candidate", 1),
     ):
         rc = cli.main([
             "run", "--pack-source", pack_source, "--scenario", scenario,
             "--label", label, "--runs-dir", str(runs_dir),
         ])
-        assert rc == 0
+        assert rc == expected_rc
 
     server = build_server(
         runs_dir=runs_dir,
@@ -256,6 +322,19 @@ class TestAnnotateHttpSurface:
         flags = sorted(sib["same_label"] for sib in payload["siblings"])
         assert flags == [False, True]  # one cross-label + one within-label sibling
 
+    def test_queue_defaults_to_both_pass_and_all_widens_it(
+        self, annotate_viewer: SimpleNamespace
+    ) -> None:
+        base = annotate_viewer.base
+        default = _get(base, "/api/annotate/queue?mode=both")
+        explicit = _get(base, "/api/annotate/queue?mode=both&filter=both-pass")
+        assert default["progress"] == explicit["progress"] == {"labeled": 0, "available": 3}
+        # The FAIL-FAIL lookup_total pair appears only without the filter.
+        unfiltered = _get(base, "/api/annotate/queue?mode=both&filter=all")
+        assert unfiltered["progress"]["available"] == 4
+        # The default queue offers only PASS-on-both-sides pairs.
+        assert {default["pair"]["a"]["verdict"], default["pair"]["b"]["verdict"]} == {"PASS"}
+
     def test_full_labeling_round_trip(self, annotate_viewer: SimpleNamespace) -> None:
         base = annotate_viewer.base
         queue = _get(base, "/api/annotate/queue?mode=both")
@@ -301,5 +380,10 @@ class TestAnnotateHttpSurface:
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(
                 annotate_viewer.base + "/api/annotate/queue?mode=sideways", timeout=10
+            )
+        assert excinfo.value.code == 400
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(
+                annotate_viewer.base + "/api/annotate/queue?filter=lenient", timeout=10
             )
         assert excinfo.value.code == 400

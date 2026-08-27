@@ -1222,6 +1222,10 @@ function annotateBar(progress) {
       ['both', 'within', 'cross'].map((m) =>
         `<option${(window.QUEUE_MODE || 'both') === m ? ' selected' : ''}>${m}</option>`).join('') +
       '</select></label>');
+    parts.push(`<label class="muted">verdicts: <select id="queue-filter" title="both-pass: the verifier already ranked mixed pairs — annotate only what it cannot separate">` +
+      ['both-pass', 'tie-break', 'all'].map((f) =>
+        `<option${(window.QUEUE_FILTER || 'both-pass') === f ? ' selected' : ''}>${f}</option>`).join('') +
+      '</select></label>');
   }
   parts.push('<span class="muted" id="annotate-status"></span></div></div><div id="prior-judgments"></div>');
   return parts.join('');
@@ -1316,6 +1320,8 @@ async function showCompare(runIdA, runIdB, opts) {
   wire('prefer-none', null);
   const modeSel = document.getElementById('queue-mode');
   if (modeSel) modeSel.addEventListener('change', () => { window.QUEUE_MODE = modeSel.value; showQueue(); });
+  const filterSel = document.getElementById('queue-filter');
+  if (filterSel) filterSel.addEventListener('change', () => { window.QUEUE_FILTER = filterSel.value; showQueue(); });
   loadPriorJudgments(runIdA, runIdB);
 }
 
@@ -1327,9 +1333,10 @@ async function showQueue() {
     return;
   }
   const mode = window.QUEUE_MODE || 'both';
+  const filter = window.QUEUE_FILTER || 'both-pass';
   let payload;
   try {
-    payload = await fetchJSON('/api/annotate/queue?mode=' + mode);
+    payload = await fetchJSON('/api/annotate/queue?mode=' + mode + '&filter=' + filter);
   } catch (err) {
     container.innerHTML = `<div class="empty">queue unavailable: ${esc(err.message)}</div>`;
     return;
@@ -1341,9 +1348,14 @@ async function showQueue() {
       <span class="muted">${esc(payload.progress.labeled)} labeled / ${esc(payload.progress.available)} available</span>
       <label class="muted">pairs: <select id="queue-mode">` +
       ['both', 'within', 'cross'].map((m) => `<option${mode === m ? ' selected' : ''}>${m}</option>`).join('') +
+      '</select></label>' +
+      `<label class="muted">verdicts: <select id="queue-filter">` +
+      ['both-pass', 'tie-break', 'all'].map((f) => `<option${filter === f ? ' selected' : ''}>${f}</option>`).join('') +
       '</select></label></div></div>';
     const modeSel = document.getElementById('queue-mode');
     if (modeSel) modeSel.addEventListener('change', () => { window.QUEUE_MODE = modeSel.value; showQueue(); });
+    const filterSel = document.getElementById('queue-filter');
+    if (filterSel) filterSel.addEventListener('change', () => { window.QUEUE_FILTER = filterSel.value; showQueue(); });
     return;
   }
   await showCompare(payload.pair.a.run_id, payload.pair.b.run_id,

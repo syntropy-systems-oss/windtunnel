@@ -36,6 +36,25 @@ ANNOTATIONS_FILENAME = "annotations.ndjsonl"
 PairMode = str  # "within" | "cross" | "both"
 PAIR_MODES = ("within", "cross", "both")
 
+# Verdict filters for the labeling queue. Human annotation complements the
+# verifier, it never repeats it: a PASS-vs-FAIL pair is already ranked by
+# scoring, so the queue defaults to pairs the verifier cannot separate.
+#
+#   both-pass: both runs' ledger verdicts are PASS. PASS_WITH_VARIANCE is
+#       non-passing here, per the harness's own fail-closed law.
+#   tie-break: scoring is fully indifferent — equal verdict within the
+#       passing family (PASS or PASS_WITH_VARIANCE), equal pass_rate, and
+#       equal failure_risk (row aggregates; exact equality — the values
+#       come from the same arithmetic). Two PASS runs always tie (1.0 /
+#       0.0); two equal-rate PASS_WITH_VARIANCE arms tie; PASS never ties
+#       with PASS_WITH_VARIANCE. These are the pairs where a human
+#       judgment adds maximal information.
+#   all: no verdict filtering (kept for other annotation uses).
+VerdictFilter = str
+VERDICT_FILTERS = ("both-pass", "tie-break", "all")
+DEFAULT_VERDICT_FILTER = "both-pass"
+_PASSING_FAMILY = ("PASS", "PASS_WITH_VARIANCE")
+
 
 # ─── reading (available everywhere, read-only) ───────────────────────────────
 
@@ -94,6 +113,9 @@ def run_entries(ledger_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "label": row.get("label"),
                     "verdict": row.get("verdict"),
                     "ts": row.get("ts"),
+                    # Row aggregates, carried for the queue's verdict filters.
+                    "pass_rate": row.get("pass_rate"),
+                    "failure_risk": row.get("failure_risk"),
                 }
             )
     return entries
@@ -113,14 +135,37 @@ def sibling_runs(ledger_rows: list[dict[str, Any]], run_id: str) -> dict[str, An
     return {"scenario_id": me["scenario_id"], "label": me["label"], "siblings": siblings}
 
 
+def _passes_verdict_filter(
+    entry_a: dict[str, Any], entry_b: dict[str, Any], verdict_filter: VerdictFilter
+) -> bool:
+    """Apply one queue verdict filter to a candidate pair. See VERDICT_FILTERS."""
+    if verdict_filter == "all":
+        return True
+    if verdict_filter == "both-pass":
+        return bool(entry_a["verdict"] == "PASS" and entry_b["verdict"] == "PASS")
+    # tie-break: scoring fully indifferent between the two runs.
+    return bool(
+        entry_a["verdict"] in _PASSING_FAMILY
+        and entry_a["verdict"] == entry_b["verdict"]
+        and entry_a["pass_rate"] == entry_b["pass_rate"]
+        and entry_a["failure_risk"] == entry_b["failure_risk"]
+    )
+
+
 def enumerate_pairs(
-    ledger_rows: list[dict[str, Any]], mode: PairMode
+    ledger_rows: list[dict[str, Any]],
+    mode: PairMode,
+    verdict_filter: VerdictFilter = "all",
 ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     """Comparable sibling pairs, deterministic order.
 
     within: same scenario_id AND same label (sampled completions of one arm)
     cross:  same scenario_id, different labels (arm-vs-arm comparison)
     both:   the union
+
+    verdict_filter narrows by ledger verdicts (see VERDICT_FILTERS) so the
+    labeling queue can offer only pairs the verifier is indifferent
+    between — human annotation complements scoring, it never repeats it.
     """
     by_scenario: dict[str, list[dict[str, Any]]] = {}
     for entry in run_entries(ledger_rows):
@@ -137,6 +182,8 @@ def enumerate_pairs(
             if mode == "within" and not same_label:
                 continue
             if mode == "cross" and same_label:
+                continue
+            if not _passes_verdict_filter(entry_a, entry_b, verdict_filter):
                 continue
             pairs.append((entry_a, entry_b))
     return pairs
@@ -164,9 +211,13 @@ def next_unlabeled_pair(
     ledger_rows: list[dict[str, Any]],
     annotator: str,
     mode: PairMode,
+    verdict_filter: VerdictFilter = DEFAULT_VERDICT_FILTER,
 ) -> dict[str, Any]:
-    """The queue: first pair this annotator has not judged, plus progress."""
-    pairs = enumerate_pairs(ledger_rows, mode)
+    """The queue: first pair this annotator has not judged, plus progress.
+
+    Progress counts reflect the active mode AND verdict filter.
+    """
+    pairs = enumerate_pairs(ledger_rows, mode, verdict_filter)
     done = annotated_pair_keys(runs_dir, annotator)
     remaining = [
         (a, b) for a, b in pairs if pair_key(a["run_id"], b["run_id"]) not in done
