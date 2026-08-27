@@ -18,6 +18,12 @@ Endpoints:
     GET /api/scenarios  discovered pack/scenario summaries (the test cases)
     GET /api/live       SSE stream tailing JSONL files matching --live-glob
 
+Sibling comparison + recorded-preference display (always available,
+read-only):
+    GET /api/siblings/<id>        runs sharing this run's scenario_id
+    GET /api/annotations[?run_id] recorded preference judgments
+                                  (tolerant parse of annotations.ndjsonl)
+
 Experiment mode (opt-in via `wt serve --experiment`, otherwise absent —
 the read-only posture stays: without it, ANY non-GET method gets the stock
 501, and these routes 404):
@@ -29,6 +35,17 @@ the read-only posture stays: without it, ANY non-GET method gets the stock
                                   time (409 on concurrency); strict knob
                                   validation against the runtime's declared
                                   KnobSpecs (400 on any mismatch)
+
+Annotate mode (opt-in via `wt serve --annotate`; same posture rules —
+without it these routes 404 and POST keeps the stock 501 unless
+--experiment enabled it for its own route):
+    GET  /api/annotate/queue      next unlabeled sibling pair for this
+                                  annotator (?mode=within|cross|both) +
+                                  progress
+    POST /api/annotate            {"run_id_a", "run_id_b",
+                                  "preferred": "a"|"b"|null} — append one
+                                  judgment row to runs/annotations.ndjsonl
+                                  (append-only; runs are never edited)
 
 Live tail: generic by design. It watches whatever files match the glob,
 starts at end-of-file for files that already exist, streams each newly
@@ -45,8 +62,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
+from windtunnel._serve import annotate as _annotate
 from windtunnel._serve import data as _data
 from windtunnel._serve.experiment import ExperimentRunner
 from windtunnel._serve.page import PAGE_HTML
@@ -71,6 +89,7 @@ class RunViewerServer(ThreadingHTTPServer):
         live_glob: str | None,
         wt_version: str,
         experiment: ExperimentRunner | None,
+        annotator: str | None,
     ) -> None:
         super().__init__(address, _RunViewerHandler)
         self.runs_dir = Path(runs_dir)
@@ -80,6 +99,9 @@ class RunViewerServer(ThreadingHTTPServer):
         self.live_glob = live_glob
         self.wt_version = wt_version
         self.experiment = experiment
+        # None = annotate mode off (the default). A string enables the
+        # preference-capture surface and names its judgments.
+        self.annotator = annotator
 
     @property
     def bound_address(self) -> tuple[str, int]:
@@ -98,6 +120,7 @@ def build_server(
     port: int = 8686,
     wt_version: str = "unknown",
     experiment: ExperimentRunner | None = None,
+    annotator: str | None = None,
 ) -> RunViewerServer:
     """Bind the run viewer. port=0 asks the OS for an ephemeral port.
 
@@ -106,7 +129,7 @@ def build_server(
     invocation. Runs/ artifacts, by contrast, are re-read on every request so
     the dashboard follows a sweep that is writing right now.
 
-    experiment: None (the default) keeps the server read-only by
+    experiment/annotator: None (the defaults) keep the server read-only by
     construction — do_POST refuses everything with the stock 501.
     """
     pack_data = _data.pack_summaries(packs)
@@ -121,6 +144,7 @@ def build_server(
         live_glob=live_glob,
         wt_version=wt_version,
         experiment=experiment,
+        annotator=annotator,
     )
 
 
@@ -150,6 +174,8 @@ class _RunViewerHandler(BaseHTTPRequestHandler):
                         "experiment": experiment is not None,
                         "runtime": experiment.runtime_name if experiment else None,
                         "knobs": experiment.knobs_payload() if experiment else None,
+                        "annotate": self.server.annotator is not None,
+                        "annotator": self.server.annotator,
                     }
                 )
             elif path == "/api/ledger":
@@ -168,6 +194,39 @@ class _RunViewerHandler(BaseHTTPRequestHandler):
                 self._send_json({"packs": self.server.pack_data})
             elif path == "/api/live":
                 self._stream_live()
+            elif path.startswith("/api/siblings/"):
+                run_id = path.removeprefix("/api/siblings/")
+                ledger = _data.load_ledger_rows(self.server.runs_dir)
+                self._send_json(_annotate.sibling_runs(ledger["rows"], run_id))
+            elif path == "/api/annotations":
+                query = parse_qs(urlparse(self.path).query)
+                run_id_values = query.get("run_id") or []
+                run_id_filter = run_id_values[0] if run_id_values else None
+                self._send_json(
+                    _annotate.read_annotations(self.server.runs_dir, run_id_filter)
+                )
+            elif path == "/api/annotate/queue":
+                annotator = self.server.annotator
+                if annotator is None:
+                    self._send_json(
+                        {"error": "annotate mode is off; start wt serve with --annotate"},
+                        status=404,
+                    )
+                else:
+                    query = parse_qs(urlparse(self.path).query)
+                    mode = (query.get("mode") or ["both"])[0]
+                    if mode not in _annotate.PAIR_MODES:
+                        self._send_json(
+                            {"error": f"mode must be one of {list(_annotate.PAIR_MODES)}"},
+                            status=400,
+                        )
+                    else:
+                        ledger = _data.load_ledger_rows(self.server.runs_dir)
+                        self._send_json(
+                            _annotate.next_unlabeled_pair(
+                                self.server.runs_dir, ledger["rows"], annotator, mode
+                            )
+                        )
             elif path == "/api/experiment/status":
                 experiment = self.server.experiment
                 if experiment is None:
@@ -185,24 +244,104 @@ class _RunViewerHandler(BaseHTTPRequestHandler):
             pass  # client went away mid-response; nothing to clean up
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler naming
-        """POST exists ONLY in experiment mode, and only for one route.
+        """POST exists ONLY for the opt-in surfaces, each behind its flag.
 
-        Without --experiment the posture is identical to not implementing
-        POST at all: the stock 501 for every path, so the default server
-        remains read-only by construction.
+        With neither --experiment nor --annotate the posture is identical
+        to not implementing POST at all: the stock 501 for every path, so
+        the default server remains read-only by construction. With one
+        flag on, the other flag's route still 404s with a hint.
         """
         experiment = self.server.experiment
-        if experiment is None:
+        annotator = self.server.annotator
+        if experiment is None and annotator is None:
             self.send_error(501, "Unsupported method ('POST')")
             return
         path = urlparse(self.path).path
         try:
             if path == "/api/experiment/rerun":
-                self._handle_rerun(experiment)
+                if experiment is None:
+                    self._send_json(
+                        {"error": "experiment mode is off; start wt serve with --experiment"},
+                        status=404,
+                    )
+                else:
+                    self._handle_rerun(experiment)
+            elif path == "/api/annotate":
+                if annotator is None:
+                    self._send_json(
+                        {"error": "annotate mode is off; start wt serve with --annotate"},
+                        status=404,
+                    )
+                else:
+                    self._handle_annotate(annotator)
             else:
                 self._send_json({"error": "not found"}, status=404)
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+    def _handle_annotate(self, annotator: str) -> None:
+        """Append one preference judgment. The annotate surface's only write."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, json.JSONDecodeError):
+            self._send_json({"error": "request body must be a JSON object"}, status=400)
+            return
+        if not isinstance(body, dict):
+            self._send_json({"error": "request body must be a JSON object"}, status=400)
+            return
+        run_id_a = body.get("run_id_a")
+        run_id_b = body.get("run_id_b")
+        preferred = body.get("preferred")
+        if not isinstance(run_id_a, str) or not isinstance(run_id_b, str):
+            self._send_json({"error": "run_id_a and run_id_b are required"}, status=400)
+            return
+        if run_id_a == run_id_b:
+            self._send_json({"error": "a run cannot be compared with itself"}, status=400)
+            return
+        if preferred not in ("a", "b", None):
+            self._send_json({"error": 'preferred must be "a", "b", or null'}, status=400)
+            return
+
+        # Identity fields come from the STORED traces, never from the client.
+        sides: dict[str, dict[str, str]] = {}
+        for side, run_id in (("a", run_id_a), ("b", run_id_b)):
+            trace_path = _data.resolve_run_path(self.server.runs_dir, run_id)
+            if trace_path is None:
+                self._send_json(
+                    {"error": f"no stored trace for run_id {run_id!r}"}, status=404
+                )
+                return
+            try:
+                trace_data = json.loads(trace_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                self._send_json({"error": "trace could not be read"}, status=500)
+                return
+            sides[side] = {
+                "scenario_id": str(trace_data.get("scenario_id")),
+                "label": str(trace_data.get("variant_id")),
+            }
+        if sides["a"]["scenario_id"] != sides["b"]["scenario_id"]:
+            self._send_json(
+                {"error": "runs are not siblings (different scenario_id)"}, status=400
+            )
+            return
+
+        try:
+            record = _annotate.append_annotation(
+                self.server.runs_dir,
+                scenario_id=sides["a"]["scenario_id"],
+                label_a=sides["a"]["label"],
+                run_id_a=run_id_a,
+                label_b=sides["b"]["label"],
+                run_id_b=run_id_b,
+                preferred=preferred,
+                annotator=annotator,
+            )
+        except OSError as exc:
+            self._send_json({"error": f"could not append annotation: {exc}"}, status=500)
+            return
+        self._send_json({"written": True, "annotation": record})
 
     def _handle_rerun(self, experiment: ExperimentRunner) -> None:
         try:

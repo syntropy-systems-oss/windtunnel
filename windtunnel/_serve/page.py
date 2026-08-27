@@ -94,6 +94,10 @@ body.run-view #app { height: 100vh; display: flex; flex-direction: column; }
 body.run-view #run-screen { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 body.run-view #run-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 #run-columns { display: grid; grid-template-columns: minmax(280px, 5fr) minmax(320px, 7fr); gap: 1rem; align-items: stretch; flex: 1; min-height: 0; }
+#run-columns.compare { grid-template-columns: minmax(230px, 3fr) minmax(260px, 4.5fr) minmax(260px, 4.5fr); }
+.dual-word { font-family: var(--mono); font-size: 0.75rem; white-space: nowrap; }
+.dual-word .ok { color: var(--pass-fg); }
+.dual-word .no { color: var(--fail-fg); }
 #run-columns > .pane { overflow-y: auto; min-height: 0; margin-bottom: 0.5rem; }
 @media (max-width: 900px) {
   body.run-view { overflow: auto; height: auto; }
@@ -162,14 +166,20 @@ async function fetchJSON(url) {
 
 // ── routing ──────────────────────────────────────────────────────────────────
 function route() {
-  const match = location.hash.match(/^#\\/run\\/([A-Za-z0-9_-]+)$/);
+  const runMatch = location.hash.match(/^#\\/run\\/([A-Za-z0-9_-]+)$/);
+  const compareMatch = location.hash.match(/^#\\/compare\\/([A-Za-z0-9_-]+)\\/([A-Za-z0-9_-]+)$/);
+  const queueMatch = location.hash === '#/queue';
+  const active = !!(runMatch || compareMatch || queueMatch);
   const runScreen = $('#run-screen');
   const main = $('#main-screen');
-  document.body.classList.toggle('run-view', !!match);
-  if (match) {
+  document.body.classList.toggle('run-view', active);
+  if (!compareMatch && !queueMatch) compareState = null;
+  if (active) {
     main.style.display = 'none';
     runScreen.style.display = 'flex';
-    showRun(match[1]);
+    if (runMatch) showRun(runMatch[1]);
+    else if (compareMatch) showCompare(compareMatch[1], compareMatch[2], {});
+    else showQueue();
   } else {
     runScreen.style.display = 'none';
     main.style.display = 'block';
@@ -275,6 +285,47 @@ async function showRun(runId) {
     }
   }));
   wireIllumination(container);
+  loadSiblingStrip(runId);
+  loadRunAnnotations(runId);
+}
+
+async function loadSiblingStrip(runId) {
+  const target = document.getElementById('siblings-strip');
+  if (!target) return;
+  let payload;
+  try { payload = await fetchJSON('/api/siblings/' + encodeURIComponent(runId)); } catch { return; }
+  const siblings = payload.siblings || [];
+  if (!siblings.length) return;
+  target.innerHTML = `<div class="panel"><div class="group-head">
+    <span class="muted">compare with sibling:</span>` +
+    siblings.map((sib) =>
+      `<a class="tagchip" href="#/compare/${esc(runId)}/${esc(sib.run_id)}">` +
+      `↔ ${esc(sib.label)} · ${esc(sib.run_id.slice(0, 8))} ${esc(sib.verdict ?? '')}` +
+      `${sib.same_label ? '' : ' <span class="muted">(cross-arm)</span>'}</a>`).join(' ') +
+    '</div></div>';
+}
+
+function judgmentLine(row, runIdA, runIdB) {
+  // Render one recorded judgment relative to the (optional) current A/B order.
+  let side = row.preferred == null ? 'no preference' : 'preferred ' + row.preferred.toUpperCase();
+  if (runIdA && runIdB && row.run_id_a === runIdB && row.run_id_b === runIdA && row.preferred != null) {
+    side = 'preferred ' + (row.preferred === 'a' ? 'B' : 'A'); // reversed pair
+  }
+  return `${esc(row.annotator ?? '')}: ${esc(side)} <span class="muted">${esc(row.ts ?? '')}` +
+    ` · ${esc(row.label_a ?? '')} ${esc((row.run_id_a ?? '').slice(0, 8))} vs ` +
+    `${esc(row.label_b ?? '')} ${esc((row.run_id_b ?? '').slice(0, 8))}</span>`;
+}
+
+async function loadRunAnnotations(runId) {
+  const target = document.getElementById('run-annotations');
+  if (!target) return;
+  let payload;
+  try { payload = await fetchJSON('/api/annotations?run_id=' + encodeURIComponent(runId)); } catch { return; }
+  const rows = payload.rows || [];
+  if (!rows.length) return;
+  target.innerHTML = `<div class="panel"><div class="group-head"><span class="muted">recorded preferences involving this run:</span></div>` +
+    rows.map((row) => `<div class="contract-item"><span class="what">${judgmentLine(row)}</span></div>`).join('') +
+    '</div>';
 }
 
 function verdictWord(good, goodText, badText) {
@@ -360,6 +411,7 @@ function renderRunScreen(runId, run, evidencePayload, row) {
   window.RUN_TRAJ = available ? ev.trajectory : null;
 
   parts.push(renderLineage(runId, row));
+  parts.push('<div id="siblings-strip"></div><div id="run-annotations"></div>');
   parts.push('<div id="run-columns">');
   parts.push('<div class="panel pane">' + renderContract(scenario, ev, score) +
     renderExperimentPanel(runId) + '</div>');
@@ -403,6 +455,13 @@ function illumSelectors(entry) {
   // Directly-claimed targets (mapped observation anchors).
   (entry.dataset.claimTargets || '').split(',').filter(Boolean).forEach((index) => {
     selectors.push(`[data-claim="${index}"]`);
+  });
+  // Unified pre-resolved tokens (the compare view): o:<obs> c:<claim> m:<mark>.
+  (entry.dataset.sel || '').split(' ').filter(Boolean).forEach((token) => {
+    const value = token.slice(2);
+    if (token.startsWith('o:')) selectors.push(`[data-obs="${value}"]`);
+    else if (token.startsWith('c:')) selectors.push(`[data-claim="${value}"]`);
+    else if (token.startsWith('m:')) selectors.push(`[data-mark="${value}"]`);
   });
   return selectors;
 }
@@ -869,7 +928,7 @@ function claimedDetailMap(trajEv) {
 // turn's content renders as a thought beside its calls; the scored turn's
 // content renders LAST, as the final output, after the trajectory it
 // produced.
-function renderTranscript(trace, ev, score) {
+function renderTranscript(trace, ev, score, side = '') {
   const outcomeEv = ev ? ev.outcome : null;
   const trajEv = ev ? ev.trajectory : null;
   const turns = trace.turns || [];
@@ -935,8 +994,8 @@ function renderTranscript(trace, ev, score) {
       const obsIndex = (source === 'transcript') ? claimIndex : null;
       const detail = callDetailFor(trajEv, obsIndex) ??
         (claimIndex != null ? claimedByIndex.get(claimIndex) ?? null : null);
-      const attrs = (claimIndex != null ? ` data-claim="${claimIndex}"` : '') +
-        (obsIndex != null ? ` data-obs="${obsIndex}"` : '');
+      const attrs = (claimIndex != null ? ` data-claim="${side}${claimIndex}"` : '') +
+        (obsIndex != null ? ` data-obs="${side}${obsIndex}"` : '');
       // Neutral at rest: status lives on the contract side; color arrives
       // only as .illum-* from hover/lock.
       inner.push(`<div class="tool-call"${attrs}>tool_call ${renderCallName(name, detail)}(${esc(args)})</div>`);
@@ -956,7 +1015,7 @@ function renderTranscript(trace, ev, score) {
     parts.push('<h3>Witnessed at the mock server</h3>' + witnessed.map((call, index) => {
       const obsIndex = source === 'server-witnessed' ? index : null;
       const detail = callDetailFor(trajEv, obsIndex);
-      const obsAttr = obsIndex != null ? ` data-obs="${obsIndex}"` : '';
+      const obsAttr = obsIndex != null ? ` data-obs="${side}${obsIndex}"` : '';
       // Honest divergence indicator: the server saw this call but no
       // transcript call maps to it (count/name divergence) — say so
       // rather than silently illuminating nothing on the claimed side.
@@ -1004,6 +1063,291 @@ function renderTranscript(trace, ev, score) {
     parts.push(`<div class="muted">warnings: ${esc(trace.worker_warnings.join(' | '))}</div>`);
   }
   return parts.join('');
+}
+
+// ── compare view + preference annotation ─────────────────────────────────────
+// Runs sharing a scenario_id are siblings (same task, sampled completions);
+// #/compare/<a>/<b> renders two transcript panes beside one shared contract
+// whose entries illuminate BOTH panes (side-prefixed call tokens, shared
+// span-mark tokens). With --annotate, prefer-left/right/none appends one
+// NDJSON judgment row; #/queue serves the next unlabeled pair.
+let compareState = null;
+
+function callSelTokens(trajEv, indices, sideKey) {
+  const tokens = [];
+  if (!trajEv) return tokens;
+  for (const index of indices || []) {
+    tokens.push('o:' + sideKey + index);
+    const map = trajEv.transcript_call_map;
+    if (map && map[index] && map[index].transcript_index != null) {
+      tokens.push('c:' + sideKey + map[index].transcript_index);
+    }
+  }
+  return tokens;
+}
+function selAttrs(tokens, hl) {
+  if (!tokens.length) return null;
+  return {cls: 'contract-hover',
+          attrs: `data-sel="${tokens.join(' ')}" data-hl="${hl}" title="hover to highlight in both transcripts; click to lock"`};
+}
+function compareItem(dual, what, extra) {
+  const cls = (extra && extra.cls) ? ' ' + extra.cls : '';
+  const attrs = (extra && extra.attrs) ? ' ' + extra.attrs : '';
+  const lockBox = cls.includes('contract-hover')
+    ? '<input type="checkbox" class="lock-box" tabindex="-1" title="lock this highlight">' : '';
+  return `<div class="contract-item${cls}"${attrs}>` + lockBox + dual +
+    `<span class="what">${what}</span></div>`;
+}
+function dualWord(goodA, goodB) {
+  const mark = (good) => good == null ? '·' : (good ? '<span class="ok">✓</span>' : '<span class="no">✗</span>');
+  return `<span class="dual-word">A ${mark(goodA)} B ${mark(goodB)}</span> `;
+}
+
+function renderCompareContract(scenario, sideA, sideB) {
+  if (!scenario) return '<h2>Scenario contract</h2><div class="empty">scenario definition unavailable</div>';
+  const parts = [`<h2>Scenario contract</h2>
+    <div class="group-head"><span class="label">${esc(scenario.name)}</span></div>`];
+  const userTurns = (scenario.user_turns && scenario.user_turns.length)
+    ? scenario.user_turns : [scenario.scored_prompt ?? scenario.prompt ?? ''];
+  parts.push('<h3>User turns</h3>' + userTurns.map((turn) =>
+    `<div class="contract-item"><span class="what">${esc(turn)}</span></div>`).join(''));
+
+  const outA = sideA.ev ? sideA.ev.outcome : null;
+  const outB = sideB.ev ? sideB.ev.outcome : null;
+  const groups = scenario.target_facts || [];
+  if (groups.length) {
+    parts.push('<h3>Target facts</h3>' + groups.map((group, index) => {
+      const infoA = outA && outA.fact_groups[index];
+      const infoB = outB && outB.fact_groups[index];
+      const anySpans = (infoA && infoA.spans.length) || (infoB && infoB.spans.length);
+      return compareItem(dualWord(infoA ? infoA.matched : null, infoB ? infoB.matched : null),
+        group.map((fact) => esc(fact)).join(' | '),
+        anySpans ? selAttrs(['m:fg' + index], 'good') : null);
+    }).join(''));
+  }
+  const numbers = scenario.target_numbers || [];
+  if (numbers.length) {
+    parts.push('<h3>Target numbers</h3>' + numbers.map((number, index) => {
+      const infoA = outA && outA.numbers[index];
+      const infoB = outB && outB.numbers[index];
+      const anySpans = (infoA && infoA.span) || (infoB && infoB.span);
+      return compareItem(dualWord(infoA ? infoA.matched : null, infoB ? infoB.matched : null),
+        esc(number.value + (number.unit ? ' ' + number.unit : '')),
+        anySpans ? selAttrs(['m:num' + index], 'good') : null);
+    }).join(''));
+  }
+  const forbiddenFacts = scenario.forbidden_facts || [];
+  if (forbiddenFacts.length) {
+    parts.push('<h3>Forbidden facts</h3>' + forbiddenFacts.map((fact, index) => {
+      const infoA = outA && outA.forbidden_facts[index];
+      const infoB = outB && outB.forbidden_facts[index];
+      const anySpans = (infoA && infoA.spans.length) || (infoB && infoB.spans.length);
+      return compareItem(dualWord(infoA ? !infoA.asserted : null, infoB ? !infoB.asserted : null),
+        esc(fact), anySpans ? selAttrs(['m:ff' + index], 'bad') : null);
+    }).join(''));
+  }
+
+  const trajA = sideA.ev ? sideA.ev.trajectory : null;
+  const trajB = sideB.ev ? sideB.ev.trajectory : null;
+  const mustCall = scenario.must_call || [];
+  const forbiddenCalls = scenario.forbidden_calls || [];
+  if (mustCall.length || forbiddenCalls.length) {
+    parts.push('<h3>Trajectory</h3>');
+    parts.push(mustCall.map((entry, index) => {
+      const infoA = trajA && trajA.must_call[index];
+      const infoB = trajB && trajB.must_call[index];
+      const tokens = [
+        ...callSelTokens(trajA, infoA ? infoA.matched_calls : [], 'a.'),
+        ...callSelTokens(trajB, infoB ? infoB.matched_calls : [], 'b.'),
+      ];
+      return compareItem(dualWord(infoA ? infoA.satisfied : null, infoB ? infoB.satisfied : null),
+        'must call ' + esc(Array.isArray(entry) ? entry.join(' | ') : entry),
+        selAttrs(tokens, 'good'));
+    }).join(''));
+    parts.push(forbiddenCalls.map((name, index) => {
+      const infoA = trajA && trajA.forbidden_calls[index];
+      const infoB = trajB && trajB.forbidden_calls[index];
+      const tokens = [
+        ...callSelTokens(trajA, infoA ? infoA.offending_calls : [], 'a.'),
+        ...callSelTokens(trajB, infoB ? infoB.offending_calls : [], 'b.'),
+      ];
+      return compareItem(dualWord(infoA ? !infoA.violated : null, infoB ? !infoB.violated : null),
+        'never call ' + esc(name), selAttrs(tokens, 'bad'));
+    }).join(''));
+  }
+
+  // Policies: recorded list (sidecar truth) with per-side anchor union.
+  const recorded = (sideA.score && sideA.score.scenario && sideA.score.scenario.policies)
+    || (sideB.score && sideB.score.scenario && sideB.score.scenario.policies) || [];
+  if (recorded.length) {
+    const polA = sideA.ev ? sideA.ev.constraint.policies : [];
+    const polB = sideB.ev ? sideB.ev.constraint.policies : [];
+    const violated = (side, name) => !!(side.score && side.score.constraint &&
+      side.score.constraint.passed === false && (side.score.constraint.detail || '').includes(`'${name}'`));
+    parts.push('<h3>Policies</h3>' + recorded.map((policy) => {
+      const evIndexA = polA.findIndex((entry) => entry.name === policy.name);
+      const evIndexB = polB.findIndex((entry) => entry.name === policy.name);
+      const tokens = [];
+      for (const [entries, evIndex, traj, key] of [[polA, evIndexA, trajA, 'a.'], [polB, evIndexB, trajB, 'b.']]) {
+        const entry = evIndex >= 0 ? entries[evIndex] : null;
+        if (!entry) continue;
+        tokens.push(...callSelTokens(traj, (entry.call_anchors || []).map((a) => a.call_index), key));
+        (entry.observation_anchors || []).filter((a) => a.claim_index != null)
+          .forEach((a) => tokens.push('c:' + key + a.claim_index));
+        if ((entry.span_anchors || []).length) tokens.push('m:pol' + evIndex);
+      }
+      const bad = violated(sideA, policy.name) || violated(sideB, policy.name);
+      return compareItem(dualWord(sideA.score ? !violated(sideA, policy.name) : null,
+                                  sideB.score ? !violated(sideB, policy.name) : null),
+        esc(policy.name), selAttrs(tokens, bad ? 'bad' : 'good'));
+    }).join(''));
+  }
+  return parts.join('');
+}
+
+function annotateBar(progress) {
+  const meta = window.META || {};
+  const parts = ['<div class="panel" id="annotate-bar"><div class="group-head">'];
+  if (meta.annotate) {
+    parts.push(`<button class="plain" id="prefer-a">◀ prefer A <span class="muted">(a)</span></button>
+      <button class="plain" id="prefer-none">no preference <span class="muted">(n)</span></button>
+      <button class="plain" id="prefer-b">prefer B <span class="muted">(d)</span> ▶</button>
+      <span class="muted">annotating as ${esc(meta.annotator)}</span>`);
+  } else {
+    parts.push('<span class="muted">preference capture is off — start wt serve with --annotate to record judgments</span>');
+  }
+  if (progress) {
+    parts.push(`<span class="muted">${esc(progress.labeled)} labeled / ${esc(progress.available)} available</span>`);
+    parts.push(`<label class="muted">pairs: <select id="queue-mode">` +
+      ['both', 'within', 'cross'].map((m) =>
+        `<option${(window.QUEUE_MODE || 'both') === m ? ' selected' : ''}>${m}</option>`).join('') +
+      '</select></label>');
+  }
+  parts.push('<span class="muted" id="annotate-status"></span></div></div><div id="prior-judgments"></div>');
+  return parts.join('');
+}
+
+async function loadPriorJudgments(runIdA, runIdB) {
+  const target = document.getElementById('prior-judgments');
+  if (!target) return;
+  let payload;
+  try { payload = await fetchJSON('/api/annotations?run_id=' + encodeURIComponent(runIdA)); } catch { return; }
+  const rows = (payload.rows || []).filter((row) =>
+    [row.run_id_a, row.run_id_b].includes(runIdB));
+  if (!rows.length) { target.innerHTML = ''; return; }
+  target.innerHTML = '<div class="panel"><div class="group-head"><span class="muted">previously recorded for this pair:</span></div>' +
+    rows.map((row) => `<div class="contract-item"><span class="what">${judgmentLine(row, runIdA, runIdB)}</span></div>`).join('') +
+    '</div>';
+}
+
+async function submitJudgment(preferred) {
+  if (!compareState || !window.META || !window.META.annotate) return;
+  const statusEl = document.getElementById('annotate-status');
+  let payload;
+  try {
+    const response = await fetch('/api/annotate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({run_id_a: compareState.a, run_id_b: compareState.b, preferred}),
+    });
+    payload = await response.json();
+    if (!response.ok) {
+      if (statusEl) statusEl.textContent = 'refused: ' + (payload.error || response.status);
+      return;
+    }
+  } catch (err) {
+    if (statusEl) statusEl.textContent = 'failed: ' + err.message;
+    return;
+  }
+  const said = preferred == null ? 'no preference' : 'prefer ' + preferred.toUpperCase();
+  if (statusEl) statusEl.textContent = `recorded: ${said} ✓`;
+  if (compareState.queue) showQueue();
+  else loadPriorJudgments(compareState.a, compareState.b);
+}
+
+async function showCompare(runIdA, runIdB, opts) {
+  compareState = {a: runIdA, b: runIdB, queue: !!opts.queue};
+  const container = $('#run-content');
+  container.innerHTML = '<div class="empty">loading comparison…</div>';
+  let runA, runB;
+  try {
+    [runA, runB] = await Promise.all([
+      fetchJSON('/api/run/' + encodeURIComponent(runIdA)),
+      fetchJSON('/api/run/' + encodeURIComponent(runIdB)),
+    ]);
+  } catch (err) {
+    container.innerHTML = `<div class="empty">could not load comparison: ${esc(err.message)}</div>`;
+    return;
+  }
+  let evA = null;
+  let evB = null;
+  try { evA = await fetchJSON('/api/run/' + encodeURIComponent(runIdA) + '/evidence'); } catch { /* opaque */ }
+  try { evB = await fetchJSON('/api/run/' + encodeURIComponent(runIdB) + '/evidence'); } catch { /* opaque */ }
+  const sideA = {run: runA, score: runA.score, ev: (evA && evA.available) ? evA.evidence : null};
+  const sideB = {run: runB, score: runB.score, ev: (evB && evB.available) ? evB.evidence : null};
+  const scenario = (evA && evA.available) ? evA.scenario
+    : ((evB && evB.available) ? evB.scenario : (runA.score ? runA.score.scenario : null));
+
+  const chipFor = (side) => side.score ? chip(side.score.verdict) : '';
+  const back = compareState.queue ? '' : `<button class="plain" onclick="history.back()">← back</button>`;
+  const parts = [`<div class="group-head">
+    ${back}
+    <span class="label">${esc(runA.trace.scenario_id ?? '')}</span>
+    <span class="mono">A: ${esc(runA.trace.variant_id ?? '')} ${esc(runIdA.slice(0, 8))}</span> ${chipFor(sideA)}
+    <span class="muted">vs</span>
+    <span class="mono">B: ${esc(runB.trace.variant_id ?? '')} ${esc(runIdB.slice(0, 8))}</span> ${chipFor(sideB)}
+    <a class="tagchip" href="#/run/${esc(runIdA)}">open A</a>
+    <a class="tagchip" href="#/run/${esc(runIdB)}">open B</a>
+  </div>`];
+  parts.push(annotateBar(opts.progress || null));
+  parts.push('<div id="run-columns" class="compare">');
+  parts.push('<div class="panel pane">' + renderCompareContract(scenario, sideA, sideB) + '</div>');
+  parts.push('<div class="panel pane"><h2>Run A</h2>' + renderTranscript(runA.trace, sideA.ev, runA.score, 'a.') + '</div>');
+  parts.push('<div class="panel pane"><h2>Run B</h2>' + renderTranscript(runB.trace, sideB.ev, runB.score, 'b.') + '</div>');
+  parts.push('</div>');
+  container.innerHTML = parts.join('');
+  wireIllumination(container);
+  const wire = (id, preferred) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('click', () => submitJudgment(preferred));
+  };
+  wire('prefer-a', 'a');
+  wire('prefer-b', 'b');
+  wire('prefer-none', null);
+  const modeSel = document.getElementById('queue-mode');
+  if (modeSel) modeSel.addEventListener('change', () => { window.QUEUE_MODE = modeSel.value; showQueue(); });
+  loadPriorJudgments(runIdA, runIdB);
+}
+
+async function showQueue() {
+  compareState = null;
+  const container = $('#run-content');
+  if (!window.META || !window.META.annotate) {
+    container.innerHTML = '<div class="empty">the labeling queue requires wt serve --annotate</div>';
+    return;
+  }
+  const mode = window.QUEUE_MODE || 'both';
+  let payload;
+  try {
+    payload = await fetchJSON('/api/annotate/queue?mode=' + mode);
+  } catch (err) {
+    container.innerHTML = `<div class="empty">queue unavailable: ${esc(err.message)}</div>`;
+    return;
+  }
+  if (!payload.pair) {
+    container.innerHTML = `<div class="panel"><div class="group-head">
+      <button class="plain" onclick="location.hash='#/'">← runs</button>
+      <span class="label">all pairs labeled</span>
+      <span class="muted">${esc(payload.progress.labeled)} labeled / ${esc(payload.progress.available)} available</span>
+      <label class="muted">pairs: <select id="queue-mode">` +
+      ['both', 'within', 'cross'].map((m) => `<option${mode === m ? ' selected' : ''}>${m}</option>`).join('') +
+      '</select></label></div></div>';
+    const modeSel = document.getElementById('queue-mode');
+    if (modeSel) modeSel.addEventListener('change', () => { window.QUEUE_MODE = modeSel.value; showQueue(); });
+    return;
+  }
+  await showCompare(payload.pair.a.run_id, payload.pair.b.run_id,
+    {queue: true, progress: payload.progress});
 }
 
 // ── scenario browser ─────────────────────────────────────────────────────────
@@ -1107,6 +1451,15 @@ function appendLive(file, line) {
 async function boot() {
   document.querySelectorAll('nav button').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
   window.addEventListener('hashchange', route);
+  // Fast labeling: a / ArrowLeft = prefer A, d / ArrowRight = prefer B,
+  // n = no preference — active only on the compare/queue routes.
+  document.addEventListener('keydown', (event) => {
+    if (!compareState || !window.META || !window.META.annotate) return;
+    if (/input|textarea|select/i.test(event.target.tagName)) return;
+    if (event.key === 'a' || event.key === 'ArrowLeft') submitJudgment('a');
+    else if (event.key === 'd' || event.key === 'ArrowRight') submitJudgment('b');
+    else if (event.key === 'n') submitJudgment(null);
+  });
   try {
     window.META = await fetchJSON('/api/meta');
     $('#meta').textContent = `runs: ${window.META.runs_dir} · wind tunnel ${window.META.wt_version}`;

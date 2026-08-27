@@ -17,7 +17,7 @@ Subcommands:
     wt triage   [--runs DIR] [--classifier rule_based]
     wt serve    [--runs-dir DIR] [--port PORT] [--host HOST]
                 [--pack-source SOURCE]... [--live-glob PATTERN]
-                [--experiment --runtime RUNTIME]
+                [--experiment --runtime RUNTIME] [--annotate --annotator NAME]
     wt skill    path | install [--dest DIR] [--copy]
 
 Design: argparse (stdlib) — no click dependency. Each subcommand is a
@@ -1430,6 +1430,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             port=args.port,
             wt_version=_wt_version(),
             experiment=experiment,
+            annotator=args.annotator if args.annotate else None,
         )
     except OSError as exc:
         print(f"wt serve: could not bind {args.host}:{args.port}: {exc}", file=sys.stderr)
@@ -1445,9 +1446,16 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             f"runtime {args.runtime!r}.",
             file=sys.stderr,
         )
-        print("wt serve: Ctrl-C to stop.", file=sys.stderr)
-    else:
+    if args.annotate:
+        print(
+            f"wt serve: ANNOTATE MODE — preference judgments append to "
+            f"{runs_dir / 'annotations.ndjsonl'} as {args.annotator!r}.",
+            file=sys.stderr,
+        )
+    if experiment is None and not args.annotate:
         print("wt serve: read-only — Ctrl-C to stop.", file=sys.stderr)
+    else:
+        print("wt serve: Ctrl-C to stop.", file=sys.stderr)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -2078,6 +2086,21 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="RUNTIME",
         help="Runtime for --experiment reruns and knob introspection. "
         "Resolved exactly like `wt run --runtime`.",
+    )
+    serve_p.add_argument(
+        "--annotate",
+        action="store_true",
+        help="Enable preference capture on the compare view: judgments "
+        "append to <runs-dir>/annotations.ndjsonl (append-only; runs "
+        "are never edited). Off by default — without it the viewer "
+        "shows recorded annotations but accepts none.",
+    )
+    serve_p.add_argument(
+        "--annotator",
+        default="anonymous",
+        metavar="NAME",
+        help="Name recorded on annotations and used to skip pairs you "
+        "have already judged (default: anonymous).",
     )
 
     # ── skill ────────────────────────────────────────────────────────────────

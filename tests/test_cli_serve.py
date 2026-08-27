@@ -1080,6 +1080,40 @@ class TestExperimentAuthPosture:
         assert result.returncode == 2
         assert "--runtime" in result.stderr
 
+    def test_post_annotate_is_501_without_any_flag(self, viewer: SimpleNamespace) -> None:
+        request = urllib.request.Request(
+            viewer.base + "/api/annotate", data=b"{}", method="POST"
+        )
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(request, timeout=10)
+        assert excinfo.value.code == 501
+
+    def test_annotate_queue_404_without_annotate(self, viewer: SimpleNamespace) -> None:
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(viewer.base + "/api/annotate/queue", timeout=10)
+        assert excinfo.value.code == 404
+
+    def test_meta_reports_annotate_off(self, viewer: SimpleNamespace) -> None:
+        assert _get_json(viewer.base, "/api/meta")["annotate"] is False
+
+    def test_sibling_and_annotation_reads_stay_available(
+        self, viewer: SimpleNamespace
+    ) -> None:
+        rows = _get_json(viewer.base, "/api/ledger")["rows"]
+        run_id = rows[0]["run_ids"][0]
+        payload = _get_json(viewer.base, f"/api/siblings/{run_id}")
+        assert "siblings" in payload  # read-only display needs no flag
+        assert _get_json(viewer.base, "/api/annotations") == {"rows": [], "skipped": 0}
+
+    def test_post_annotate_404_on_experiment_only_server(
+        self, experiment_viewer: SimpleNamespace
+    ) -> None:
+        status, payload = _post_json(
+            experiment_viewer.base, "/api/annotate", {"run_id_a": "x", "run_id_b": "y"}
+        )
+        assert status == 404
+        assert "--annotate" in payload["error"]
+
 
 class TestExperimentMode:
     def _run_id_for(self, base: str, scenario_id: str) -> str:
@@ -1243,11 +1277,13 @@ class TestNoEnvironmentLeak:
     _NEW_FILES = (
         "windtunnel/_serve/__init__.py",
         "windtunnel/_serve/data.py",
+        "windtunnel/_serve/annotate.py",
         "windtunnel/_serve/evidence.py",
         "windtunnel/_serve/experiment.py",
         "windtunnel/_serve/server.py",
         "windtunnel/_serve/page.py",
         "tests/test_cli_serve.py",
+        "tests/test_annotations.py",
         "tests/test_knobs.py",
         "tests/test_matching_spans.py",
         "tests/test_policy_evidence.py",
