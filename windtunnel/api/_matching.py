@@ -67,24 +67,66 @@ def match_fact_group_spans(text: str, group: list[str]) -> list[tuple[str, TextS
     return [(fact, span) for fact in group for span in find_fact_spans(text, fact)]
 
 
-def match_number_fact_span(answer: str, fact: NumberFact) -> TextSpan | None:
-    """Span variant of match_number_fact — same regex, same unit window.
+# Digit-grouping separators stripped from between digits before numeric
+# matching: the comma ("16,991") and the thin/narrow-no-break spaces some
+# locales group with. A separator is removed ONLY when both neighbors are
+# digits — "12, 991" is a list, not a grouped number, and stays two tokens.
+_GROUPING_SEPARATORS = (",", " ", " ")
 
-    Returns the span of the first word-boundary occurrence of the value
-    exactly when ``match_number_fact(answer, fact)`` is True: like the
-    boolean matcher, only the FIRST occurrence's ±30-character window is
-    checked for the unit, so a later occurrence near the unit does not
-    rescue a first occurrence that lacks it.
+
+def _digit_grouping_view(text: str) -> tuple[str, list[int]]:
+    """Return (normalized view, view index -> original index map).
+
+    The view removes grouping separators between digits so "16,991"
+    becomes "16991"; every kept character remembers its original offset,
+    letting span results map back to the ORIGINAL text. For text without
+    grouped digits the view is the text itself (identity map), so
+    ungrouped behavior is byte-identical to the pre-normalization matcher.
     """
+    chars: list[str] = []
+    index_map: list[int] = []
+    for index, char in enumerate(text):
+        if (
+            char in _GROUPING_SEPARATORS
+            and 0 < index < len(text) - 1
+            and text[index - 1].isdigit()
+            and text[index + 1].isdigit()
+        ):
+            continue
+        chars.append(char)
+        index_map.append(index)
+    return "".join(chars), index_map
+
+
+def match_number_fact_span(answer: str, fact: NumberFact) -> TextSpan | None:
+    """Span variant of match_number_fact — one algorithm for both.
+
+    The word-boundary search runs against the digit-grouping-normalized
+    view of the answer, so a correct answer written as "16,991 units"
+    matches NumberFact(16991) — while the boundary semantics still hold in
+    that view: 1699 does not match inside "16,991" (the digits merge into
+    one token, and a digit neighbor is not a boundary). The returned span
+    maps back to the ORIGINAL text and covers the grouped digits as
+    written. Like always, only the FIRST occurrence's ±30-character unit
+    window (measured in the original text, case-insensitive word-boundary
+    unit search) is checked, so a later occurrence near the unit does not
+    rescue a first occurrence that lacks it.
+
+    ``match_number_fact`` is bool() of this function — one algorithm
+    serves the verdict and the evidence, so they cannot drift.
+    """
+    view, index_map = _digit_grouping_view(answer)
     pattern = rf"\b{re.escape(str(fact.value))}\b"
-    match = re.search(pattern, answer)
+    match = re.search(pattern, view)
     if not match:
         return None
-    span = TextSpan(start=match.start(), end=match.end())
+    start = index_map[match.start()]
+    end = index_map[match.end() - 1] + 1
+    span = TextSpan(start=start, end=end)
     if fact.unit is None:
         return span
-    window_start = max(0, match.start() - 30)
-    window_end = min(len(answer), match.end() + 30)
+    window_start = max(0, start - 30)
+    window_end = min(len(answer), end + 30)
     unit_pattern = rf"\b{re.escape(fact.unit)}\b"
     if re.search(unit_pattern, answer[window_start:window_end], re.IGNORECASE):
         return span
@@ -181,17 +223,16 @@ def has_tool_calls(trace: Trace) -> bool:
 
 
 def match_number_fact(answer: str, fact: NumberFact) -> bool:
-    """Match a numeric fact with word boundaries and optional unit proximity."""
-    pattern = rf"\b{re.escape(str(fact.value))}\b"
-    match = re.search(pattern, answer)
-    if not match:
-        return False
-    if fact.unit is None:
-        return True
-    window_start = max(0, match.start() - 30)
-    window_end = min(len(answer), match.end() + 30)
-    unit_pattern = rf"\b{re.escape(fact.unit)}\b"
-    return bool(re.search(unit_pattern, answer[window_start:window_end], re.IGNORECASE))
+    """Match a numeric fact with word boundaries and optional unit proximity.
+
+    Matching runs against a digit-grouping-normalized view of the answer
+    (commas/thin spaces removed between digits), so "16,991 units" matches
+    NumberFact(16991) while the word-boundary guarantees survive — 1699
+    still does not match inside "16,991". This delegates to
+    match_number_fact_span: one algorithm serves the boolean verdict and
+    the evidence spans, so they cannot drift.
+    """
+    return match_number_fact_span(answer, fact) is not None
 
 
 def match_fact_group(text: str, group: list[str]) -> bool:

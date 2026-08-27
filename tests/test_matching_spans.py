@@ -133,6 +133,65 @@ class TestNumberFactSpanEquivalence:
         assert match_number_fact_span("Module B003CCC.", NumberFact(3)) is None
 
 
+class TestDigitGroupingNumbers:
+    """Numeric matching normalizes digit grouping: a correct answer written
+    as "16,991 units" satisfies NumberFact(16991), while the word-boundary
+    guarantees survive in the normalized view — grouping must never create
+    a match the boundaries previously prevented."""
+
+    def test_comma_grouped_number_matches(self) -> None:
+        answer = "There are 16,991 units in the shipment."
+        fact = NumberFact(value=16991, unit="units")
+        assert match_number_fact(answer, fact) is True
+        span = match_number_fact_span(answer, fact)
+        assert span is not None
+        # The span maps back to the ORIGINAL text, covering the grouped digits.
+        assert answer[span.start:span.end] == "16,991"
+
+    def test_thin_space_grouping_matches(self) -> None:
+        answer = "total: 16 991 units"
+        assert match_number_fact(answer, NumberFact(16991, "units")) is True
+        span = match_number_fact_span(answer, NumberFact(16991, "units"))
+        assert answer[span.start:span.end] == "16 991"
+
+    def test_grouping_never_defeats_word_boundaries(self) -> None:
+        # The digits of "16,991" merge into ONE token: no sub-number of it
+        # may match — exactly the guarantee \b gave on ungrouped text.
+        for value in (1699, 6991, 991, 1, 16):
+            assert match_number_fact("count: 16,991", NumberFact(value)) is False
+            assert match_number_fact_span("count: 16,991", NumberFact(value)) is None
+
+    def test_year_style_numbers_behave_as_before(self) -> None:
+        assert match_number_fact("delivered in 2026-05", NumberFact(2026)) is True
+        assert match_number_fact("the total is 2,026", NumberFact(2026)) is True
+        assert match_number_fact("order-3001 shipped", NumberFact(3001)) is True
+        assert match_number_fact("Module B003CCC.", NumberFact(3)) is False
+
+    def test_comma_followed_by_space_is_a_list_not_grouping(self) -> None:
+        # "12, 991" is two numbers; the separator is stripped only when BOTH
+        # neighbors are digits.
+        assert match_number_fact("counts: 12, 991", NumberFact(12991)) is False
+        assert match_number_fact("counts: 12, 991", NumberFact(12)) is True
+        assert match_number_fact("counts: 12, 991", NumberFact(991)) is True
+
+    def test_unit_window_is_measured_in_the_original_text(self) -> None:
+        # Unit ~40 original characters past the grouped span: outside the
+        # ±30 window, exactly as it would be for an ungrouped number.
+        answer = "count 16,991 " + ("x" * 40) + " units"
+        assert match_number_fact(answer, NumberFact(16991, "units")) is False
+        assert match_number_fact(answer, NumberFact(16991)) is True
+
+    def test_boolean_is_the_span_scanner(self) -> None:
+        """One algorithm for verdict and evidence — pinned structurally,
+        like the forbidden-facts gate."""
+        import inspect
+
+        from windtunnel.api import _matching
+
+        source = inspect.getsource(_matching.match_number_fact)
+        assert "match_number_fact_span" in source
+
+
 class TestForbiddenSpanEquivalence:
     _FORBIDDEN_LISTS = [
         ["3"],

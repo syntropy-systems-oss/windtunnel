@@ -74,6 +74,11 @@ class NumberFact:
     unit: when specified, evaluator also checks that the number appears
     within 30 characters of the unit string in the answer. This tightens the
     check without requiring exact "3 units" phrasing.
+
+    Matching runs against a digit-grouping-normalized view of the answer
+    (commas/thin spaces between digits removed), so an answer written as
+    "16,991 units" satisfies NumberFact(16991) — while the word boundary
+    still prevents 1699 from matching inside "16,991".
     """
     value: int
     unit: str | None = None
