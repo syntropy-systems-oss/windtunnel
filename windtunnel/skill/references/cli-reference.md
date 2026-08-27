@@ -1,9 +1,9 @@
-<!-- GENERATED from docs/cli-reference.md at 81ead83598a1 — do not edit; edit docs/cli-reference.md. -->
+<!-- GENERATED from docs/cli-reference.md at de457618381e — do not edit; edit docs/cli-reference.md. -->
 ---
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at cccd4f2ecc57 — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at 3070d4b66438 — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
 The `wt` command ships 13 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
@@ -318,7 +318,7 @@ Host a local, read-only web viewer over a runs/ directory.
 Usage:
 
 ```bash
-wt serve [-h] [--runs-dir DIR] [--port PORT] [--host HOST] [--pack-source SOURCE] [--live-glob PATTERN] [--experiment] [--runtime RUNTIME]
+wt serve [-h] [--runs-dir DIR] [--port PORT] [--host HOST] [--pack-source SOURCE] [--live-glob PATTERN] [--experiment] [--runtime RUNTIME] [--annotate] [--annotator NAME]
 ```
 
 Arguments and options:
@@ -332,6 +332,8 @@ Arguments and options:
 | `--live-glob` | no |  | Tail JSONL files matching this glob and stream newly appended lines to the viewer's Live tab. Generic by design: point it at whatever JSONL your runtime writes. |
 | `--experiment` | no | false | Enable scoped scenario reruns from the run screen: the runtime's declared knobs become adjustable and a rerun spawns `wt run` for exactly that scenario with the overrides. Off by default — without it the server is read-only by construction. Requires --runtime. |
 | `--runtime` | no |  | Runtime for --experiment reruns and knob introspection. Resolved exactly like `wt run --runtime`. |
+| `--annotate` | no | false | Enable preference capture on the compare view: judgments append to <runs-dir>/annotations.ndjsonl (append-only; runs are never edited). Off by default — without it the viewer shows recorded annotations but accepts none. |
+| `--annotator` | no | anonymous | Name recorded on annotations and used to skip pairs you have already judged (default: anonymous). |
 
 ## `wt skill`
 

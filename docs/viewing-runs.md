@@ -146,6 +146,44 @@ surface the pack declares. The tool listing is best-effort and honest:
 `wt serve` never starts a mock server, so a server that only knows its tools
 once started reports that instead of a fabricated listing.
 
+## Comparing runs and recording preferences
+
+Runs that share a `scenario_id` are **siblings** — the same task, sampled
+completions. Same label = the same arm; different labels = different arms
+(a cross-arm comparison). The run screen lists a run's siblings
+("compare with sibling"), and `#/compare/<run_id_a>/<run_id_b>` is
+deep-linkable: two transcript panes side by side beneath one shared
+scenario contract whose entries illuminate **both** panes (the same
+hover/lock model as the run screen; A/B dual status per entry).
+
+```bash
+wt serve --annotate --annotator reviewer-1
+```
+
+`--annotate` (off by default) adds preference capture to the compare
+view: **prefer A / no preference / prefer B** — keyboard `a`/`←`,
+`n`, `d`/`→` for fast labeling. Each judgment appends one NDJSON row to
+`<runs-dir>/annotations.ndjsonl`:
+
+```json
+{"ts": "…", "scenario_id": "…", "label_a": "…", "run_id_a": "…",
+ "label_b": "…", "run_id_b": "…", "preferred": "a" | "b" | null,
+ "annotator": "reviewer-1"}
+```
+
+Append-only, beside the ledger — runs are never edited, and identity
+fields come from the stored traces, not the client. Without the flag the
+server keeps its read-only posture (the control is hidden and the write
+endpoint refuses); recorded annotations still *display* everywhere — on
+run screens and the compare view — read tolerantly like the ledger.
+
+`#/queue` is the fast-labeling loop: the server picks the next sibling
+pair this annotator hasn't judged (within-label pairs, cross-label pairs,
+or both — a selector on the view), shows progress (n labeled / n
+available), and advances automatically after each judgment, so you can
+sit and label continuously — building a preference dataset straight from
+bench artifacts.
+
 ## Experiment mode: knobs and scoped reruns
 
 ```bash
