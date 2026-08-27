@@ -121,6 +121,16 @@ mark.ev-mark.illum-bad { background: var(--hl-bad-bg); color: var(--hl-bad-fg); 
 /* Lock-set affordance: a checkbox per interactive entry, subtle at rest. */
 .lock-box { accent-color: var(--accent); margin-right: 0.25rem; opacity: 0.45; cursor: pointer; }
 .contract-hover:hover .lock-box, .contract-hover.locked .lock-box { opacity: 1; }
+/* Header rows on the run route must NEVER starve the panes (the panes are
+   the only scrollers): the sibling strip is one bounded row whose full
+   listing opens as an absolutely-positioned overlay dropdown — it never
+   grows the page flow, whatever the sibling count. */
+.strip-panel { position: relative; padding: 0.4rem 1rem; }
+.strip-row { display: flex; gap: 0.4rem; align-items: baseline; flex-wrap: nowrap; overflow: hidden; white-space: nowrap; }
+.strip-dropdown { position: absolute; top: 100%; left: 0; right: 0; z-index: 20; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 18px color-mix(in srgb, var(--text) 18%, transparent); padding: 0.6rem 1rem; max-height: 45vh; overflow-y: auto; }
+.strip-dropdown .strip-group { margin: 0.25rem 0; }
+/* Recorded-judgment lists are capped the same way: bounded box, inner scroll. */
+.capped-list { max-height: 8rem; overflow-y: auto; }
 /* Affordance honesty: entries with no transcript anchor are visibly
    non-interactive — dimmed, no pointer, no hover ring. */
 .contract-item.no-anchor { opacity: 0.72; }
@@ -289,6 +299,11 @@ async function showRun(runId) {
   loadRunAnnotations(runId);
 }
 
+function siblingChip(runId, sib) {
+  return `<a class="tagchip" href="#/compare/${esc(runId)}/${esc(sib.run_id)}">` +
+    `↔ ${esc(sib.label)} · ${esc(sib.run_id.slice(0, 8))} ${esc(sib.verdict ?? '')}</a>`;
+}
+
 async function loadSiblingStrip(runId) {
   const target = document.getElementById('siblings-strip');
   if (!target) return;
@@ -296,13 +311,33 @@ async function loadSiblingStrip(runId) {
   try { payload = await fetchJSON('/api/siblings/' + encodeURIComponent(runId)); } catch { return; }
   const siblings = payload.siblings || [];
   if (!siblings.length) return;
-  target.innerHTML = `<div class="panel"><div class="group-head">
-    <span class="muted">compare with sibling:</span>` +
-    siblings.map((sib) =>
-      `<a class="tagchip" href="#/compare/${esc(runId)}/${esc(sib.run_id)}">` +
-      `↔ ${esc(sib.label)} · ${esc(sib.run_id.slice(0, 8))} ${esc(sib.verdict ?? '')}` +
-      `${sib.same_label ? '' : ' <span class="muted">(cross-arm)</span>'}</a>`).join(' ') +
-    '</div></div>';
+  // Bounded affordance: ONE row (count + a few chips); the full listing,
+  // grouped by arm, opens as an overlay dropdown that scrolls internally —
+  // header height stays fixed no matter how many siblings exist.
+  const preview = siblings.slice(0, 3).map((sib) => siblingChip(runId, sib)).join(' ');
+  const groups = new Map();
+  for (const sib of siblings) {
+    const key = sib.same_label ? `same arm (${sib.label})` : sib.label;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(sib);
+  }
+  const dropdown = [...groups.entries()].map(([label, members]) =>
+    `<div class="strip-group"><span class="muted">${esc(label)}:</span> ` +
+    members.map((sib) => siblingChip(runId, sib)).join(' ') + '</div>').join('');
+  target.innerHTML = `<div class="panel strip-panel">
+    <div class="strip-row">
+      <button class="plain" id="sibling-toggle">↔ compare: ${siblings.length} sibling${siblings.length === 1 ? '' : 's'}</button>
+      ${preview}${siblings.length > 3 ? ' <span class="muted">…</span>' : ''}
+    </div>
+    <div class="strip-dropdown" id="sibling-dropdown" style="display:none">${dropdown}</div>
+  </div>`;
+  const toggle = document.getElementById('sibling-toggle');
+  const panel = document.getElementById('sibling-dropdown');
+  if (toggle && panel) {
+    toggle.addEventListener('click', () => {
+      panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    });
+  }
 }
 
 function judgmentLine(row, runIdA, runIdB) {
@@ -323,9 +358,9 @@ async function loadRunAnnotations(runId) {
   try { payload = await fetchJSON('/api/annotations?run_id=' + encodeURIComponent(runId)); } catch { return; }
   const rows = payload.rows || [];
   if (!rows.length) return;
-  target.innerHTML = `<div class="panel"><div class="group-head"><span class="muted">recorded preferences involving this run:</span></div>` +
+  target.innerHTML = `<div class="panel strip-panel"><div class="group-head"><span class="muted">recorded preferences involving this run (${rows.length}):</span></div><div class="capped-list">` +
     rows.map((row) => `<div class="contract-item"><span class="what">${judgmentLine(row)}</span></div>`).join('') +
-    '</div>';
+    '</div></div>';
 }
 
 function verdictWord(good, goodText, badText) {
@@ -1257,9 +1292,9 @@ async function loadPriorJudgments(runIdA, runIdB) {
     if (statusEl && !statusEl.textContent) statusEl.textContent = 'already judged by you';
   }
   if (!rows.length) { target.innerHTML = ''; return; }
-  target.innerHTML = '<div class="panel"><div class="group-head"><span class="muted">previously recorded for this pair:</span></div>' +
+  target.innerHTML = '<div class="panel strip-panel"><div class="group-head"><span class="muted">previously recorded for this pair:</span></div><div class="capped-list">' +
     rows.map((row) => `<div class="contract-item"><span class="what">${judgmentLine(row, runIdA, runIdB)}</span></div>`).join('') +
-    '</div>';
+    '</div></div>';
 }
 
 async function submitJudgment(preferred) {

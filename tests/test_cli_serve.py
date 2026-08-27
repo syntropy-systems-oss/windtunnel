@@ -1028,6 +1028,39 @@ class TestUnifiedIllumination:
         assert "lockedEntries.delete(entry)" in js  # unlock removes one member
 
 
+class TestBoundedHeaderRows:
+    """The run route pins body to 100vh with the panes as the only
+    scrollers, so header rows must NEVER grow with data volume — a large
+    sibling count once consumed the whole viewport and made the transcript
+    unreachable. Structural pins on the page source:"""
+
+    def test_sibling_strip_is_one_row_with_an_overlay_dropdown(self) -> None:
+        from windtunnel._serve.page import _CSS, _JS
+
+        # The collapsed row clips instead of wrapping…
+        row_rule = next(line for line in _CSS.splitlines() if line.startswith(".strip-row"))
+        assert "flex-wrap: nowrap" in row_rule and "overflow: hidden" in row_rule
+        # …and the full listing is an absolutely-positioned overlay that
+        # scrolls internally — it never joins the page flow, so header
+        # height is bounded regardless of sibling count.
+        dropdown_rule = next(
+            line for line in _CSS.splitlines() if line.startswith(".strip-dropdown {")
+        )
+        assert "position: absolute" in dropdown_rule
+        assert "max-height" in dropdown_rule and "overflow-y: auto" in dropdown_rule
+        # The strip renders a bounded preview (count + first few chips).
+        assert "siblings.slice(0, 3)" in _JS
+        assert "sibling-dropdown" in _JS
+
+    def test_recorded_judgment_lists_are_capped(self) -> None:
+        from windtunnel._serve.page import _CSS, _JS
+
+        capped_rule = next(line for line in _CSS.splitlines() if line.startswith(".capped-list"))
+        assert "max-height" in capped_rule and "overflow-y: auto" in capped_rule
+        # Both judgment surfaces (run screen + compare view) use the cap.
+        assert _JS.count('class="capped-list"') >= 2
+
+
 class TestReadOnlyByConstruction:
     def _fingerprint(self, runs_dir: Path) -> dict[str, str]:
         return {
