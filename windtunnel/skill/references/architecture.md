@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/architecture.md at 12ea6a9df45e — do not edit; edit docs/architecture.md. -->
+<!-- GENERATED from docs/architecture.md at 53d57663e4bc — do not edit; edit docs/architecture.md. -->
 ---
 description: "Architecture overview of Wind Tunnel's API/SPI split, runner data path, behavior gates, experiment integrity, perturbations, and CLI surfaces."
 ---
@@ -243,7 +243,10 @@ The `wt` CLI is the packaged workflow surface:
   pass-rate aggregates.
 - `wt report` renders saved runs as HTML, Markdown, or JSON.
 - `wt compare` compares labeled run sets (model swap, prompt change,
-  temperature pin).
+  temperature pin): verdicts, risk-ranked changes, and metric deltas.
+- `wt results` tabulates a label's runs per scenario — pass counts and
+  metrics aggregated by type — with trace paths in its JSON.
+- `wt rescore` re-scores saved traces against current scenario definitions.
 - `wt replay` replays a saved trace's last user turn against a runtime.
 - `wt doctor` runs the reset-isolation canary against a live runtime.
 - `wt import` generates a scenario skeleton from a Contract A trace envelope.

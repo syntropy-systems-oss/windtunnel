@@ -43,6 +43,7 @@ nav:
   - Guides:
       - Writing a scenario: writing-a-scenario.md
       - Writing a runtime: writing-a-runtime.md
+      - Iterating on an agent: iterating.md
       - Using hooks: using-hooks.md
       - Surface goldens: surface-goldens.md
       - Driving Terminus-2: driving-terminus.md

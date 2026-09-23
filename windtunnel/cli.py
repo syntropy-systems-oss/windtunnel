@@ -8,7 +8,8 @@ Subcommands:
                 --runtime RUNTIME [--format junit|json --out FILE]
     wt rescore  (--runs DIR | --trace PATH...) [--write] [--label L]... [--json]
     wt report   [--runs DIR] [--out FILE] [--format html|markdown|json]
-    wt compare  --labels L1 L2 ...
+    wt compare  --labels L1 L2 ... [--json]
+    wt results  [--runs DIR] [--label L]... [--scenario S]... [--json]
     wt replay   --trace PATH --runtime RUNTIME
     wt doctor   --runtime RUNTIME [--soul PATH] [--label LABEL]
     wt import   --trace PATH --out DIR [--force]
@@ -78,6 +79,7 @@ from windtunnel._cli.output import (
 from windtunnel._cli.output import (
     _write_run_output as _write_run_output_impl,
 )
+from windtunnel._cli.results import _cmd_results as _cmd_results_impl
 from windtunnel._cli.runtime_discovery import (
     _as_plugin_instance as _as_plugin_instance_impl,
 )
@@ -187,6 +189,7 @@ _load_scenarios = _load_scenarios_impl
 _print_selection_warnings = _print_selection_warnings_impl
 _select_scenarios = _select_scenarios_impl
 _cmd_selftest = _cmd_selftest_impl
+_cmd_results = _cmd_results_impl
 _counts_as_gate_failure = _counts_as_gate_failure_impl
 _write_run_output = _write_run_output_impl
 _write_run_json = _write_run_json_impl
@@ -247,16 +250,31 @@ def _cmd_report(args: argparse.Namespace) -> int:
 # ─── compare ─────────────────────────────────────────────────────────────────
 
 
+COMPARE_OUTPUT_VERSION = 1
+
+
 def _cmd_compare(args: argparse.Namespace) -> int:
     """Handle the `wt compare` subcommand.
 
     Loads traces for each label from the runs/ dir and prints a diff table.
-    Labels correspond to variant_id values in stored traces.
+    Labels correspond to variant_id values in stored traces. After the
+    verdict table and risk-ranked changes it prints each scenario's metric
+    deltas (candidate against the first, baseline label); ``--json`` emits
+    all three as one document. The exit code is 1 only for a verdict
+    regression — metric movement is reported, never gated.
     """
-    from windtunnel.report import _cell_from_run, compute_diff, load_runs  # noqa: PLC0415
+    from windtunnel._report.text import format_metric_delta  # noqa: PLC0415
+    from windtunnel.report import (  # noqa: PLC0415
+        _cell_from_run,
+        compute_diff,
+        compute_metric_deltas,
+        load_run_groups,
+        load_runs,
+    )
 
     runs_dir = Path(args.runs)
     labels: list[str] = args.labels
+    as_json = bool(getattr(args, "json", False))
 
     if len(labels) < 2:
         print("wt compare: provide at least 2 --labels", file=sys.stderr)
@@ -273,55 +291,89 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         if variant_id in by_label:
             by_label[variant_id].append((scenario_id, cell))
 
-    # Print comparison table
-    print(f"{'Scenario':<40} " + "  ".join(f"{lbl:<15}" for lbl in labels))
-    print("-" * (40 + 18 * len(labels)))
-
     # Collect all scenario_ids across labels
     all_scenarios: set[str] = set()
     for cells in by_label.values():
         for sid, _ in cells:
             all_scenarios.add(sid)
 
+    verdict_rows: list[tuple[str, dict[str, str | None]]] = []
     for sid in sorted(all_scenarios):
-        row = f"{sid:<40} "
+        verdicts: dict[str, str | None] = {}
         for lbl in labels:
-            cell_map = dict(by_label[lbl])
-            selected_cell = cell_map.get(sid)
+            selected_cell = dict(by_label[lbl]).get(sid)
             if selected_cell is None:
-                row += f"{'N/A':<17}"
+                verdicts[lbl] = None
             else:
                 report_cell = _cell_from_run(
                     selected_cell.get("trace") or {}, selected_cell.get("score") or {}
                 )
-                status = str(report_cell["verdict"])
-                row += f"{status:<17}"
-        print(row)
+                verdicts[lbl] = str(report_cell["verdict"])
+        verdict_rows.append((sid, verdicts))
 
     # The first label is the baseline; a pre-existing baseline failure is not
     # itself a regression. Fail only when a later label moves to a worse
     # verdict, preserving PASS_WITH_VARIANCE ordering through compute_diff().
     baseline = labels[0]
-    changes = [
-        (candidate, item)
-        for candidate in labels[1:]
-        for item in compute_diff(runs_dir, baseline, candidate)
-    ]
+    changes = sorted(
+        (
+            (candidate, item)
+            for candidate in labels[1:]
+            for item in compute_diff(runs_dir, baseline, candidate)
+        ),
+        key=lambda pair: (
+            0 if pair[1]["direction"] == "regression" else 1,
+            -float(pair[1]["risk_delta"]),
+            str(pair[1]["scenario_id"]),
+        ),
+    )
     any_regression = any(item["direction"] == "regression" for _, item in changes)
+    groups = load_run_groups(runs_dir)
+    metric_deltas = [
+        delta
+        for candidate in labels[1:]
+        for delta in compute_metric_deltas(groups, baseline, candidate)
+    ]
+
+    if as_json:
+        document = {
+            "windtunnel_compare": COMPARE_OUTPUT_VERSION,
+            "baseline": baseline,
+            "labels": labels,
+            "scenarios": [
+                {"scenario_id": sid, "verdicts": verdicts} for sid, verdicts in verdict_rows
+            ],
+            "changes": [{"label": candidate, **item} for candidate, item in changes],
+            "metric_deltas": metric_deltas,
+            "regression": any_regression,
+        }
+        print(json.dumps(document, indent=2, ensure_ascii=False))
+        return 1 if any_regression else 0
+
+    # Print comparison table
+    print(f"{'Scenario':<40} " + "  ".join(f"{lbl:<15}" for lbl in labels))
+    print("-" * (40 + 18 * len(labels)))
+    for sid, verdicts in verdict_rows:
+        row = f"{sid:<40} "
+        for lbl in labels:
+            row += f"{verdicts[lbl] or 'N/A':<17}"
+        print(row)
+
     if changes:
         print("\nRisk-ranked changes:")
-        for candidate, item in sorted(
-            changes,
-            key=lambda pair: (
-                0 if pair[1]["direction"] == "regression" else 1,
-                -float(pair[1]["risk_delta"]),
-                str(pair[1]["scenario_id"]),
-            ),
-        ):
+        for candidate, item in changes:
             print(
                 f"  {str(item['direction']).upper():<11} {item['scenario_id']} "
                 f"({baseline}={item['verdict_a']} -> {candidate}={item['verdict_b']}, "
                 f"risk {float(item['risk_a']):.2f} -> {float(item['risk_b']):.2f})"
+            )
+    if metric_deltas:
+        print(f"\nMetric deltas (vs {baseline}):")
+        name_width = max(len(str(delta["metric"])) for delta in metric_deltas)
+        for delta in metric_deltas:
+            print(
+                f"  {delta['label']:<15} {delta['scenario_id']:<40} "
+                f"{delta['metric']:<{name_width}}  {format_metric_delta(delta)}"
             )
     return 1 if any_regression else 0
 
@@ -1562,6 +1614,47 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="runs",
         help="Path to the runs/ directory (default: ./runs)",
     )
+    compare_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print one JSON document: per-scenario verdicts by label, risk-ranked "
+        "verdict changes, and per-scenario metric deltas against the baseline.",
+    )
+
+    # ── results ──────────────────────────────────────────────────────────────
+    results_p = sub.add_parser(
+        "results",
+        help="Summarize saved runs per label and scenario: pass counts and "
+        "aggregated metrics.",
+    )
+    results_p.add_argument(
+        "--runs",
+        default="runs",
+        metavar="DIR",
+        help="Path to the runs/ directory (default: ./runs)",
+    )
+    results_p.add_argument(
+        "--label",
+        action="append",
+        metavar="LABEL",
+        default=None,
+        help="Variant label to summarize (the `wt run --label` value). Repeat for "
+        "several; omit for every label under --runs.",
+    )
+    results_p.add_argument(
+        "--scenario",
+        action="append",
+        metavar="S",
+        default=None,
+        help="Only summarize scenarios matching S (shell-style globs). Repeat for "
+        "multiple.",
+    )
+    results_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print one JSON document with every run's trace path, verdict, and "
+        "metrics alongside the per-scenario aggregates.",
+    )
 
     # ── run ──────────────────────────────────────────────────────────────────
     run_p = sub.add_parser("run", help="Run scenarios against a runtime.")
@@ -2066,6 +2159,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_report(args)
     if args.command == "compare":
         return _cmd_compare(args)
+    if args.command == "results":
+        return _cmd_results(args)
     if args.command == "run":
         return _cmd_run(args)
     if args.command == "selftest":

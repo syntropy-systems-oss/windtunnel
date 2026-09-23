@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +11,53 @@ from windtunnel.api.score import ScoreFormatError, score_from_dict, score_to_dic
 from windtunnel.api.trace import TRACE_FORMAT_VERSION, is_trace_json_path
 
 
+@dataclass(frozen=True)
+class LoadedRun:
+    """One saved run: its trace path plus the parsed trace and score sidecar."""
+
+    path: Path
+    trace: dict[str, Any]
+    score: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class RunGroup:
+    """The reportable runs of one (scenario_id, variant label) pair.
+
+    When the ledger records an aggregate for the pair, ``runs`` are that
+    latest aggregate's runs and ``aggregate`` is its ledger row, so a label
+    re-used across sweeps reports its newest sweep. Otherwise ``runs`` are
+    every saved run with the label and ``aggregate`` is None. ``runs`` are
+    ordered oldest first.
+    """
+
+    scenario_id: str
+    label: str
+    runs: list[LoadedRun]
+    aggregate: dict[str, Any] | None
+
+
 def load_runs(runs_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
     """Return the latest reportable run for each scenario/variant pair."""
+    result: dict[tuple[str, str], dict[str, Any]] = {}
+    for key, group in load_run_groups(runs_dir).items():
+        latest = max(
+            group.runs,
+            key=lambda run: (str(run.trace.get("started_at", "")), run.path.name),
+        )
+        score_data = latest.score
+        if group.aggregate is not None:
+            score_data = {**score_data, "_aggregate": group.aggregate}
+        result[key] = {"trace": latest.trace, "score": score_data}
+    return result
+
+
+def load_run_groups(runs_dir: Path) -> dict[tuple[str, str], RunGroup]:
+    """Return every reportable run grouped by (scenario_id, variant label).
+
+    The one run-selection rule behind `wt report`, `wt compare`, and
+    `wt results`; see RunGroup for which runs a group holds.
+    """
     runs_dir = Path(runs_dir)
     if not runs_dir.exists():
         return {}
@@ -51,7 +97,7 @@ def load_runs(runs_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
             (trace_path, trace_data, score_data)
         )
 
-    result: dict[tuple[str, str], dict[str, Any]] = {}
+    groups: dict[tuple[str, str], RunGroup] = {}
     aggregates = _load_latest_aggregates(runs_dir)
     for key, grouped_runs in candidates.items():
         aggregate = aggregates.get(key)
@@ -68,18 +114,24 @@ def load_runs(runs_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
             else:
                 aggregate = None
 
-        _path, trace_data, score_data = max(
+        ordered = sorted(
             selected_runs,
             key=lambda candidate: (
                 str(candidate[1].get("started_at", "")),
                 candidate[0].name,
             ),
         )
-        if aggregate is not None:
-            score_data = {**score_data, "_aggregate": aggregate}
-        result[key] = {"trace": trace_data, "score": score_data}
+        groups[key] = RunGroup(
+            scenario_id=key[0],
+            label=key[1],
+            runs=[
+                LoadedRun(path=path, trace=trace_data, score=score_data)
+                for path, trace_data, score_data in ordered
+            ],
+            aggregate=aggregate,
+        )
 
-    return result
+    return groups
 
 
 def _load_latest_aggregates(

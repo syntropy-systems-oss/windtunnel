@@ -59,7 +59,8 @@ outcome gate, because a trace proves what happened, not what should pass. See
 | `wt run` | Execute scenarios against `in_memory`, `http_inject`, or a runtime plugin. |
 | `wt selftest` | Certify scenario gates with golden and poison references through a capable runtime. |
 | `wt report` | Render saved runs as HTML, Markdown, or JSON. |
-| `wt compare` | Diff variant labels such as `baseline` and `candidate`. |
+| `wt compare` | Diff variant labels such as `baseline` and `candidate`, including metric deltas. |
+| `wt results` | Tabulate a label's runs per scenario: pass counts and aggregated metrics. |
 | `wt replay` | Re-run a saved trace's last user turn against a runtime. |
 | `wt doctor` | Run the reset-isolation canary against a live runtime. |
 | `wt import` | Generate a scenario skeleton from a `*.wtin.json` trace envelope. |
@@ -73,6 +74,7 @@ See the [CLI reference](cli-reference.md) for options and exit codes.
 - **[Getting started](getting-started.md)** — install, first scenario, first report.
 - **[Writing a scenario](writing-a-scenario.md)** — the `Scenario` schema, field by field.
 - **[Writing a runtime](writing-a-runtime.md)** — wire Wind Tunnel to your agent platform (four small methods).
+- **[Iterating on an agent](iterating.md)** — the label → results → compare → rescore loop, with JSON for agents.
 - **[Reference self-tests](design/0004-reference-selftest.md)** — certify the harness through a live inference-substitution seam.
 - **[Importing a trace](importing-a-trace.md)** — turn a Contract A trace into an authored regression test.
 - **[Recording a universe](recording-a-universe.md)** — serve recorded tool calls as a hermetic mock upstream.

@@ -2,15 +2,16 @@
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at f55ef0ac8220 — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at 77ebdf5841e1 — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
-The `wt` command ships 12 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
+The `wt` command ships 13 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
 
 | Command | Purpose |
 |---|---|
 | `wt report` | Generate a report from a runs/ directory. |
 | `wt compare` | Compare results across variant labels. |
+| `wt results` | Summarize saved runs per label and scenario: pass counts and aggregated metrics. |
 | `wt run` | Run scenarios against a runtime. |
 | `wt selftest` | Certify scenario gates with live golden and poison references. |
 | `wt rescore` | Re-score saved traces against current scenario definitions. |
@@ -49,7 +50,7 @@ Compare results across variant labels.
 Usage:
 
 ```bash
-wt compare [-h] [--labels LABEL [LABEL ...]] [--runs DIR]
+wt compare [-h] [--labels LABEL [LABEL ...]] [--runs DIR] [--json]
 ```
 
 Arguments and options:
@@ -58,6 +59,26 @@ Arguments and options:
 |---|---:|---|---|
 | `--labels` | no | [] | Variant labels to compare (space-separated); the first label is the baseline. |
 | `--runs` | no | runs | Path to the runs/ directory (default: ./runs) |
+| `--json` | no | false | Print one JSON document: per-scenario verdicts by label, risk-ranked verdict changes, and per-scenario metric deltas against the baseline. |
+
+## `wt results`
+
+Summarize saved runs per label and scenario: pass counts and aggregated metrics.
+
+Usage:
+
+```bash
+wt results [-h] [--runs DIR] [--label LABEL] [--scenario S] [--json]
+```
+
+Arguments and options:
+
+| Name | Required | Default | Help |
+|---|---:|---|---|
+| `--runs` | no | runs | Path to the runs/ directory (default: ./runs) |
+| `--label` | no |  | Variant label to summarize (the `wt run --label` value). Repeat for several; omit for every label under --runs. |
+| `--scenario` | no |  | Only summarize scenarios matching S (shell-style globs). Repeat for multiple. |
+| `--json` | no | false | Print one JSON document with every run's trace path, verdict, and metrics alongside the per-scenario aggregates. |
 
 ## `wt run`
 

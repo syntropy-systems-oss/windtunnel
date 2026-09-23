@@ -213,6 +213,8 @@ wt run      --scenario lookup_before_action --runtime <your-runtime> --runs 3
 wt selftest --runtime <reference-capable-runtime> --format junit --out selftest.xml
 wt report   --runs runs/ --format html --out report.html
 wt compare  --labels baseline candidate
+wt results  --runs runs/ --label candidate --json
+wt rescore  --runs runs/ --label candidate --json
 wt replay   --trace runs/<trace>.json --runtime in_memory
 wt doctor   --runtime http_inject
 wt validate --strict incident.wtin.json

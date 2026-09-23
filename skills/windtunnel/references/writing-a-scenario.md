@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/writing-a-scenario.md at 5362cd22cfbc — do not edit; edit docs/writing-a-scenario.md. -->
+<!-- GENERATED from docs/writing-a-scenario.md at fd4441d92738 — do not edit; edit docs/writing-a-scenario.md. -->
 ---
 description: "Reference for authoring backend-agnostic Scenario objects, scoring fields, perturbations, dimensions, and scenario packs."
 ---
@@ -217,7 +217,8 @@ def _graded(trace: Trace) -> LayerResult:
   (`outcome.final_correct`), which is how they appear everywhere else: in the
   `.score.json` sidecar (under each layer's `"metrics"` key, only when
   present, so sidecars without metrics are unchanged), in
-  `AggregateResult.metrics`, and in `wt rescore --json`.
+  `AggregateResult.metrics`, in `wt results`, in `wt compare`'s metric
+  deltas, and in `wt rescore --json` (see [iterating on an agent](iterating.md)).
 - Across runs, booleans aggregate to a rate, numbers to mean/min/max, and
   strings to value counts (`windtunnel.api.aggregate_metrics`). A run that
   omits a metric simply isn't counted for it.
