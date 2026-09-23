@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/index.md at 7775ef9ba4fe — do not edit; edit docs/index.md. -->
+<!-- GENERATED from docs/index.md at add8ea22a968 — do not edit; edit docs/index.md. -->
 ---
 description: "Overview of Wind Tunnel's agent reliability gates, experiment integrity, import workflow, CLI, and starting points."
 ---
@@ -58,6 +58,7 @@ outcome gate, because a trace proves what happened, not what should pass. See
 | Command | Use it to |
 |---|---|
 | `wt run` | Execute scenarios against `in_memory`, `http_inject`, or a runtime plugin. |
+| `wt batch` | Run a file of `wt run` specs back to back with one command. |
 | `wt selftest` | Certify scenario gates with golden and poison references through a capable runtime. |
 | `wt report` | Render saved runs as HTML, Markdown, or JSON. |
 | `wt compare` | Diff variant labels such as `baseline` and `candidate`, including metric deltas. |

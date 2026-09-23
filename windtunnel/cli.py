@@ -11,6 +11,7 @@ Subcommands:
     wt compare  --labels L1 L2 ... [--json]
     wt results  [--runs DIR] [--label L]... [--scenario S]... [--json]
     wt watch    [--runs DIR] [--label L | --sweep ID] [--json] [--timeout S]
+    wt batch    FILE [--scheduler S] [--max-concurrency N] [--no-wait] [--runs-dir DIR]
     wt replay   --trace PATH --runtime RUNTIME
     wt doctor   --runtime RUNTIME [--soul PATH] [--label LABEL]
     wt import   --trace PATH --out DIR [--force]
@@ -38,6 +39,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from windtunnel._cli.batch import _cmd_batch as _cmd_batch_impl
 from windtunnel._cli.events import SweepEvents
 from windtunnel._cli.hooks import (
     _as_hook_instance as _as_hook_instance_impl,
@@ -914,6 +916,23 @@ def _cmd_run(args: argparse.Namespace) -> int:
             errors=scenario_errors,
         )
 
+
+
+# ─── batch ───────────────────────────────────────────────────────────────────
+
+
+def _cmd_batch(args: argparse.Namespace) -> int:
+    """Handle the `wt batch` subcommand: run a file of `wt run` specs in order."""
+    return _cmd_batch_impl(args, run=_cmd_run, run_parser=_subcommand_parser("run"))
+
+
+def _subcommand_parser(name: str) -> argparse.ArgumentParser:
+    """Return the argparse parser `wt <name>` uses (the one --help documents)."""
+    for action in _build_parser()._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            parser: argparse.ArgumentParser = action.choices[name]
+            return parser
+    raise LookupError(f"no wt subcommand named {name!r}")
 
 # ─── rescore ─────────────────────────────────────────────────────────────────
 
@@ -2056,6 +2075,26 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_sweep_execution_args(run_p)
 
+    # ── batch ────────────────────────────────────────────────────────────────
+    batch_p = sub.add_parser(
+        "batch",
+        help="Run a file of `wt run` specs (one per line, same options) back to back.",
+    )
+    batch_p.add_argument(
+        "file",
+        metavar="FILE",
+        help="Run specs, one per line: the options `wt run` takes, shell-quoted, with "
+        "'#' comments and an optional leading 'wt run'. '-' reads standard input. "
+        "Every line is validated before the first spec runs.",
+    )
+    batch_p.add_argument(
+        "--runs-dir",
+        default=None,
+        metavar="DIR",
+        help="Default --runs-dir for every spec (a spec's own value wins).",
+    )
+    _add_sweep_execution_args(batch_p)
+
     # ── selftest ────────────────────────────────────────────────────────────
     selftest_p = sub.add_parser(
         "selftest",
@@ -2491,6 +2530,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_results(args)
     if args.command == "watch":
         return _cmd_watch(args)
+    if args.command == "batch":
+        return _cmd_batch(args)
     if args.command == "run":
         return _cmd_run(args)
     if args.command == "selftest":

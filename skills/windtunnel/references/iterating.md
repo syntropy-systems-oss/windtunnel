@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/iterating.md at 5b7930038be7 — do not edit; edit docs/iterating.md. -->
+<!-- GENERATED from docs/iterating.md at 6de87c7db562 — do not edit; edit docs/iterating.md. -->
 ---
 description: "Tight iteration loop for people and coding agents: follow sweeps live, tabulate results and metrics per label, compare labels, and rescore saved traces."
 ---
@@ -123,6 +123,33 @@ limit, such as `in_memory`, are never locked. The lock is keyed by runtime
 name, or by the plugin's `lock_key(runtime_name)` when one name can reach
 different backends (`http_inject` keys by its endpoint URL). Lock files live in
 `$WT_LOCK_DIR`, else a per-user directory under the system temp dir.
+
+### Queue rounds: `wt batch`
+
+To queue several rounds with one command, write one `wt run` spec per line —
+the same options `wt run` takes, shell-quoted, with `#` comments and an
+optional leading `wt run` — and hand the file to `wt batch`:
+
+```text
+# rounds.txt
+--pack my_pack --runs 5 --label baseline
+--pack my_pack --runs 5 --label candidate --agents notes/candidate.md
+wt run --pack my_pack --runs 5 --label candidate-t0 --soul prompts/strict.md
+```
+
+```bash
+wt batch rounds.txt --runs-dir runs/ --scheduler concurrent
+printf -- '--pack my_pack --label again\n' | wt batch -     # specs from stdin
+```
+
+Every line is parsed before the first spec runs, so a typo on line 9 fails the
+batch (exit `2`, naming the line) without spending rounds 1–8. Specs then run
+in file order, each as its own sweep — own sweep id and events, own ledger
+rows, own runtime lock — and a failing spec never stops the next. The batch's
+`--runs-dir`, `--scheduler`, `--max-concurrency`, and `--no-wait` are defaults
+for every spec; a spec's own value wins. The batch exits with the highest exit
+code any spec returned and prints one summary line per spec on stderr. Follow
+any round with `wt watch --label <its label>`.
 
 ## 3. Tabulate a label: `wt results`
 

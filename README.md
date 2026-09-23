@@ -210,6 +210,7 @@ Working on Wind Tunnel itself? See CONTRIBUTING.md for the dev setup
 
 ```bash
 wt run      --scenario lookup_before_action --runtime <your-runtime> --runs 3
+wt batch    rounds.txt --scheduler concurrent
 wt selftest --runtime <reference-capable-runtime> --format junit --out selftest.xml
 wt report   --runs runs/ --format html --out report.html
 wt compare  --labels baseline candidate

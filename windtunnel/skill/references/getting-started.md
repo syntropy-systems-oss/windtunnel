@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/getting-started.md at 82e4f99f7fef — do not edit; edit docs/getting-started.md. -->
+<!-- GENERATED from docs/getting-started.md at 6a6f033c3186 — do not edit; edit docs/getting-started.md. -->
 ---
 description: "Step-by-step guide to install Wind Tunnel, run and report scenarios, gate CI, and triage failures."
 ---
@@ -173,6 +173,7 @@ Wind Tunnel ships the following `wt` commands:
 | Command | What it does |
 |---|---|
 | `wt run` | Execute scenarios against a runtime and write traces, score sidecars, ledger rows, and optional CI artifacts. |
+| `wt batch` | Run a file of `wt run` specs (one per line) back to back. |
 | `wt selftest` | Certify scenario gates with live golden and poison references through a capable runtime. |
 | `wt report` | Render saved runs as HTML, Markdown, or JSON. |
 | `wt compare` | Compare run labels: verdicts, risk-ranked changes, and metric deltas. |
