@@ -1,12 +1,12 @@
-<!-- GENERATED from docs/cli-reference.md at 207308461851 — do not edit; edit docs/cli-reference.md. -->
+<!-- GENERATED from docs/cli-reference.md at f24310dace00 — do not edit; edit docs/cli-reference.md. -->
 ---
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at f3d110f84dbb — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at 794952c293f2 — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
-The `wt` command ships 14 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
+The `wt` command ships 15 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
 
 | Command | Purpose |
 |---|---|
@@ -15,6 +15,7 @@ The `wt` command ships 14 subcommands. This page is generated from `windtunnel.c
 | `wt results` | Summarize saved runs per label and scenario: pass counts and aggregated metrics. |
 | `wt watch` | Follow a sweep's progress events (run started, run finished with verdict, sweep finished) and exit with the sweep's exit code. |
 | `wt run` | Run scenarios against a runtime. |
+| `wt batch` | Run a file of `wt run` specs (one per line, same options) back to back. |
 | `wt selftest` | Certify scenario gates with live golden and poison references. |
 | `wt rescore` | Re-score saved traces against current scenario definitions. |
 | `wt replay` | Replay a captured trace against a runtime. |
@@ -26,7 +27,7 @@ The `wt` command ships 14 subcommands. This page is generated from `windtunnel.c
 | `wt skill` | Print or install the packaged Wind Tunnel agent skill. |
 
 Exit code conventions: `0` means success, `1` means a runtime failure, regression, world mismatch, or newly-scored outcome failure, and `2` means usage or configuration error.
-Two commands add one code each: `wt run --no-wait` exits `75` when another sweep holds the runtime's lock (retry later), and `wt watch --timeout` exits `124` when it gives up before the sweep ends.
+Two codes are specific: `75` means `--no-wait` found the runtime's lock held by another sweep (retry later; `wt batch` reports the highest code of its specs), and `124` means `wt watch --timeout` gave up before the sweep ended.
 
 ## `wt report`
 
@@ -132,6 +133,26 @@ Arguments and options:
 | `--runs-dir` | no | runs | Directory to write trace files (default: ./runs). |
 | `--format` | no |  | Machine-readable run output format. Must be paired with --out. Choices: junit, json. |
 | `--out` | no |  | Path for --format junit/json output. Must be paired with --format. |
+| `--scheduler` | no |  | How scenario jobs execute: 'sequential' (default: one scenario at a time), 'concurrent' (a thread pool of up to --max-concurrency jobs, each provisioning its own handle), or 'package.module:Class' / 'path/to/file.py:Class' naming a windtunnel.spi.Scheduler subclass. |
+| `--max-concurrency` | no |  | Most scenario jobs to run at once under a concurrent scheduler (default: the runtime's declared limit, or 4 when it declares none). Never exceeds the runtime plugin's max_concurrency, which defaults to 1. |
+| `--no-wait` | no | false | If another `wt run` holds this runtime's machine-wide lock, exit 75 at once instead of waiting for it (runtimes that declare no concurrency limit, such as in_memory, are never locked). |
+
+## `wt batch`
+
+Run a file of `wt run` specs (one per line, same options) back to back.
+
+Usage:
+
+```bash
+wt batch [-h] [--runs-dir DIR] [--scheduler SCHEDULER] [--max-concurrency N] [--no-wait] FILE
+```
+
+Arguments and options:
+
+| Name | Required | Default | Help |
+|---|---:|---|---|
+| `file` | yes |  | Run specs, one per line: the options `wt run` takes, shell-quoted, with '#' comments and an optional leading 'wt run'. '-' reads standard input. Every line is validated before the first spec runs. |
+| `--runs-dir` | no |  | Default --runs-dir for every spec (a spec's own value wins). |
 | `--scheduler` | no |  | How scenario jobs execute: 'sequential' (default: one scenario at a time), 'concurrent' (a thread pool of up to --max-concurrency jobs, each provisioning its own handle), or 'package.module:Class' / 'path/to/file.py:Class' naming a windtunnel.spi.Scheduler subclass. |
 | `--max-concurrency` | no |  | Most scenario jobs to run at once under a concurrent scheduler (default: the runtime's declared limit, or 4 when it declares none). Never exceeds the runtime plugin's max_concurrency, which defaults to 1. |
 | `--no-wait` | no | false | If another `wt run` holds this runtime's machine-wide lock, exit 75 at once instead of waiting for it (runtimes that declare no concurrency limit, such as in_memory, are never locked). |

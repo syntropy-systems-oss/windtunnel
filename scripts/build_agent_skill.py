@@ -248,7 +248,7 @@ def _generate_cli_reference() -> None:
         [
             "",
             "Exit code conventions: `0` means success, `1` means a runtime failure, regression, world mismatch, or newly-scored outcome failure, and `2` means usage or configuration error.",
-            "Two commands add one code each: `wt run --no-wait` exits `75` when another sweep holds the runtime's lock (retry later), and `wt watch --timeout` exits `124` when it gives up before the sweep ends.",
+            "Two codes are specific: `75` means `--no-wait` found the runtime's lock held by another sweep (retry later; `wt batch` reports the highest code of its specs), and `124` means `wt watch --timeout` gave up before the sweep ended.",
             "",
         ]
     )

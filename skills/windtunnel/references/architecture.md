@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/architecture.md at c3a82261a09a — do not edit; edit docs/architecture.md. -->
+<!-- GENERATED from docs/architecture.md at 543f7c7ba64f — do not edit; edit docs/architecture.md. -->
 ---
 description: "Architecture overview of Wind Tunnel's API/SPI split, runner data path, behavior gates, experiment integrity, perturbations, and CLI surfaces."
 ---
@@ -237,7 +237,12 @@ The `wt` CLI is the packaged workflow surface:
 
 - `wt run` executes scenarios, writes each run's trace and score sidecar as it
   completes, appends each scenario's ledger row as it finishes, narrates the
-  sweep to `events.ndjsonl`, and can emit JUnit/JSON for CI.
+  sweep to `events.ndjsonl`, and can emit JUnit/JSON for CI. Its scenario jobs
+  go through a pluggable `windtunnel.spi.Scheduler` (sequential by default,
+  never more concurrent than the runtime plugin declares), and a machine-wide
+  lock makes two sweeps on one runtime take turns.
+- `wt batch` runs a file of `wt run` specs back to back, validating every line
+  first.
 - `wt selftest` sends golden and poison decision scripts through a capable
   runtime's inference-substitution seam while retaining live tools, probes,
   evidence, and scoring. Its verdicts certify gates and stay out of ordinary
