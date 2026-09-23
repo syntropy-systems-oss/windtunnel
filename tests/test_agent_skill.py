@@ -83,6 +83,7 @@ def test_generated_cli_reference_names_all_subcommands() -> None:
         "report",
         "compare",
         "results",
+        "watch",
         "rescore",
         "replay",
         "doctor",
@@ -93,7 +94,7 @@ def test_generated_cli_reference_names_all_subcommands() -> None:
         "skill",
     ]:
         assert f"`wt {name}`" in text
-    assert "The `wt` command ships 13 subcommands." in text
+    assert "The `wt` command ships 14 subcommands." in text
 
 
 def test_skill_index_has_one_description_per_reference() -> None:

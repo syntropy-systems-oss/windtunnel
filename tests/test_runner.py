@@ -211,6 +211,75 @@ class TestRunScenario:
         assert result.aggregate.total == 1
 
 
+# ─── per-run callbacks ────────────────────────────────────────────────────────
+
+class TestPerRunCallbacks:
+    def test_callbacks_fire_per_run_in_order_with_the_returned_run_objects(self) -> None:
+        runtime = InMemoryRuntime(scripted_responses=["ok"])
+        seen: list[tuple[str, int, object]] = []
+        result = run_scenario(
+            _scenario(),
+            runtime,
+            runs_per_scenario=3,
+            on_run_start=lambda index: seen.append(("start", index, None)),
+            on_run_complete=lambda index, run: seen.append(("done", index, run)),
+        )
+        assert [(kind, index) for kind, index, _run in seen] == [
+            ("start", 0), ("done", 0), ("start", 1), ("done", 1), ("start", 2), ("done", 2),
+        ]
+        completed = [run for kind, _index, run in seen if kind == "done"]
+        assert all(a is b for a, b in zip(completed, result.runs, strict=True))
+
+    def test_run_start_fires_before_that_runs_reset(self) -> None:
+        runtime = InMemoryRuntime(scripted_responses=["ok"])
+        resets_at_start: list[int] = []
+
+        def _start(_index: int) -> None:
+            _config, handle = runtime.provisions[0]
+            resets_at_start.append(handle.reset_count)
+
+        run_scenario(_scenario(), runtime, runs_per_scenario=2, on_run_start=_start)
+        assert resets_at_start == [0, 1]
+
+    def test_completion_fires_for_a_run_whose_send_failed(self) -> None:
+        class FailingHandle:
+            def send(self, messages: Any, session_id: str) -> Any:
+                raise RuntimeError("network error")
+
+            def reset_state(self) -> None:
+                pass
+
+            def teardown(self) -> None:
+                pass
+
+        class FailingRuntime:
+            def provision(self, config: AgentConfig, mcps: list | None = None) -> AgentHandle:
+                return FailingHandle()  # type: ignore[return-value]
+
+        completed: list[int] = []
+        run_scenario(
+            _scenario(),
+            FailingRuntime(),
+            runs_per_scenario=2,
+            on_run_complete=lambda index, run: completed.append(index),
+        )
+        assert completed == [0, 1]
+
+    def test_callback_exception_stops_remaining_runs_and_propagates_after_teardown(
+        self,
+    ) -> None:
+        runtime = InMemoryRuntime(scripted_responses=["ok"])
+
+        def _explode(index: int, _run: object) -> None:
+            raise OSError(f"disk full after run {index}")
+
+        with pytest.raises(OSError, match="disk full after run 0"):
+            run_scenario(_scenario(), runtime, runs_per_scenario=3, on_run_complete=_explode)
+        _config, handle = runtime.provisions[0]
+        assert handle.reset_count == 1
+        assert handle.teardown_count == 1
+
+
 # ─── session_id threading ─────────────────────────────────────────────────────
 
 class TestSessionIdThreading:

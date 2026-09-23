@@ -214,6 +214,7 @@ wt selftest --runtime <reference-capable-runtime> --format junit --out selftest.
 wt report   --runs runs/ --format html --out report.html
 wt compare  --labels baseline candidate
 wt results  --runs runs/ --label candidate --json
+wt watch    --runs runs/ --label candidate
 wt rescore  --runs runs/ --label candidate --json
 wt replay   --trace runs/<trace>.json --runtime in_memory
 wt doctor   --runtime http_inject

@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/architecture.md at 53d57663e4bc — do not edit; edit docs/architecture.md. -->
+<!-- GENERATED from docs/architecture.md at c3a82261a09a — do not edit; edit docs/architecture.md. -->
 ---
 description: "Architecture overview of Wind Tunnel's API/SPI split, runner data path, behavior gates, experiment integrity, perturbations, and CLI surfaces."
 ---
@@ -235,8 +235,9 @@ into acted / clarified / wrongly_guessed / refused_unnecessarily).
 
 The `wt` CLI is the packaged workflow surface:
 
-- `wt run` executes scenarios, writes traces and score sidecars, appends the
-  ledger, and can emit JUnit/JSON for CI.
+- `wt run` executes scenarios, writes each run's trace and score sidecar as it
+  completes, appends each scenario's ledger row as it finishes, narrates the
+  sweep to `events.ndjsonl`, and can emit JUnit/JSON for CI.
 - `wt selftest` sends golden and poison decision scripts through a capable
   runtime's inference-substitution seam while retaining live tools, probes,
   evidence, and scoring. Its verdicts certify gates and stay out of ordinary
@@ -246,6 +247,7 @@ The `wt` CLI is the packaged workflow surface:
   temperature pin): verdicts, risk-ranked changes, and metric deltas.
 - `wt results` tabulates a label's runs per scenario — pass counts and
   metrics aggregated by type — with trace paths in its JSON.
+- `wt watch` follows a sweep's progress events and exits with its exit code.
 - `wt rescore` re-scores saved traces against current scenario definitions.
 - `wt replay` replays a saved trace's last user turn against a runtime.
 - `wt doctor` runs the reset-isolation canary against a live runtime.

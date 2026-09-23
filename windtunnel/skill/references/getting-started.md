@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/getting-started.md at 3229f3599827 — do not edit; edit docs/getting-started.md. -->
+<!-- GENERATED from docs/getting-started.md at 82e4f99f7fef — do not edit; edit docs/getting-started.md. -->
 ---
 description: "Step-by-step guide to install Wind Tunnel, run and report scenarios, gate CI, and triage failures."
 ---
@@ -177,6 +177,7 @@ Wind Tunnel ships the following `wt` commands:
 | `wt report` | Render saved runs as HTML, Markdown, or JSON. |
 | `wt compare` | Compare run labels: verdicts, risk-ranked changes, and metric deltas. |
 | `wt results` | Tabulate a label's runs per scenario with aggregated metrics. |
+| `wt watch` | Follow a running sweep's progress events; exits with the sweep's exit code. |
 | `wt rescore` | Re-score saved traces against the current scenario definitions. |
 | `wt replay` | Replay a saved trace's last user turn against a runtime. |
 | `wt doctor` | Run the reset-isolation canary against a live runtime. |
