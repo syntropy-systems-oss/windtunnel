@@ -1,9 +1,9 @@
-<!-- GENERATED from docs/cli-reference.md at f24310dace00 — do not edit; edit docs/cli-reference.md. -->
+<!-- GENERATED from docs/cli-reference.md at afe0444c8ef7 — do not edit; edit docs/cli-reference.md. -->
 ---
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at 794952c293f2 — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at 764f43c2910b — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
 The `wt` command ships 15 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
@@ -112,17 +112,18 @@ Run scenarios against a runtime.
 Usage:
 
 ```bash
-wt run [-h] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--owner OWNER] [--soul PATH] [--agents PATH] [--runtime RUNTIME] [--hook HOOK] [--label LABEL] [--runs N] [--runs-dir DIR] [--format {junit,json}] [--out FILE] [--scheduler SCHEDULER] [--max-concurrency N] [--no-wait]
+wt run [-h] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--all-packs] [--owner OWNER] [--soul PATH] [--agents PATH] [--runtime RUNTIME] [--hook HOOK] [--label LABEL] [--runs N] [--runs-dir DIR] [--format {junit,json}] [--out FILE] [--scheduler SCHEDULER] [--max-concurrency N] [--no-wait]
 ```
 
 Arguments and options:
 
 | Name | Required | Default | Help |
 |---|---:|---|---|
-| `--scenario` | no |  | Scenario name(s) to run. Repeat for multiple. Omit to run all registered scenarios (the built-in dims plus any pack installed under the 'windtunnel.scenario_packs' entry-point group). Shell-style globs such as 'lookup_*' are supported. |
+| `--scenario` | no |  | Scenario name(s) to run. Repeat for multiple. Omit to run all registered scenarios (the built-in dims plus any pack installed under the 'windtunnel.scenario_packs' entry-point group) — or, with --pack-source and no --pack, all scenarios of the sourced pack(s). Shell-style globs such as 'lookup_*' are supported. |
 | `--tag` | no |  | Run scenarios carrying TAG. Repeat for OR matching within tags; composes with other selectors by AND. |
 | `--pack` | no |  | Run scenarios from pack PACK. Repeat for OR matching within packs; composes with other selectors by AND. |
-| `--pack-source` | no |  | Load an additional local scenario pack from module:attr or path/to/file.py:attr. Repeat for multiple sources; use --pack to select it by name. |
+| `--pack-source` | no |  | Load an additional local scenario pack from module:attr or path/to/file.py:attr. Repeat for multiple sources. Without --pack, the run is limited to the pack(s) these sources define (see --all-packs). |
+| `--all-packs` | no | false | With --pack-source and no --pack, sweep every registered pack (built-ins, installed packs, and the sources) instead of only the sourced pack(s). |
 | `--owner` | no |  | Run scenarios from packs whose owner matches OWNER. Repeat for OR matching within owners; composes with other selectors by AND. |
 | `--soul` | no |  | Path to SOUL.md / persona doc to inject. |
 | `--agents` | no |  | Path to an AGENTS.md operating-notes doc to inject (routed to set-docs --agents; does not touch agent code). |

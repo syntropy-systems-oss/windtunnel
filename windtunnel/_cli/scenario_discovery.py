@@ -15,7 +15,13 @@ from windtunnel.api.scenario import Scenario
 def _discover_scenario_packs(
     extra_sources: list[str] | None = None,
 ) -> list[ScenarioPack]:
-    """Return built-in, entry-point, and explicitly sourced scenario packs."""
+    """Return built-in, entry-point, and explicitly sourced scenario packs.
+
+    Order is part of the contract: built-ins, then entry-point packs, then
+    exactly one pack per ``extra_sources`` entry, in source order — so the
+    last ``len(extra_sources)`` packs are the ones those sources define
+    (see _source_packs).
+    """
     from importlib.metadata import entry_points
 
     from windtunnel.scenarios import builtin_packs
@@ -241,3 +247,37 @@ def _load_scenarios(names: list[str], packs: list[ScenarioPack]) -> list[Scenari
             file=sys.stderr,
         )
     return [entry.scenario for entry in selection.entries]
+
+
+def _source_packs(packs: list[ScenarioPack], sources: list[str]) -> list[ScenarioPack]:
+    """Return the packs `_discover_scenario_packs(sources)` loaded from ``sources``."""
+    if not sources or len(packs) < len(sources):
+        return []
+    return packs[len(packs) - len(sources):]
+
+
+def _default_pack_filter(
+    packs: list[ScenarioPack],
+    sources: list[str],
+    pack_filters: list[str],
+    *,
+    all_packs: bool,
+) -> list[str]:
+    """Narrow an unfiltered `--pack-source` run to the packs those sources define.
+
+    Without this, `wt run --pack-source mine.py:PACK --runtime my_runtime`
+    silently swept every registered pack — all built-in scenarios under a
+    runtime they were never written for — and buried the one pack the user
+    loaded under a wall of meaningless failures. An explicit --pack, or
+    --all-packs, keeps full control. Returns the pack filters to apply.
+    """
+    if pack_filters or all_packs or not sources:
+        return pack_filters
+    names = list(dict.fromkeys(pack.name for pack in _source_packs(packs, sources)))
+    if names:
+        print(
+            f"wt run: --pack-source without --pack: running only {', '.join(names)} "
+            "(pass --all-packs to sweep every registered pack)",
+            file=sys.stderr,
+        )
+    return names

@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/writing-a-scenario.md at fd4441d92738 — do not edit; edit docs/writing-a-scenario.md. -->
+<!-- GENERATED from docs/writing-a-scenario.md at 9d5773606f93 — do not edit; edit docs/writing-a-scenario.md. -->
 ---
 description: "Reference for authoring backend-agnostic Scenario objects, scoring fields, perturbations, dimensions, and scenario packs."
 ---
@@ -569,6 +569,12 @@ What `wt run` does with it:
   first, entry-point packs after); `--scenario` (exact or glob), `--tag`,
   `--pack`, and `--owner` filter across all packs, and omitting them runs
   everything.
+- **Trying a pack before installing it.** `wt run --pack-source
+  path/to/pack.py:PACK` (or `my_pack.pack:PACK`) loads a pack without an entry
+  point. Without `--pack`, such a run is limited to the pack(s) the sources
+  define and says so in one line — a local pack is almost never meant to run
+  next to every built-in dimension under your runtime. Pass `--all-packs` to
+  sweep everything registered, or `--pack` to choose explicitly.
 - **Dimension metadata.** `dim:<name>` tags remain available to `--tag`
   filters, but they do not control runtime wiring. At discovery, any scenario
   that declares `dim:` tags must include `dim:<owning-pack-name>`, and every

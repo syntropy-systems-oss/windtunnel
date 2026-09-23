@@ -116,6 +116,9 @@ from windtunnel._cli.scenario_discovery import (
     _coerce_scenario_pack as _coerce_scenario_pack_impl,
 )
 from windtunnel._cli.scenario_discovery import (
+    _default_pack_filter as _default_pack_filter_impl,
+)
+from windtunnel._cli.scenario_discovery import (
     _discover_scenario_packs as _discover_scenario_packs_impl,
 )
 from windtunnel._cli.scenario_discovery import (
@@ -206,6 +209,7 @@ _InMemoryPlugin = _InMemoryPluginImpl
 _resolve_runtime_plugin = _resolve_runtime_plugin_impl
 _TerminusPlugin = _TerminusPluginImpl
 _coerce_scenario_pack = _coerce_scenario_pack_impl
+_default_pack_filter = _default_pack_filter_impl
 _discover_scenario_packs = _discover_scenario_packs_impl
 _load_scenario_pack_source = _load_scenario_pack_source_impl
 _load_scenarios = _load_scenarios_impl
@@ -483,6 +487,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
     # its mock-MCP factory, and the transport-only flag — see windtunnel.api.pack.
     pack_sources = args.pack_source or []
     packs = _discover_scenario_packs(pack_sources) if pack_sources else _discover_scenario_packs()
+    # A --pack-source run without --pack means "run the pack I just loaded",
+    # not "sweep every built-in scenario under my runtime too".
+    pack_filters = _default_pack_filter(
+        packs, pack_sources, pack_filters, all_packs=bool(getattr(args, "all_packs", False))
+    )
 
     # Load scenarios
     selection = _select_scenarios(
@@ -1972,8 +1981,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Scenario name(s) to run. Repeat for multiple. "
         "Omit to run all registered scenarios (the built-in "
         "dims plus any pack installed under the "
-        "'windtunnel.scenario_packs' entry-point group). "
-        "Shell-style globs such as 'lookup_*' are supported.",
+        "'windtunnel.scenario_packs' entry-point group) — or, "
+        "with --pack-source and no --pack, all scenarios of the "
+        "sourced pack(s). Shell-style globs such as 'lookup_*' "
+        "are supported.",
     )
     run_p.add_argument(
         "--tag",
@@ -1997,8 +2008,16 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="SOURCE",
         default=None,
         help="Load an additional local scenario pack from module:attr "
-        "or path/to/file.py:attr. Repeat for multiple sources; "
-        "use --pack to select it by name.",
+        "or path/to/file.py:attr. Repeat for multiple sources. Without "
+        "--pack, the run is limited to the pack(s) these sources define "
+        "(see --all-packs).",
+    )
+    run_p.add_argument(
+        "--all-packs",
+        action="store_true",
+        help="With --pack-source and no --pack, sweep every registered pack "
+        "(built-ins, installed packs, and the sources) instead of only the "
+        "sourced pack(s).",
     )
     run_p.add_argument(
         "--owner",
