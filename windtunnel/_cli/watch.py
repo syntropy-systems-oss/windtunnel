@@ -239,6 +239,15 @@ def format_event(event: dict[str, Any]) -> str:
             f"({event.get('status')}; {event.get('completed')}/{event.get('scenarios')} "
             f"scenario(s), {event.get('errors')} error(s))"
         )
+    if kind == "lock_waiting":
+        holder = event.get("holder") or {}
+        held_by = f" held by pid {holder.get('pid')}" if holder.get("pid") else ""
+        return f"{clock} sweep {sweep} waiting for runtime {event.get('lock')!r}{held_by}"
+    if kind == "lock_acquired":
+        return (
+            f"{clock} sweep {sweep} acquired runtime {event.get('lock')!r} "
+            f"after {float(event.get('waited_s') or 0.0):.1f}s"
+        )
     extra = {
         key: value
         for key, value in event.items()

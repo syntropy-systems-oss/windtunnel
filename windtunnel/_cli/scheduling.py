@@ -36,6 +36,25 @@ def runtime_concurrency_limit(plugin: object, runtime_name: str) -> int | None:
     return value
 
 
+def runtime_lock_key(plugin: object, runtime_name: str) -> str:
+    """Return the identity two sweeps must share to exclude each other.
+
+    The runtime name, unless the plugin defines ``lock_key(runtime_name)``
+    because one name can reach different backends (for example an endpoint
+    URL taken from the environment).
+    """
+    method = getattr(plugin, "lock_key", None)
+    if not callable(method):
+        return runtime_name
+    key = method(runtime_name)
+    if not isinstance(key, str) or not key.strip():
+        raise SchedulingError(
+            f"runtime plugin {runtime_name!r} lock_key() returned {key!r}; expected a "
+            "non-empty string"
+        )
+    return key
+
+
 def resolve_scheduler(
     spec: str,
     *,

@@ -26,6 +26,7 @@ non-zero = any regression or error.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
 import functools
 import json
@@ -84,6 +85,13 @@ from windtunnel._cli.output import (
     _write_run_output as _write_run_output_impl,
 )
 from windtunnel._cli.results import _cmd_results as _cmd_results_impl
+from windtunnel._cli.runlock import (
+    EXIT_RUNTIME_BUSY,
+    RuntimeBusy,
+    describe_holder,
+    holder_record,
+    runtime_lock,
+)
 from windtunnel._cli.runtime_discovery import (
     _as_plugin_instance as _as_plugin_instance_impl,
 )
@@ -124,6 +132,7 @@ from windtunnel._cli.scheduling import (
     SchedulingError,
     resolve_scheduler,
     runtime_concurrency_limit,
+    runtime_lock_key,
 )
 from windtunnel._cli.selftest import _cmd_selftest as _cmd_selftest_impl
 from windtunnel._cli.storage import (
@@ -463,9 +472,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
     sweep_timestamp = _sweep_artifact_timestamp()
 
     # Resolve once for the entire invocation: stateful plugins must receive
-    # build() and pre_run() on the same object.
+    # build() and pre_run() on the same object. build() itself waits until
+    # every usage check has passed and the runtime lock is held (below).
     plugin = _resolve_runtime_plugin(runtime_name)
-    runtime = _build_runtime(runtime_name, label, soul_path=args.soul, _plugin=plugin)
 
     # Discover scenario packs (built-ins + the "windtunnel.scenario_packs"
     # entry-point group). The pack is the unit that carries a dim's scenarios,
@@ -521,13 +530,19 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     # How the scenario jobs execute. Never more at once than the runtime
     # plugin declares it tolerates (default 1): many runtimes bind fixed ports.
+    # A runtime with any such limit is also locked machine-wide for the
+    # sweep, so a second `wt run` against it waits instead of colliding.
     try:
+        runtime_limit = runtime_concurrency_limit(plugin, runtime_name)
         scheduler, max_jobs, scheduling_notices = resolve_scheduler(
             getattr(args, "scheduler", None) or "sequential",
             requested=getattr(args, "max_concurrency", None),
-            runtime_limit=runtime_concurrency_limit(plugin, runtime_name),
+            runtime_limit=runtime_limit,
             runtime_name=runtime_name,
             hooks_active=bool(hooks),
+        )
+        lock_key = (
+            runtime_lock_key(plugin, runtime_name) if runtime_limit is not None else None
         )
     except SchedulingError as exc:
         print(f"wt run: {exc}", file=sys.stderr)
@@ -822,8 +837,49 @@ def _cmd_run(args: argparse.Namespace) -> int:
         scheduler.execute(jobs, stop)
         return _finish(1 if aborted or any_fail else 0)
 
+    def _lock_waiting(holder: dict[str, Any] | None) -> None:
+        print(
+            f"wt run: runtime {lock_key!r} is in use ({describe_holder(holder)}); "
+            "waiting for it to finish — pass --no-wait to exit instead",
+            file=sys.stderr,
+            flush=True,
+        )
+        events.emit("lock_waiting", lock=lock_key, holder=holder)
+
+    def _lock_acquired(waited_s: float) -> None:
+        print(
+            f"wt run: runtime {lock_key!r} acquired after {waited_s:.1f}s",
+            file=sys.stderr,
+            flush=True,
+        )
+        events.emit("lock_acquired", lock=lock_key, waited_s=round(waited_s, 3))
+
     exit_code: int | None = None
+    status = "error"
+    held = contextlib.ExitStack()
     try:
+        if lock_key is not None:
+            try:
+                held.enter_context(
+                    runtime_lock(
+                        lock_key,
+                        wait=not getattr(args, "no_wait", False),
+                        holder=holder_record(
+                            label=label, sweep_id=events.sweep_id, runs_dir=str(runs_dir)
+                        ),
+                        on_wait=_lock_waiting,
+                        on_acquired=_lock_acquired,
+                    )
+                )
+            except RuntimeBusy as busy:
+                print(
+                    f"wt run: {busy}; not waiting (--no-wait) — retry later, or drop "
+                    "--no-wait to queue behind it",
+                    file=sys.stderr,
+                )
+                exit_code, status = EXIT_RUNTIME_BUSY, "busy"
+                return EXIT_RUNTIME_BUSY
+        runtime = _build_runtime(runtime_name, label, soul_path=args.soul, _plugin=plugin)
         # Platform-specific bench prep (runtime-pluggable seam): the resolved
         # plugin's OPTIONAL pre_run() hook runs once here — after _build_runtime
         # and scenario loading, before any scenario executes. Platform glue
@@ -844,15 +900,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
             # docstring for the full pre_run/post_run contract.
             if post_run is not None:
                 post_run(runtime, scenarios, runtime_name)
-        exit_code = rc
+        exit_code, status = rc, ("aborted" if aborted else "completed")
         return rc
     finally:
+        # The runtime lock is released only after post_run() has returned.
+        held.close()
         events.emit(
             "sweep_finished",
             exit_code=exit_code,
-            status=(
-                "error" if exit_code is None else ("aborted" if aborted else "completed")
-            ),
+            status=status,
             scenarios=len(selected),
             completed=len(completed_at),
             errors=scenario_errors,
@@ -1998,7 +2054,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="Path for --format junit/json output. Must be paired with --format.",
     )
-    _add_scheduling_args(run_p)
+    _add_sweep_execution_args(run_p)
 
     # ── selftest ────────────────────────────────────────────────────────────
     selftest_p = sub.add_parser(
@@ -2371,8 +2427,8 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_scheduling_args(parser: argparse.ArgumentParser) -> None:
-    """Options that decide how a sweep's scenario jobs execute."""
+def _add_sweep_execution_args(parser: argparse.ArgumentParser) -> None:
+    """Options that decide how and when a sweep's scenario jobs execute."""
     parser.add_argument(
         "--scheduler",
         default=None,
@@ -2390,6 +2446,13 @@ def _add_scheduling_args(parser: argparse.ArgumentParser) -> None:
         help="Most scenario jobs to run at once under a concurrent scheduler "
         "(default: the runtime's declared limit, or 4 when it declares none). "
         "Never exceeds the runtime plugin's max_concurrency, which defaults to 1.",
+    )
+    parser.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="If another `wt run` holds this runtime's machine-wide lock, exit 75 "
+        "at once instead of waiting for it (runtimes that declare no concurrency "
+        "limit, such as in_memory, are never locked).",
     )
 
 
