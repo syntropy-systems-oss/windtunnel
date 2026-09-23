@@ -4,6 +4,11 @@ A score is a tuple, not a single number. Each layer is independently
 pass/fail with a diagnostic detail string. A scenario can pass outcome
 and fail trajectory and that distinction is visible in reports.
 
+A layer may also carry named metrics next to its verdict — measurements
+such as ``{"final_correct": True, "revisions": 9}`` that iteration tooling
+aggregates across runs. Metrics never change pass/fail; they replace the
+old habit of encoding numbers in ``detail`` for callers to re-parse.
+
 FailureCost is authored per-scenario and maps to a deterministic risk weight
 used by aggregate/report consumers. It does not weaken the fail-closed gate:
 any gated regression still fails, regardless of weight.
@@ -18,14 +23,20 @@ Design:
 """
 from __future__ import annotations
 
+import math
+import numbers
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 SCORE_FORMAT_VERSION = 2
 GateLayer = Literal["outcome", "trajectory", "constraint"]
 GATE_LAYER_ORDER: tuple[GateLayer, ...] = ("outcome", "trajectory", "constraint")
+SCORE_LAYER_ORDER: tuple[str, ...] = (*GATE_LAYER_ORDER, "integrity")
+
+MetricValue: TypeAlias = bool | int | float | str
+"""One named metric value: a flag, a count or measure, or a category label."""
 
 
 class Verdict(Enum):
@@ -48,9 +59,53 @@ _SEVERITY_RISK: dict[SeverityLevel, int] = {
 
 @dataclass
 class LayerResult:
-    """Result for one scoring layer: pass/fail + human-readable detail."""
+    """Result for one scoring layer: pass/fail + human-readable detail.
+
+    metrics: optional named measurements produced alongside the verdict,
+        e.g. ``{"final_correct": True, "revisions": 9}``. They never affect
+        ``passed``; they exist so `wt results` and `wt compare` can aggregate
+        them (rate for booleans, mean/min/max for numbers, counts for
+        strings) instead of re-parsing ``detail``. Names are non-empty
+        strings. Values are bool, int, float (finite), or str; other integral
+        and real numbers (e.g. numpy scalars) are converted to int/float.
+        Anything else raises, so a bad metric inside ``outcome_fn`` fails the
+        layer with a diagnostic rather than corrupting a sidecar.
+    """
     passed: bool
     detail: str
+    metrics: dict[str, MetricValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.metrics = validate_metrics(self.metrics)
+
+
+def validate_metrics(metrics: Mapping[str, object]) -> dict[str, MetricValue]:
+    """Return a validated, plain-typed copy of a metrics mapping.
+
+    Raises TypeError/ValueError naming the offending metric. Shared by
+    LayerResult construction and sidecar loading so both reject the same
+    shapes.
+    """
+    if not isinstance(metrics, Mapping):
+        raise TypeError(f"metrics must be a mapping of name to value, got {type(metrics).__name__}")
+    validated: dict[str, MetricValue] = {}
+    for name, value in metrics.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"metric names must be non-empty strings, got {name!r}")
+        if isinstance(value, bool | str):
+            validated[name] = value
+        elif isinstance(value, numbers.Integral):
+            validated[name] = int(value)
+        elif isinstance(value, numbers.Real):
+            number = float(value)
+            if not math.isfinite(number):
+                raise ValueError(f"metric {name!r} must be a finite number, got {value!r}")
+            validated[name] = number
+        else:
+            raise TypeError(
+                f"metric {name!r} must be bool, int, float, or str, got {type(value).__name__}"
+            )
+    return validated
 
 
 @dataclass
@@ -146,21 +201,44 @@ class Score:
         """Return whether this is a valid run satisfying every selected gate."""
         return self.integrity.passed and all(self.layer(layer).passed for layer in gate_layers)
 
+    @property
+    def metrics(self) -> dict[str, MetricValue]:
+        """Every layer's metrics in one flat map keyed ``"<layer>.<name>"``.
+
+        Qualifying by layer keeps two layers that both report e.g. ``count``
+        from silently overwriting each other.
+        """
+        flat: dict[str, MetricValue] = {}
+        for layer_name in SCORE_LAYER_ORDER:
+            layer: LayerResult = getattr(self, layer_name)
+            for name, value in layer.metrics.items():
+                flat[f"{layer_name}.{name}"] = value
+        return flat
+
+
+def _layer_to_dict(layer: LayerResult) -> dict[str, Any]:
+    payload: dict[str, Any] = {"passed": layer.passed, "detail": layer.detail}
+    if layer.metrics:
+        payload["metrics"] = dict(layer.metrics)
+    return payload
+
 
 def score_to_dict(score: Score) -> dict[str, Any]:
     """Serialize a Score to the flat dict shape consumed by report.load_runs().
 
     Top-level keys: outcome/trajectory/constraint/integrity (each
-    {"passed", "detail"}) + failure_cost. This is the canonical v2
-    `.score.json` sidecar layer shape — see windtunnel/report.py
-    `_cell_from_run` for the reader.
+    {"passed", "detail"}, plus "metrics" only when the layer reported any)
+    + failure_cost. This is the canonical v2 `.score.json` sidecar layer
+    shape — see windtunnel/report.py `_cell_from_run` for the reader. A
+    score without metrics serializes byte-for-byte as it did before metrics
+    existed, so older readers are unaffected.
     """
     return {
         "windtunnel_score": SCORE_FORMAT_VERSION,
-        "outcome": {"passed": score.outcome.passed, "detail": score.outcome.detail},
-        "trajectory": {"passed": score.trajectory.passed, "detail": score.trajectory.detail},
-        "constraint": {"passed": score.constraint.passed, "detail": score.constraint.detail},
-        "integrity": {"passed": score.integrity.passed, "detail": score.integrity.detail},
+        "outcome": _layer_to_dict(score.outcome),
+        "trajectory": _layer_to_dict(score.trajectory),
+        "constraint": _layer_to_dict(score.constraint),
+        "integrity": _layer_to_dict(score.integrity),
         "failure_cost": {
             "severity": score.failure_cost.severity,
             "customer_visible": score.failure_cost.customer_visible,
@@ -227,7 +305,10 @@ def _layer_from_dict(raw: object, label: str) -> LayerResult:
     detail = raw.get("detail", "")
     if type(passed) is not bool or not isinstance(detail, str):
         raise TypeError(f"{label} requires boolean passed and string detail")
-    return LayerResult(passed=passed, detail=detail)
+    metrics = raw.get("metrics", {})
+    if not isinstance(metrics, Mapping):
+        raise TypeError(f"{label}.metrics must be an object")
+    return LayerResult(passed=passed, detail=detail, metrics=dict(metrics))
 
 
 def _bool_from_dict(raw: Mapping[str, Any], key: str, *, default: bool) -> bool:

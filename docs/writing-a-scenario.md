@@ -165,7 +165,9 @@ Scenario(
 
 - `all_of(*fns)` / `any_of(*fns)` — combinators; failing branches join their
   diagnostics into one `detail`, and a scorer that *raises* is converted to a
-  failure naming the scorer (composition stays fail-closed).
+  failure naming the scorer (composition stays fail-closed). Child
+  [metrics](#metrics-measure-alongside-the-verdict) are merged; on a name
+  collision the later child wins.
 - `observation(source, path, predicate, label)` — reads
   `trace.observations[source]` and walks `"prs[0].base"`-style paths; missing
   source/path is a diagnostic failure, never a crash.
@@ -182,6 +184,42 @@ Scenario(
 - `no_divergence()` — not an outcome scorer but a constraint-layer `Policy`:
   it fails when the run left the recording of a
   [universe fixture](recording-a-universe.md).
+
+#### Metrics: measure alongside the verdict
+
+A pass/fail verdict answers "did it work"; iterating on an agent also needs
+"how well, and how": did the final answer come out right, how many revisions
+did it take, which path did it choose. Put those in `LayerResult.metrics`
+instead of encoding them in `detail`:
+
+```python
+def _graded(trace: Trace) -> LayerResult:
+    answer = trace.turns[-1].content
+    revisions = sum(1 for turn in trace.turns if turn.role == "assistant")
+    correct = "ops@bluewing.example" in answer
+    return LayerResult(
+        passed=correct,
+        detail=f"correct={correct} after {revisions} assistant turns",
+        metrics={"final_correct": correct, "revisions": revisions},
+    )
+```
+
+- Values are `bool`, `int`, `float` (finite), or `str`; names are non-empty
+  strings. Anything else raises, which inside `outcome_fn` fails the layer
+  with a diagnostic instead of writing a bad sidecar.
+- Metrics never change `passed`. They are measurements, not gates.
+- Every layer can carry them: `outcome_fn` and the scorer combinators return
+  `LayerResult` directly; a custom `TrajectoryCheck.check()` or a `Policy`
+  predicate may return a `LayerResult` instead of `(passed, detail)` / `bool`
+  to contribute metrics to the trajectory or constraint layer.
+- `Score.metrics` flattens them as `"<layer>.<name>"`
+  (`outcome.final_correct`), which is how they appear everywhere else: in the
+  `.score.json` sidecar (under each layer's `"metrics"` key, only when
+  present, so sidecars without metrics are unchanged), in
+  `AggregateResult.metrics`, and in `wt rescore --json`.
+- Across runs, booleans aggregate to a rate, numbers to mean/min/max, and
+  strings to value counts (`windtunnel.api.aggregate_metrics`). A run that
+  omits a metric simply isn't counted for it.
 
 **Fast scorer iteration with `wt rescore`.** A saved trace contains the
 transcript, server-witnessed MCP calls, and `trace.observations`, so most scorer
@@ -228,6 +266,9 @@ flipped with one command:
                     "old_detail": "...", "detail": "missing fact groups: ..."},
         "trajectory": {"old": "PASS", "new": "PASS", "changed": false, "...": "..."}
       },
+      "metrics": {"old": {"outcome.revisions": 3},
+                  "new": {"outcome.revisions": 5, "outcome.final_correct": false}},
+      "metrics_changed": true,
       "written": false
     }
   ],
@@ -236,7 +277,8 @@ flipped with one command:
 }
 ```
 
-`old` is `UNKNOWN` when the trace has no sidecar yet. Traces that fail to load
+`old` is `UNKNOWN` (and old metrics `null`) when the trace has no sidecar
+yet. Text mode appends the new metrics to each trace's line. Traces that fail to load
 or whose scenario no longer exists appear with `"status": "error"` or
 `"unresolved"` and an `error` message.
 

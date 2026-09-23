@@ -7,7 +7,13 @@ Example::
     from windtunnel.api import Scenario, Trace, run_scenario
     from windtunnel.api.evaluators import evaluate_outcome
 """
-from windtunnel.api.aggregate import AggregateResult, ScenarioRunResult, aggregate_runs
+from windtunnel.api.aggregate import (
+    AggregateResult,
+    MetricSummary,
+    ScenarioRunResult,
+    aggregate_metrics,
+    aggregate_runs,
+)
 from windtunnel.api.canary import CanaryResult, run_reset_canary
 from windtunnel.api.evaluators import (
     evaluate_constraint,
@@ -73,6 +79,7 @@ from windtunnel.api.score import (
     FailureCost,
     GateLayer,
     LayerResult,
+    MetricValue,
     Score,
     ScoreFormatError,
     Verdict,
@@ -129,7 +136,7 @@ __all__ = [
     "TRACE_FORMAT_VERSION", "Hash", "Trace", "TraceFormatError", "Turn", "compute_hash",
     "load_trace", "save_trace", "storage_path",
     # score
-    "SCORE_FORMAT_VERSION", "FailureCost", "GateLayer", "LayerResult", "Score",
+    "SCORE_FORMAT_VERSION", "FailureCost", "GateLayer", "LayerResult", "MetricValue", "Score",
     "ScoreFormatError", "Verdict", "score_from_dict", "score_to_dict",
     # scenario
     "NumberFact", "Perturbation", "Policy", "PreSendPerturbation", "Scenario",
@@ -152,7 +159,8 @@ __all__ = [
     "InjectWrongPriorToolCall", "InjectSchemaRejectedCall", "InjectPaginationTruncation",
     "ToolReturnsMalformedJson", "ToolTimeoutPerScenario", "ToolReturnsEmptyUnexpected",
     # aggregate
-    "AggregateResult", "ScenarioRunResult", "aggregate_runs",
+    "AggregateResult", "MetricSummary", "ScenarioRunResult", "aggregate_metrics",
+    "aggregate_runs",
     # canary
     "CanaryResult", "run_reset_canary",
     # runner

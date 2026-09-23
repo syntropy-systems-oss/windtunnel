@@ -84,7 +84,7 @@ from windtunnel.api._matching import (
     tool_name_matches as tool_name_matches,
 )
 from windtunnel.api.scenario import NumberFact, Scenario, TrajectoryCheck
-from windtunnel.api.score import LayerResult
+from windtunnel.api.score import LayerResult, MetricValue
 from windtunnel.api.trace import Trace
 
 # ─── Negation-aware forbidden_facts gate ─────────────────────────────────────
@@ -376,9 +376,15 @@ def evaluate_trajectory(trace: Trace, scenario: Scenario) -> LayerResult:
 
     failures: list[str] = []
     annotations: list[str] = []
+    metrics: dict[str, MetricValue] = {}
     for check, is_custom in checks:
         try:
-            passed, detail = check.check_trace(trace, tool_names)
+            outcome = check.check_trace(trace, tool_names)
+            if isinstance(outcome, LayerResult):
+                passed, detail = outcome.passed, outcome.detail
+                metrics.update(outcome.metrics)
+            else:
+                passed, detail = outcome
         except Exception as exc:
             passed, detail = False, f"{type(check).__name__}(error: {exc})"
         if not passed:
@@ -390,12 +396,13 @@ def evaluate_trajectory(trace: Trace, scenario: Scenario) -> LayerResult:
         return LayerResult(
             passed=False,
             detail=f"{'; '.join(failures)} [evidence: {evidence}]",
+            metrics=metrics,
         )
 
     detail = "trajectory requirements satisfied"
     if annotations:
         detail += "; " + "; ".join(annotations)
-    return LayerResult(passed=True, detail=f"{detail} [evidence: {evidence}]")
+    return LayerResult(passed=True, detail=f"{detail} [evidence: {evidence}]", metrics=metrics)
 
 
 # ─── Constraint evaluator ─────────────────────────────────────────────────────
@@ -404,12 +411,22 @@ def evaluate_constraint(trace: Trace, scenario: Scenario) -> LayerResult:
     """Evaluate the constraint layer: policies/permissions respected?
 
     Each policy is a named predicate over the trace. All must pass.
-    Failed policy names are collected for the diagnostic detail.
+    Failed policy names are collected for the diagnostic detail. A predicate
+    that returns a LayerResult contributes its metrics to the layer (later
+    policies win on a name collision) and its detail to the violation entry.
     """
     failed_policies: list[str] = []
+    metrics: dict[str, MetricValue] = {}
     for policy in scenario.policies:
         try:
-            if not policy.predicate(trace):
+            verdict = policy.predicate(trace)
+            if isinstance(verdict, LayerResult):
+                metrics.update(verdict.metrics)
+                if not verdict.passed:
+                    failed_policies.append(
+                        f"{policy.name}: {verdict.detail}" if verdict.detail else policy.name
+                    )
+            elif not verdict:
                 failed_policies.append(policy.name)
         except Exception as exc:
             failed_policies.append(f"{policy.name}(error: {exc})")
@@ -418,9 +435,10 @@ def evaluate_constraint(trace: Trace, scenario: Scenario) -> LayerResult:
         return LayerResult(
             passed=False,
             detail=f"constraint violations: {failed_policies}",
+            metrics=metrics,
         )
 
-    return LayerResult(passed=True, detail="all constraints satisfied")
+    return LayerResult(passed=True, detail="all constraints satisfied", metrics=metrics)
 
 
 # ─── Experiment-integrity evaluator ───────────────────────────────────────────
