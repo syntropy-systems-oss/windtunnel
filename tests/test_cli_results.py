@@ -162,6 +162,19 @@ class TestWtResults:
         assert document["labels"] == ["baseline", "candidate"]
         assert [row["label"] for row in document["results"]] == ["baseline", "candidate"]
 
+    def test_a_repeated_label_is_summarized_once(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        runs_dir = tmp_path / "runs"
+        _save_run(runs_dir, _scenario(), "candidate", "yes")
+
+        rc, out, _err = _results(
+            capsys, "--runs", str(runs_dir), "--label", "candidate", "--label", "candidate", "--json"
+        )
+
+        assert rc == 0
+        assert len(json.loads(out)["results"]) == 1
+
     def test_scenario_filter_narrows_the_summary(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
