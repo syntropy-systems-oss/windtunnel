@@ -27,9 +27,11 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import functools
 import json
 import shutil
 import sys
+import threading
 import traceback
 from importlib import resources
 from pathlib import Path
@@ -118,6 +120,11 @@ from windtunnel._cli.scenario_discovery import (
 from windtunnel._cli.scenario_discovery import (
     _select_scenarios as _select_scenarios_impl,
 )
+from windtunnel._cli.scheduling import (
+    SchedulingError,
+    resolve_scheduler,
+    runtime_concurrency_limit,
+)
 from windtunnel._cli.selftest import _cmd_selftest as _cmd_selftest_impl
 from windtunnel._cli.storage import (
     _append_ledger_records as _append_ledger_records_impl,
@@ -169,6 +176,7 @@ from windtunnel.api.aggregate import ScenarioRunResult
 from windtunnel.api.scenario import Scenario
 from windtunnel.api.score import Score
 from windtunnel.api.trace import Trace
+from windtunnel.spi.scheduler import RunJob
 from windtunnel.triage.classifier import FailureClassification, FailureClassifier
 
 # Compatibility facade: command orchestration and historical test seams remain
@@ -422,6 +430,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
     Scenarios arrive as ScenarioPacks: the built-in dims plus any pack
     installed under the "windtunnel.scenario_packs" entry-point group —
     see windtunnel.api.pack and _discover_scenario_packs.
+
+    Each selected scenario becomes one RunJob (its N runs on one provisioned
+    handle) and a Scheduler executes the jobs — sequentially by default, or
+    concurrently up to the runtime plugin's declared limit (see
+    windtunnel.spi.scheduler). All sweep bookkeeping below is guarded by one
+    lock, and outputs are reported in selection order either way.
     """
     from windtunnel.api.preconditions import WorldMismatchError  # noqa: PLC0415
     from windtunnel.api.runner import run_scenario  # noqa: PLC0415
@@ -505,6 +519,28 @@ def _cmd_run(args: argparse.Namespace) -> int:
         persona_doc=persona_doc,
     )
 
+    # How the scenario jobs execute. Never more at once than the runtime
+    # plugin declares it tolerates (default 1): many runtimes bind fixed ports.
+    try:
+        scheduler, max_jobs, scheduling_notices = resolve_scheduler(
+            getattr(args, "scheduler", None) or "sequential",
+            requested=getattr(args, "max_concurrency", None),
+            runtime_limit=runtime_concurrency_limit(plugin, runtime_name),
+            runtime_name=runtime_name,
+            hooks_active=bool(hooks),
+        )
+    except SchedulingError as exc:
+        print(f"wt run: {exc}", file=sys.stderr)
+        return 2
+    for notice in scheduling_notices:
+        print(f"wt run: {notice}", file=sys.stderr)
+    if max_jobs > 1:
+        print(
+            f"wt run: running up to {max_jobs} scenario jobs at once "
+            f"({scheduler.name} scheduler)",
+            file=sys.stderr,
+        )
+
     pre_run = getattr(plugin, "pre_run", None)
     post_run = getattr(plugin, "post_run", None)
     # Progress events for `wt watch`. Written from here on so every exit —
@@ -515,6 +551,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         runtime=runtime_name,
         scenarios=[scenario.name for scenario in scenarios],
         runs_per_scenario=n_runs,
+        scheduler=scheduler.name,
+        max_concurrency=max_jobs,
     )
     print(
         f"wt run: sweep {events.sweep_id} — follow with: "
@@ -524,13 +562,18 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     _ERROR_CIRCUIT_LIMIT = 3
 
+    # One lock guards every piece of sweep state and every summary line, so
+    # concurrent jobs can neither interleave output nor race the counters.
+    state = threading.Lock()
+    stop = threading.Event()  # set by the circuit breaker: start no more jobs
+    slots = threading.BoundedSemaphore(max_jobs)  # holds whatever the scheduler does
     any_fail = False
     aborted = False
     consecutive_errors = 0
     scenario_errors = 0
     first_error_logged = False
-    completed: list[_CompletedAggregate] = []
-    records: list[dict[str, Any]] = []
+    completed_at: dict[int, _CompletedAggregate] = {}
+    records_at: dict[int, dict[str, Any]] = {}
     git_sha = _git_sha()
     wt_version = _wt_version()
 
@@ -539,7 +582,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
         Ledger rows were appended as each scenario finished; the same records
         feed `--format json` so the sweep document and the ledger cannot drift.
+        Both are reported in selection order, whatever order jobs finished in.
         """
+        completed = [completed_at[index] for index in sorted(completed_at)]
+        records = [records_at[index] for index in sorted(records_at)]
         for artifact in _dispatch_pack_end_hooks(hooks, config=config, completed=completed):
             _write_pack_hook_artifact(runs_dir, sweep_timestamp, artifact)
         if output_format is None or output_path is None:
@@ -580,9 +626,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
             duration_s=_run_duration_seconds(run_result),
         )
 
-    def _run_entry(selected_entry: _SelectedScenario) -> bool:
-        """Run one scenario's batch; return True when the circuit breaker trips."""
-        nonlocal any_fail, consecutive_errors, scenario_errors, first_error_logged
+    def _run_entry(job_index: int, selected_entry: _SelectedScenario) -> None:
+        """Run one scenario's batch (one RunJob) and record its outcome."""
+        nonlocal any_fail, aborted, consecutive_errors, scenario_errors, first_error_logged
         scenario = selected_entry.scenario
         scenario_pack = selected_entry.pack
         # Wire the MCPServer only when the runtime can mount runner-managed
@@ -627,8 +673,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # multi-dim sweep. run_scenario tears down in its own finally, so the next
         # scenario re-provisions from a clean slate. BUT a SYSTEMIC outage (a dead
         # queue or inference worker) would otherwise burn the full readiness timeout per
-        # scenario across the whole sweep — so a circuit breaker aborts after N
-        # consecutive errors, and the FIRST error logs a full traceback (the
+        # scenario across the whole sweep — so a circuit breaker stops the sweep after
+        # N consecutive errors, and the FIRST error logs a full traceback (the
         # per-scenario lines clip the message to 120 chars).
         try:
             result = run_scenario(
@@ -647,43 +693,41 @@ def _cmd_run(args: argparse.Namespace) -> int:
             # a failure there escapes the sweep exactly as it always has.
             raise failure.error from None
         except WorldMismatchError as exc:
-            any_fail = True
-            consecutive_errors = 0
-            print(f"  WORLD   {scenario.name:<40}  preconditions failed")
-            print(f"wt run: {exc}", file=sys.stderr)
+            with state:
+                any_fail = True
+                consecutive_errors = 0
+                print(f"  WORLD   {scenario.name:<40}  preconditions failed")
+                print(f"wt run: {exc}", file=sys.stderr)
             events.emit(
                 "scenario_error", scenario_id=scenario.name, kind="world_mismatch", error=str(exc)
             )
-            return False
+            return
         except Exception as exc:  # noqa: BLE001 — sweep-level isolation, detail printed
-            any_fail = True
-            consecutive_errors += 1
-            scenario_errors += 1
-            print(f"  ERROR   {scenario.name:<40}  ({type(exc).__name__}: {str(exc)[:120]})")
+            with state:
+                any_fail = True
+                consecutive_errors += 1
+                scenario_errors += 1
+                print(f"  ERROR   {scenario.name:<40}  ({type(exc).__name__}: {str(exc)[:120]})")
+                if not first_error_logged:
+                    first_error_logged = True
+                    traceback.print_exc()
+                if consecutive_errors >= _ERROR_CIRCUIT_LIMIT and not aborted:
+                    aborted = True
+                    stop.set()
+                    print(
+                        f"wt run: aborting after {consecutive_errors} consecutive scenario "
+                        f"errors — likely a systemic outage (e.g. the bench inference worker "
+                        f"is down), not per-scenario flakiness. Fix the root cause and re-run "
+                        f"rather than churning the remaining scenarios.",
+                        file=sys.stderr,
+                    )
             events.emit(
                 "scenario_error",
                 scenario_id=scenario.name,
                 kind="error",
                 error=f"{type(exc).__name__}: {exc}",
             )
-            if not first_error_logged:
-                first_error_logged = True
-                traceback.print_exc()
-            if consecutive_errors >= _ERROR_CIRCUIT_LIMIT:
-                print(
-                    f"wt run: aborting after {consecutive_errors} consecutive scenario "
-                    f"errors — likely a systemic outage (e.g. the bench inference worker "
-                    f"is down), not per-scenario flakiness. Fix the root cause and re-run "
-                    f"rather than churning the remaining scenarios.",
-                    file=sys.stderr,
-                )
-                return True
-            return False
-
-        consecutive_errors = 0  # a successful scenario resets the breaker
-        agg = result.aggregate
-        for warning in getattr(result, "worker_warnings", []) or []:
-            print(f"wt run: warning: {warning}", file=sys.stderr)
+            return
 
         # Runs the runner did not hand to on_run_complete (a replacement
         # run_scenario that returns only a finished result) are saved now, to
@@ -709,14 +753,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
             for run_result in result.runs
             for w in (getattr(run_result.trace, "worker_warnings", None) or [])
         )
-        completed.append(
-            _CompletedAggregate(
-                pack=selected_entry.pack,
-                scenario=scenario,
-                result=result,
-                transport_only=transport_only,
-                had_runner_error=had_runner_error,
-            )
+        completed_entry = _CompletedAggregate(
+            pack=selected_entry.pack,
+            scenario=scenario,
+            result=result,
+            transport_only=transport_only,
+            had_runner_error=had_runner_error,
         )
         # The scenario's ledger row lands as soon as its aggregate exists, so a
         # sweep that dies later still leaves every finished scenario recorded.
@@ -728,9 +770,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             git_sha=git_sha,
             wt_version=wt_version,
         )
-        records.append(record)
-        _append_ledger_records(runs_dir, [record])
-
+        agg = result.aggregate
         status = agg.verdict
         if had_runner_error:
             note = "  ✗ EXECUTION ERROR (runner_error in trace — counts as a real failure)"
@@ -738,16 +778,23 @@ def _cmd_run(args: argparse.Namespace) -> int:
             note = "  ⚠ transport-only (history-shaping perturbation post-hoc; not model signal)"
         else:
             note = ""
-        print(
-            f"  {status:<6}  {scenario.name:<40}  "
-            f"({agg.passed}/{agg.total} pass, rate={agg.pass_rate:.0%}){note}"
-        )
         # transport-only dims run faithfully but their MODEL verdict is not a
         # model-quality signal, so it doesn't flip the exit code — UNLESS the run
         # hit a real execution error (no valid model turn happened).
-        gate_failure = _counts_as_gate_failure(completed[-1])
-        if gate_failure:
-            any_fail = True
+        gate_failure = _counts_as_gate_failure(completed_entry)
+        with state:
+            consecutive_errors = 0  # a successful scenario resets the breaker
+            for warning in getattr(result, "worker_warnings", []) or []:
+                print(f"wt run: warning: {warning}", file=sys.stderr)
+            completed_at[job_index] = completed_entry
+            records_at[job_index] = record
+            _append_ledger_records(runs_dir, [record])
+            print(
+                f"  {status:<6}  {scenario.name:<40}  "
+                f"({agg.passed}/{agg.total} pass, rate={agg.pass_rate:.0%}){note}"
+            )
+            if gate_failure:
+                any_fail = True
         events.emit(
             "scenario_finished",
             scenario_id=scenario.name,
@@ -757,15 +804,23 @@ def _cmd_run(args: argparse.Namespace) -> int:
             pass_rate=agg.pass_rate,
             gate_failure=gate_failure,
         )
-        return False
+
+    def _job(job_index: int, selected_entry: _SelectedScenario) -> None:
+        with slots:
+            _run_entry(job_index, selected_entry)
 
     def _run_sweep() -> int:
-        nonlocal aborted
-        for selected_entry in selected:
-            if _run_entry(selected_entry):
-                aborted = True
-                return _finish(1)
-        return _finish(1 if any_fail else 0)
+        jobs = [
+            RunJob(
+                index=job_index,
+                name=entry.scenario.name,
+                runs=n_runs,
+                fn=functools.partial(_job, job_index, entry),
+            )
+            for job_index, entry in enumerate(selected)
+        ]
+        scheduler.execute(jobs, stop)
+        return _finish(1 if aborted or any_fail else 0)
 
     exit_code: int | None = None
     try:
@@ -799,7 +854,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 "error" if exit_code is None else ("aborted" if aborted else "completed")
             ),
             scenarios=len(selected),
-            completed=len(completed),
+            completed=len(completed_at),
             errors=scenario_errors,
         )
 
@@ -1943,6 +1998,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="Path for --format junit/json output. Must be paired with --format.",
     )
+    _add_scheduling_args(run_p)
 
     # ── selftest ────────────────────────────────────────────────────────────
     selftest_p = sub.add_parser(
@@ -2313,6 +2369,28 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def _add_scheduling_args(parser: argparse.ArgumentParser) -> None:
+    """Options that decide how a sweep's scenario jobs execute."""
+    parser.add_argument(
+        "--scheduler",
+        default=None,
+        metavar="SCHEDULER",
+        help="How scenario jobs execute: 'sequential' (default: one scenario at a "
+        "time), 'concurrent' (a thread pool of up to --max-concurrency jobs, each "
+        "provisioning its own handle), or 'package.module:Class' / "
+        "'path/to/file.py:Class' naming a windtunnel.spi.Scheduler subclass.",
+    )
+    parser.add_argument(
+        "--max-concurrency",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="Most scenario jobs to run at once under a concurrent scheduler "
+        "(default: the runtime's declared limit, or 4 when it declares none). "
+        "Never exceeds the runtime plugin's max_concurrency, which defaults to 1.",
+    )
 
 
 def _positive_int(raw: str) -> int:

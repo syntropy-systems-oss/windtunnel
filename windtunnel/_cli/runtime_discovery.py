@@ -14,6 +14,9 @@ from windtunnel.spi.runtime_plugin import RuntimePlugin
 class _InMemoryPlugin:
     """Built-in plugin for the zero-infrastructure scripted runtime."""
 
+    # In-process and stateless across handles: any number of concurrent jobs.
+    max_concurrency: int | None = None
+
     def build(self, runtime_name: str, label: str, soul_path: str | None) -> AgentRuntime:
         from windtunnel.runtimes.in_memory import InMemoryRuntime
 

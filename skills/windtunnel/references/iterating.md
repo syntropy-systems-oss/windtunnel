@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/iterating.md at a7d07149b666 — do not edit; edit docs/iterating.md. -->
+<!-- GENERATED from docs/iterating.md at 3d32a54b6535 — do not edit; edit docs/iterating.md. -->
 ---
 description: "Tight iteration loop for people and coding agents: follow sweeps live, tabulate results and metrics per label, compare labels, and rescore saved traces."
 ---
@@ -74,6 +74,35 @@ can background `wt run` and block on `wt watch` without losing the verdict.
 
 The event stream is progress, not record: nothing reads it to decide a
 verdict, and a failure to write it only warns.
+
+### Running scenarios concurrently
+
+A sweep is a list of **jobs**, one per selected scenario: a job provisions a
+handle, drives that scenario's `--runs` runs on it, and records the results. A
+scheduler decides how the jobs execute:
+
+```bash
+wt run --pack my_pack --runs 5 --label candidate                                   # sequential (default)
+wt run --pack my_pack --runs 5 --label candidate --scheduler concurrent --max-concurrency 4
+wt run --pack my_pack --label candidate --scheduler my_pkg.schedulers:Priority     # your own
+```
+
+- `sequential` runs one job at a time, exactly as sweeps always have.
+- `concurrent` runs up to `--max-concurrency` jobs at once on a thread pool.
+  It never exceeds the runtime plugin's declared `max_concurrency` — which is
+  1 unless the plugin says otherwise, because many runtimes bind fixed ports
+  or share one backend — and it prints one line whenever it clamps a request.
+  Lifecycle hooks force one job at a time, since hooks may keep state that
+  assumes sequential runs. Summary lines print as jobs finish; `--format`
+  output and the report keep selection order.
+- `package.module:Class` or `path/to/file.py:Class` loads a subclass of
+  `windtunnel.spi.Scheduler`: implement `execute(jobs, stop)` — run each
+  `RunJob` at most once, start none after `stop` is set, never more than
+  `self.max_concurrency` at once, and re-raise the first exception a job
+  raises. The CLI still enforces the runtime's limit around every job.
+
+The circuit breaker is unchanged: three consecutive scenario errors stop the
+sweep from starting new jobs.
 
 ## 3. Tabulate a label: `wt results`
 

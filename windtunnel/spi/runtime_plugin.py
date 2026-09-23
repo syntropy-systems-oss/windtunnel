@@ -62,6 +62,15 @@ one without the other is well-formed — e.g. a plugin whose bench prep needs
 no teardown (or vice versa, one that only needs to clean up a resource
 started somewhere other than pre_run) never has to stub the unused half.
 
+Concurrency is declared the same optional way, with a ``max_concurrency``
+attribute: how many scenario jobs of this runtime may run at once, each
+provisioning its own handle from the one built runtime. Absent means 1 —
+many runtimes bind fixed ports or share one reset-able backend, so
+concurrency is opt-in. An int >= 1 sets the limit; None declares no limit
+(an in-process runtime such as the built-in in_memory). `wt run --scheduler
+concurrent` never runs more jobs at once than this (see
+windtunnel.spi.scheduler).
+
 Like the rest of spi/, this is a structural Protocol — implementers don't
 subclass anything, they just provide matching methods.
 """

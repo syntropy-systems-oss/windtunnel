@@ -61,7 +61,8 @@ EXPECTED_SPI_EXPORTS = (
     "Hook", "HookArtifact", "HookContext", "FailureInjectableMCPHandle", "MCPCall",
     "MCPHandle", "MCPServer", "MCPSpec", "ToolDefinitionIntrospectableMCPHandle",
     "ToolIntrospectableMCPHandle", "RuntimePlugin", "ReferenceCapableAgentRuntime",
-    "ReferenceCase", "ReferenceDecision", "ReferenceKind", "ReferenceToolCall", "StateProbe",
+    "ReferenceCase", "ReferenceDecision", "ReferenceKind", "ReferenceToolCall", "RunJob",
+    "Scheduler", "SequentialScheduler", "ConcurrentScheduler", "StateProbe",
 )
 
 EXPECTED_DATACLASS_FIELDS = {

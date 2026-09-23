@@ -34,6 +34,12 @@ from windtunnel.spi.reference import (
     ReferenceToolCall,
 )
 from windtunnel.spi.runtime_plugin import RuntimePlugin
+from windtunnel.spi.scheduler import (
+    ConcurrentScheduler,
+    RunJob,
+    Scheduler,
+    SequentialScheduler,
+)
 from windtunnel.spi.state_probe import StateProbe
 
 __all__ = [
@@ -46,5 +52,6 @@ __all__ = [
     "RuntimePlugin",
     "ReferenceCapableAgentRuntime", "ReferenceCase", "ReferenceDecision",
     "ReferenceKind", "ReferenceToolCall",
+    "RunJob", "Scheduler", "SequentialScheduler", "ConcurrentScheduler",
     "StateProbe",
 ]
