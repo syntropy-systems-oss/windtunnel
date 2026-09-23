@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/iterating.md at 3d32a54b6535 — do not edit; edit docs/iterating.md. -->
+<!-- GENERATED from docs/iterating.md at 5b7930038be7 — do not edit; edit docs/iterating.md. -->
 ---
 description: "Tight iteration loop for people and coding agents: follow sweeps live, tabulate results and metrics per label, compare labels, and rescore saved traces."
 ---
@@ -103,6 +103,26 @@ wt run --pack my_pack --label candidate --scheduler my_pkg.schedulers:Priority  
 
 The circuit breaker is unchanged: three consecutive scenario errors stop the
 sweep from starting new jobs.
+
+### Sharing a runtime: the run lock
+
+Two sweeps against one runtime — two shells, two agents, a CI step and a
+developer — would reset each other's sessions and fight over its ports. So a
+sweep takes a machine-wide lock for its runtime before building it and holds
+it until `post_run()` returns. A second sweep waits, saying who it waits for:
+
+```text
+wt run: runtime 'my_runtime' is in use (held by pid 4242 on bench-host, since 2026-01-02T03:04:05Z, running `wt run --pack my_pack --label baseline`); waiting for it to finish — pass --no-wait to exit instead
+```
+
+`--no-wait` exits `75` at once instead, for callers that would rather retry
+than queue. The lock is an OS file lock, released by the kernel even when its
+holder is killed, so it never goes stale. It covers every runtime whose plugin
+declares a finite `max_concurrency` (the default); runtimes that declare no
+limit, such as `in_memory`, are never locked. The lock is keyed by runtime
+name, or by the plugin's `lock_key(runtime_name)` when one name can reach
+different backends (`http_inject` keys by its endpoint URL). Lock files live in
+`$WT_LOCK_DIR`, else a per-user directory under the system temp dir.
 
 ## 3. Tabulate a label: `wt results`
 

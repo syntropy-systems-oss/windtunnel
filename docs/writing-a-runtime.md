@@ -246,6 +246,12 @@ class HttpPlugin:
     def build(self, runtime_name, label, soul_path):
         return HttpRuntime(base_url=..., api_key=...)
 
+    # Which sweeps collide: two `wt run` invocations with the same key take
+    # turns. Default: the runtime name. Key by the backend when one name can
+    # reach several (here, a URL read from the environment).
+    def lock_key(self, runtime_name):
+        return f"{runtime_name}:{os.environ.get('MY_AGENT_URL', 'http://127.0.0.1:9000')}"
+
     def pre_run(self, runtime, scenarios, runtime_name):   # once, before the sweep
         ...
 
@@ -257,7 +263,10 @@ class HttpPlugin:
 never runs more jobs at once than the plugin declares, whatever
 `--max-concurrency` asks for. The default of 1 is deliberate — a runtime that
 binds fixed ports, or whose `reset_state()` wipes a backend shared by every
-session, must not be driven concurrently.
+session, must not be driven concurrently. Any finite value also makes each
+sweep hold a machine-wide lock on `lock_key` from before `build()` until after
+`post_run()`, so a second sweep queues instead of colliding (see
+[iterating on an agent](iterating.md#sharing-a-runtime-the-run-lock)).
 
 ## Checklist before trusting your runtime
 

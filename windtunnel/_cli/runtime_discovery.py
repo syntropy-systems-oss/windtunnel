@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Callable
 from typing import cast
@@ -30,6 +31,13 @@ class _HttpInjectPlugin:
         from windtunnel.runtimes.http_inject import HttpInjectRuntime
 
         return HttpInjectRuntime()
+
+    def lock_key(self, runtime_name: str) -> str:
+        """Sweeps collide per endpoint, not per runtime name: key by the URL."""
+        from windtunnel.runtimes.http_inject import DEFAULT_BASE_URL
+
+        base_url = os.environ.get("WT_INJECT_URL") or DEFAULT_BASE_URL
+        return f"{runtime_name}:{base_url.rstrip('/')}"
 
 
 class _TerminusPlugin:

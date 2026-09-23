@@ -193,6 +193,17 @@ class TestWtWatch:
             "sweep_finished",
         ]
 
+    def test_lock_events_render_as_waiting_and_acquired_lines(self) -> None:
+        from windtunnel._cli.watch import format_event
+
+        base = {"windtunnel_event": 1, "ts": "2026-01-02T03:04:05Z", "sweep_id": "abc", "label": "x"}
+        waiting = format_event(
+            {**base, "event": "lock_waiting", "lock": "rt", "holder": {"pid": 42}}
+        )
+        acquired = format_event({**base, "event": "lock_acquired", "lock": "rt", "waited_s": 3.25})
+        assert waiting.endswith("sweep abc waiting for runtime 'rt' held by pid 42")
+        assert acquired.endswith("sweep abc acquired runtime 'rt' after 3.2s")
+
     def test_follows_a_real_background_wt_run_by_label(self, tmp_path: Path) -> None:
         """The agent workflow: start `wt run` in the background, then block on
         `wt watch`, which streams the sweep and returns its exit code."""
