@@ -1,9 +1,9 @@
-<!-- GENERATED from docs/cli-reference.md at 32d88f4274e5 — do not edit; edit docs/cli-reference.md. -->
+<!-- GENERATED from docs/cli-reference.md at ed3695243360 — do not edit; edit docs/cli-reference.md. -->
 ---
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at a5d1be0aa6a1 — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at fe87409ce28b — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
 The `wt` command ships 14 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
@@ -110,7 +110,7 @@ Run scenarios against a runtime.
 Usage:
 
 ```bash
-wt run [-h] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--owner OWNER] [--soul PATH] [--agents PATH] [--runtime RUNTIME] [--hook HOOK] [--label LABEL] [--runs N] [--runs-dir DIR] [--format {junit,json}] [--out FILE]
+wt run [-h] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--owner OWNER] [--soul PATH] [--agents PATH] [--runtime RUNTIME] [--hook HOOK] [--label LABEL] [--runs N] [--runs-dir DIR] [--format {junit,json}] [--out FILE] [--scheduler SCHEDULER] [--max-concurrency N]
 ```
 
 Arguments and options:
@@ -131,6 +131,8 @@ Arguments and options:
 | `--runs-dir` | no | runs | Directory to write trace files (default: ./runs). |
 | `--format` | no |  | Machine-readable run output format. Must be paired with --out. Choices: junit, json. |
 | `--out` | no |  | Path for --format junit/json output. Must be paired with --format. |
+| `--scheduler` | no |  | How scenario jobs execute: 'sequential' (default: one scenario at a time), 'concurrent' (a thread pool of up to --max-concurrency jobs, each provisioning its own handle), or 'package.module:Class' / 'path/to/file.py:Class' naming a windtunnel.spi.Scheduler subclass. |
+| `--max-concurrency` | no |  | Most scenario jobs to run at once under a concurrent scheduler (default: the runtime's declared limit, or 4 when it declares none). Never exceeds the runtime plugin's max_concurrency, which defaults to 1. |
 
 ## `wt selftest`
 

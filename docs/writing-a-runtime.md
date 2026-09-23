@@ -228,6 +228,37 @@ class HttpRuntime:
         return HttpAgentHandle(self._base_url, self._api_key)
 ```
 
+## Registering it with the `wt` CLI
+
+`wt run --runtime <name>` finds a runtime through a `RuntimePlugin`
+(`windtunnel/spi/runtime_plugin.py`): an object with `build(runtime_name,
+label, soul_path) -> AgentRuntime`, registered under the `windtunnel.runtimes`
+entry-point group or passed as a `module:attr` path. Everything else on it is
+optional and discovered by capability:
+
+```python
+class HttpPlugin:
+    # How many scenario jobs may run at once, each provisioning its own
+    # handle from the one built runtime. Omit it (= 1) unless concurrent
+    # sessions are truly isolated; None declares no limit.
+    max_concurrency = 4
+
+    def build(self, runtime_name, label, soul_path):
+        return HttpRuntime(base_url=..., api_key=...)
+
+    def pre_run(self, runtime, scenarios, runtime_name):   # once, before the sweep
+        ...
+
+    def post_run(self, runtime, scenarios, runtime_name):  # once, even on abort
+        ...
+```
+
+`max_concurrency` is what makes `wt run --scheduler concurrent` safe: the CLI
+never runs more jobs at once than the plugin declares, whatever
+`--max-concurrency` asks for. The default of 1 is deliberate — a runtime that
+binds fixed ports, or whose `reset_state()` wipes a backend shared by every
+session, must not be driven concurrently.
+
 ## Checklist before trusting your runtime
 
 - [ ] Conformance tests pass (`test_runtime_conformance.py` pointed at your runtime).
