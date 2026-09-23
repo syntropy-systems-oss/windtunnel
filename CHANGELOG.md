@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.11.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.10.2...v0.11.0) (2026-09-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `wt run --pack-source SRC` with no --pack no longer runs every registered pack; add --all-packs for the previous behavior.
+
+### Features
+
+* **cli:** --pack-source without --pack runs only the sourced pack ([bb93cbf](https://github.com/syntropy-systems-oss/windtunnel/commit/bb93cbf7f12229c4d602be5d11295eccb6300790))
+* **cli:** machine-wide runtime lock so concurrent wt run sweeps queue ([0f26d57](https://github.com/syntropy-systems-oss/windtunnel/commit/0f26d572cd918d3be759d929f87530cc8d58e492))
+* **cli:** write each run as it completes, and follow sweeps with wt watch ([5ed68cf](https://github.com/syntropy-systems-oss/windtunnel/commit/5ed68cfe51d692d28890765c0a57f9f04e395c51))
+* **cli:** wt batch runs a file of wt run specs back to back ([dd924a5](https://github.com/syntropy-systems-oss/windtunnel/commit/dd924a51104b8c30d98e45a1c2c96b1177772682))
+* **cli:** wt rescore --label filter and --json flip report ([77f79f5](https://github.com/syntropy-systems-oss/windtunnel/commit/77f79f59c81923955ddcbe0884f9bf77de50857d))
+* **cli:** wt results and metric deltas in wt compare ([750872e](https://github.com/syntropy-systems-oss/windtunnel/commit/750872e266f8cd0cd00160e045fd0b74760cfb76))
+* **scoring:** named metrics on LayerResult, persisted in score sidecars ([60d319f](https://github.com/syntropy-systems-oss/windtunnel/commit/60d319fb73723da228427b8fde61a86906a4bbdc))
+* **spi:** pluggable sweep scheduler with runtime-declared concurrency ([4cd0447](https://github.com/syntropy-systems-oss/windtunnel/commit/4cd0447461f02e9dff0d86c37015cca9e7b19dd2))
+
+
+### Bug Fixes
+
+* **cli:** wt watch skips crashed sweeps; batch output stays grouped ([674df40](https://github.com/syntropy-systems-oss/windtunnel/commit/674df40675189fd2e186b1928f2b88c618a6fe6a))
+
 ## [0.10.2](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.10.1...v0.10.2) (2026-07-18)
 
 
