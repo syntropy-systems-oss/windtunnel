@@ -175,6 +175,31 @@ class TestWtWatch:
         assert rc == 1
         assert "exited without finishing" in err
 
+    @pytest.mark.skipif(os.name != "posix", reason="liveness probing is POSIX-only")
+    def test_an_old_crashed_sweep_is_skipped_in_favor_of_waiting(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        exited = subprocess.Popen([sys.executable, "-c", "pass"])
+        exited.wait()
+        _append_raw(
+            tmp_path,
+            {
+                "windtunnel_event": 1,
+                "ts": "2020-01-01T00:00:00Z",
+                "event": "sweep_started",
+                "sweep_id": "crashed00000",
+                "label": "candidate",
+                "pid": exited.pid,
+                "host": socket.gethostname(),
+            },
+        )
+
+        rc, out, err = _watch(capsys, tmp_path, "--label", "candidate", "--timeout", "0.3")
+
+        assert rc == 124
+        assert out == ""
+        assert "waiting for a sweep with label 'candidate'" in err
+
     def test_json_mode_prints_each_raw_event(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

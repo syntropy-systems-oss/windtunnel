@@ -26,7 +26,7 @@ def _cmd_results(args: argparse.Namespace) -> int:
     missing.
     """
     runs_dir = Path(args.runs)
-    requested: list[str] = list(args.label or [])
+    requested: list[str] = list(dict.fromkeys(args.label or []))
     patterns: list[str] = list(args.scenario or [])
     if not runs_dir.is_dir():
         print(f"wt results: runs directory not found: {runs_dir}", file=sys.stderr)

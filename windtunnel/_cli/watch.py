@@ -89,11 +89,17 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         if event["event"] == "sweep_started":
             started[event["sweep_id"]] = event
     if target is None:
+        # Running (unfinished, writer not known dead) or just started. An old
+        # sweep that crashed without finishing is neither, so it is skipped in
+        # favor of waiting for the next one.
         candidates = [
             event
             for sweep_id, event in started.items()
             if _matches(event)
-            and (sweep_id not in finished or _started_recently(event))
+            and (
+                (sweep_id not in finished and _writer_alive(event) is not False)
+                or _started_recently(event)
+            )
         ]
         if candidates:
             target = candidates[-1]["sweep_id"]

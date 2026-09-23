@@ -90,6 +90,9 @@ def _cmd_batch(
 
     results: list[tuple[_Spec, int]] = []
     for position, spec in enumerate(specs, start=1):
+        # Keep each spec's stdout (its summary lines) grouped under its stderr
+        # header even when both streams are piped to one reader.
+        sys.stdout.flush()
         print(
             f"wt batch: [{position}/{len(specs)}] {source}:{spec.line}: {spec.text}",
             file=sys.stderr,
@@ -104,6 +107,7 @@ def _cmd_batch(
             code = 1
         results.append((spec, code))
 
+    sys.stdout.flush()
     print(f"wt batch: {len(results)} spec(s) finished:", file=sys.stderr)
     for spec, code in results:
         label = getattr(spec.args, "label", None) or "cli_run"
