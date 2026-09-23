@@ -1,18 +1,19 @@
-<!-- GENERATED from docs/cli-reference.md at 4bc75305da0f — do not edit; edit docs/cli-reference.md. -->
+<!-- GENERATED from docs/cli-reference.md at 32d88f4274e5 — do not edit; edit docs/cli-reference.md. -->
 ---
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at 77ebdf5841e1 — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at a5d1be0aa6a1 — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
-The `wt` command ships 13 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
+The `wt` command ships 14 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
 
 | Command | Purpose |
 |---|---|
 | `wt report` | Generate a report from a runs/ directory. |
 | `wt compare` | Compare results across variant labels. |
 | `wt results` | Summarize saved runs per label and scenario: pass counts and aggregated metrics. |
+| `wt watch` | Follow a sweep's progress events (run started, run finished with verdict, sweep finished) and exit with the sweep's exit code. |
 | `wt run` | Run scenarios against a runtime. |
 | `wt selftest` | Certify scenario gates with live golden and poison references. |
 | `wt rescore` | Re-score saved traces against current scenario definitions. |
@@ -80,6 +81,27 @@ Arguments and options:
 | `--label` | no |  | Variant label to summarize (the `wt run --label` value). Repeat for several; omit for every label under --runs. |
 | `--scenario` | no |  | Only summarize scenarios matching S (shell-style globs). Repeat for multiple. |
 | `--json` | no | false | Print one JSON document with every run's trace path, verdict, and metrics alongside the per-scenario aggregates. |
+
+## `wt watch`
+
+Follow a sweep's progress events (run started, run finished with verdict, sweep finished) and exit with the sweep's exit code.
+
+Usage:
+
+```bash
+wt watch [-h] [--runs DIR] [--label LABEL] [--sweep ID] [--json] [--timeout SECONDS] [--poll SECONDS]
+```
+
+Arguments and options:
+
+| Name | Required | Default | Help |
+|---|---:|---|---|
+| `--runs` | no | runs | The --runs-dir the sweep writes to (default: ./runs). |
+| `--label` | no |  | Follow the running (or just-started) sweep with this variant label, or wait for the next one to start. |
+| `--sweep` | no |  | Follow exactly this sweep id (printed by `wt run` on stderr); a sweep that already finished is replayed. |
+| `--json` | no | false | Print each event as its raw JSON line instead of a summary line. |
+| `--timeout` | no |  | Give up after SECONDS and exit 124 (default: wait until the sweep ends). |
+| `--poll` | no | 0.5 | Seconds between reads of the event file (default: 0.5). |
 
 ## `wt run`
 

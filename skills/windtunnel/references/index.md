@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/index.md at 8901538bfa7d — do not edit; edit docs/index.md. -->
+<!-- GENERATED from docs/index.md at 7775ef9ba4fe — do not edit; edit docs/index.md. -->
 ---
 description: "Overview of Wind Tunnel's agent reliability gates, experiment integrity, import workflow, CLI, and starting points."
 ---
@@ -62,6 +62,7 @@ outcome gate, because a trace proves what happened, not what should pass. See
 | `wt report` | Render saved runs as HTML, Markdown, or JSON. |
 | `wt compare` | Diff variant labels such as `baseline` and `candidate`, including metric deltas. |
 | `wt results` | Tabulate a label's runs per scenario: pass counts and aggregated metrics. |
+| `wt watch` | Follow a running sweep's progress and exit with its exit code. |
 | `wt replay` | Re-run a saved trace's last user turn against a runtime. |
 | `wt doctor` | Run the reset-isolation canary against a live runtime. |
 | `wt import` | Generate a scenario skeleton from a `*.wtin.json` trace envelope. |

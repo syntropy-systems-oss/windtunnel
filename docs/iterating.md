@@ -1,5 +1,5 @@
 ---
-description: "Tight iteration loop for people and coding agents: rescore saved traces, tabulate results and metrics per label, and compare labels."
+description: "Tight iteration loop for people and coding agents: follow sweeps live, tabulate results and metrics per label, compare labels, and rescore saved traces."
 ---
 # Iterating on an agent
 
@@ -8,8 +8,9 @@ page is the loop an operator — or a coding agent driving `wt` from a shell —
 repeats: change something, run it under a new label, read the results, compare
 against the baseline, and re-score old traces when only the scorer changed.
 
-Every command here reads the same files `wt run` writes (`<trace>.json`, its
-`.score.json` sidecar, and `ledger.ndjsonl`) and never provisions a runtime.
+Every command here reads the files `wt run` writes (`<trace>.json`, its
+`.score.json` sidecar, `ledger.ndjsonl`, and `events.ndjsonl`) and never
+provisions a runtime.
 Each one has a `--json` mode whose document is stable and versioned, so an
 agent never has to parse the human table.
 
@@ -27,7 +28,53 @@ Re-using a label is allowed. Reports, `wt compare`, and `wt results` then read
 the label's latest sweep as recorded in the ledger (or every saved run with the
 label when the ledger has no row for it, e.g. a directory of copied traces).
 
-## 2. Tabulate a label: `wt results`
+`wt run` writes each run's trace and `.score.json` sidecar the moment that run
+is scored, and each scenario's ledger row the moment its last run finishes, so
+a long sweep leaves its evidence behind as it goes and a killed sweep keeps
+everything it finished. The file layout is the same as it has always been.
+
+## 2. Follow a sweep: `wt watch`
+
+Every sweep also appends progress events to `<runs-dir>/events.ndjsonl`, and
+`wt watch` turns them into one line per event:
+
+```bash
+wt run --pack my_pack --runs 3 --label candidate &     # prints: wt run: sweep 3f2a9c1b7e4d — ...
+wt watch --runs runs/ --label candidate
+```
+
+```text
+14:02:10 sweep 3f2a9c1b7e4d started: label candidate, runtime my_runtime, 2 scenario(s) x 3 run(s)
+14:02:10 lookup_order run 1/3 started
+14:02:31 lookup_order run 1/3 PASS (20.8s) outcome.final_correct=True outcome.revisions=6
+14:02:31 lookup_order run 2/3 started
+14:02:55 lookup_order run 2/3 FAIL (23.9s) failed: outcome outcome.final_correct=False outcome.revisions=11
+...
+14:03:40 lookup_order FAIL 2/3 pass
+14:04:52 sweep 3f2a9c1b7e4d finished: exit 1 (completed; 2/2 scenario(s), 0 error(s))
+```
+
+It exits when the sweep ends, **with the sweep's own exit code**, so an agent
+can background `wt run` and block on `wt watch` without losing the verdict.
+
+- `--label L` follows the newest sweep with that label that is still running
+  or started in the last few seconds, and otherwise waits for the next one to
+  start. `--sweep ID` (the id `wt run` prints on stderr) follows exactly one
+  sweep and replays it if it has already finished — the race-free choice.
+- A sweep whose process dies without finishing (killed, crashed) ends the
+  watch with exit `1`; its completed runs are already on disk. `--timeout S`
+  gives up after S seconds with exit `124`.
+- `--json` prints the raw event lines. Events are `sweep_started`,
+  `run_started`, `run_finished` (verdict, per-layer pass/fail, metrics, trace
+  path, duration), `scenario_finished` (aggregate verdict and pass counts),
+  `scenario_error`, and `sweep_finished` (exit code and status: `completed`,
+  `aborted` by the circuit breaker, or `error`). Every event carries
+  `windtunnel_event: 1`, a timestamp, the `sweep_id`, and the `label`.
+
+The event stream is progress, not record: nothing reads it to decide a
+verdict, and a failure to write it only warns.
+
+## 3. Tabulate a label: `wt results`
 
 ```bash
 wt results --runs runs/ --label candidate
@@ -81,7 +128,7 @@ label's newest ledger row) or `all_traces` (no ledger row: every saved run with
 the label). `wt results` exits `2` when the runs directory is missing or no
 requested label exists, naming the labels that do.
 
-## 3. Compare against the baseline: `wt compare`
+## 4. Compare against the baseline: `wt compare`
 
 ```bash
 wt compare --labels baseline candidate
@@ -102,7 +149,7 @@ strings compare per-value counts. A metric reported under only one label shows
 metric movement is information, never a gate. `--json` emits the verdicts,
 changes, and `metric_deltas` as one document.
 
-## 4. Re-score instead of re-running: `wt rescore`
+## 5. Re-score instead of re-running: `wt rescore`
 
 When only the scorer changed, the saved traces already hold the evidence:
 

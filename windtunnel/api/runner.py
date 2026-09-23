@@ -43,7 +43,7 @@ Matrix dispatch:
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -359,6 +359,8 @@ def run_scenario(
     skip_reset: bool = False,
     state_probe: StateProbe | None = None,
     hooks: Sequence[object] = (),
+    on_run_start: Callable[[int], None] | None = None,
+    on_run_complete: Callable[[int, ScenarioRunResult], None] | None = None,
 ) -> ScenarioResult:
     """Run one Scenario N times against the given runtime + mcp set.
 
@@ -366,8 +368,10 @@ def run_scenario(
     1. Provisions an AgentHandle via runtime.provision(config).
     2. Starts all MCP servers via mcp.start().
     3. For each run:
-       a. Calls handle.reset_state() (unless skip_reset=True).
-       b. Calls _run_once() to drive the scenario and score it.
+       a. Calls on_run_start(index), if given.
+       b. Calls handle.reset_state() (unless skip_reset=True).
+       c. Calls _run_once() to drive the scenario and score it.
+       d. Calls on_run_complete(index, run_result), if given.
     4. Aggregates results across all runs.
     5. Calls handle.teardown() and mcp.stop() when done.
 
@@ -384,6 +388,18 @@ def run_scenario(
                             caller owns the probe's fixture lifecycle; the
                             runner never starts/stops it.
         hooks:              explicit lifecycle hooks, fired in activation order.
+        on_run_start:       optional callback receiving the 0-based run index
+                            just before that run's reset_state().
+        on_run_complete:    optional callback receiving the 0-based run index
+                            and the scored ScenarioRunResult (the same object
+                            later returned in ScenarioResult.runs) as soon as
+                            that run is scored, before the next run starts —
+                            the seam for streaming each run to disk or to a
+                            progress display instead of waiting for all N.
+
+        Unlike hooks, the two callbacks are the caller's own control flow:
+        they run synchronously on this thread, and an exception they raise
+        stops the remaining runs and propagates after teardown.
 
     Returns ScenarioResult with aggregate verdict + per-run details.
     """
@@ -435,7 +451,9 @@ def run_scenario(
 
         run_results: list[ScenarioRunResult] = []
 
-        for _ in range(runs_per_scenario):
+        for run_index in range(runs_per_scenario):
+            if on_run_start is not None:
+                on_run_start(run_index)
             if not skip_reset:
                 handle.reset_state()
 
@@ -510,13 +528,14 @@ def run_scenario(
                         handle=handle,
                     )
 
-            run_results.append(
-                ScenarioRunResult(
-                    score=score,
-                    trace=trace,
-                    hook_artifacts=list(hook_state.artifacts) if hook_state is not None else [],
-                )
+            run_result = ScenarioRunResult(
+                score=score,
+                trace=trace,
+                hook_artifacts=list(hook_state.artifacts) if hook_state is not None else [],
             )
+            run_results.append(run_result)
+            if on_run_complete is not None:
+                on_run_complete(run_index, run_result)
 
         agg = aggregate_runs(
             run_results,
