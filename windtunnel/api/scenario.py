@@ -86,13 +86,16 @@ class Policy:
     """A named predicate over a Trace for the constraint layer.
 
     predicate: Callable[[Trace], bool] — returns True if the constraint
-        is satisfied, False if violated.
+        is satisfied, False if violated. It may instead return a
+        LayerResult to attach a diagnostic detail and named metrics
+        (e.g. ``{"writes": 3}``); its ``passed`` decides the policy and its
+        metrics join the constraint layer's metrics.
     effect_class: forward-compat hook for the side-effect-safety dim.
         Declares which effect class this policy guards, e.g.
         "external_send", "destructive". None = unclassified.
     """
     name: str
-    predicate: Callable[[Trace], bool]
+    predicate: Callable[[Trace], bool | LayerResult]
     effect_class: str | None = None
 
 
@@ -189,16 +192,18 @@ class TrajectoryCheck(ABC):
 
     Returns (passed, detail). detail is joined into the LayerResult
     detail string, so make it diagnostic ("paginated 4x, budget 2"), not
-    just "failed". A check that raises is recorded as a failure (same
+    just "failed". A check may instead return a LayerResult to attach
+    named metrics (e.g. ``{"lookups": 4}``) that join the trajectory
+    layer's metrics. A check that raises is recorded as a failure (same
     forgiveness as Policy predicates) — it never crashes the evaluator.
     """
 
     @abstractmethod
-    def check(self, calls: list[str]) -> tuple[bool, str]:
+    def check(self, calls: list[str]) -> tuple[bool, str] | LayerResult:
         """Verify the observed tool-call path. Return (passed, detail)."""
         ...
 
-    def check_trace(self, trace: Trace, calls: list[str]) -> tuple[bool, str]:
+    def check_trace(self, trace: Trace, calls: list[str]) -> tuple[bool, str] | LayerResult:
         """Verify the path with access to the full saved trace.
 
         Override this when the check needs tool-call arguments or observations,

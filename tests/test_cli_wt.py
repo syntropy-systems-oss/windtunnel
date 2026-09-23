@@ -1349,6 +1349,65 @@ class TestWtRescore:
         }
         assert entry["written"] is False
 
+    def test_rescore_json_reports_old_and_new_metrics(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+    ) -> None:
+        import windtunnel.cli as cli
+        from windtunnel.api.pack import ScenarioPack
+        from windtunnel.api.scenario import Scenario
+        from windtunnel.api.score import LayerResult
+
+        scenario = Scenario(
+            name="metric_edit",
+            prompt="say ok",
+            outcome_fn=lambda _t: LayerResult(True, "v1", metrics={"revisions": 3}),
+        )
+        trace_path = self._saved_run(tmp_path / "runs", scenario, "candidate")
+        scenario.outcome_fn = lambda _t: LayerResult(
+            True, "v2", metrics={"revisions": 5, "final_correct": True}
+        )
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [
+            ScenarioPack(name="local", scenarios=[scenario]),
+        ])
+
+        rc = cli.main(["rescore", "--trace", str(trace_path), "--json"])
+
+        (entry,) = json.loads(capsys.readouterr().out)["traces"]
+        assert rc == 0
+        assert entry["changed"] is False
+        assert entry["metrics"] == {
+            "old": {"outcome.revisions": 3},
+            "new": {"outcome.revisions": 5, "outcome.final_correct": True},
+        }
+        assert entry["metrics_changed"] is True
+
+    def test_rescore_text_line_shows_new_metrics(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+    ) -> None:
+        import windtunnel.cli as cli
+        from windtunnel.api.pack import ScenarioPack
+        from windtunnel.api.scenario import Scenario
+        from windtunnel.api.score import LayerResult
+
+        scenario = Scenario(
+            name="metric_text",
+            prompt="say ok",
+            outcome_fn=lambda _t: LayerResult(True, "graded", metrics={"revisions": 9}),
+        )
+        trace_path = self._saved_run(tmp_path / "runs", scenario, "candidate")
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [
+            ScenarioPack(name="local", scenarios=[scenario]),
+        ])
+
+        assert cli.main(["rescore", "--trace", str(trace_path)]) == 0
+        assert "metrics outcome.revisions=9" in capsys.readouterr().out
+
     def test_rescore_json_reports_unresolved_traces_as_entries(
         self,
         monkeypatch: pytest.MonkeyPatch,

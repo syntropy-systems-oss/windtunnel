@@ -640,8 +640,9 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
     traces, unresolved scenario definitions, or a --label that matches no trace.
 
     ``--json`` replaces the per-trace lines with one JSON document on stdout:
-    for every trace, the old (sidecar) and new verdict of each layer plus the
-    headline verdict, so a scorer edit's flips are machine-readable.
+    for every trace, the old (sidecar) and new verdict of each layer, the
+    headline verdict, and old/new metrics, so a scorer edit's flips are
+    machine-readable.
     """
     from windtunnel.api.trace import load_trace  # noqa: PLC0415
 
@@ -753,6 +754,13 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
         elif not new_score.gate_passed(scenario.resolved_gate_layers()):
             new_fail += 1
 
+        old_metrics = _old_metrics(old_score)
+        new_metrics = new_score.metrics
+        if new_metrics:
+            layer_parts.append(
+                "metrics " + ", ".join(f"{name}={value}" for name, value in new_metrics.items())
+            )
+
         write_note = ""
         if args.write:
             _write_score_sidecar(
@@ -779,6 +787,8 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
                     "new": _run_verdict(new_score, scenario),
                 },
                 "layers": layers,
+                "metrics": {"old": old_metrics, "new": new_metrics},
+                "metrics_changed": old_metrics is not None and old_metrics != new_metrics,
                 "written": bool(args.write),
             },
             f"{trace_path}: scenario={trace.scenario_id} " + " | ".join(layer_parts) + write_note,
@@ -925,6 +935,19 @@ def _old_headline_verdict(score_data: dict[str, Any] | None) -> str:
     """Return the headline verdict a sidecar recorded, or UNKNOWN."""
     verdict = score_data.get("verdict") if score_data is not None else None
     return verdict if verdict in ("PASS", "FAIL", "INVALID") else "UNKNOWN"
+
+
+def _old_metrics(score_data: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return a sidecar's metrics flattened like Score.metrics; None without a sidecar."""
+    if score_data is None:
+        return None
+    flat: dict[str, Any] = {}
+    for layer_name in _SCORE_LAYERS:
+        layer = _old_layer(score_data, layer_name)
+        metrics = layer.get("metrics") if layer is not None else None
+        if isinstance(metrics, dict):
+            flat.update({f"{layer_name}.{name}": value for name, value in metrics.items()})
+    return flat
 
 
 def _score_layer_verdict(score: Score, layer_name: str) -> str:
@@ -1772,7 +1795,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print one JSON document instead of per-trace lines: per trace, the old "
         "(sidecar) and new verdict and detail of every layer, the headline verdict, "
-        "and a summary.",
+        "old and new metrics, and a summary.",
     )
     rescore_p.add_argument(
         "--scenario",

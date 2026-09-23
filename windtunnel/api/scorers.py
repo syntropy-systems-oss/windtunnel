@@ -40,7 +40,7 @@ from windtunnel.api._matching import (
 )
 from windtunnel.api.replay import GenerateFn
 from windtunnel.api.scenario import NumberFact, Policy
-from windtunnel.api.score import LayerResult
+from windtunnel.api.score import LayerResult, MetricValue
 from windtunnel.api.trace import Trace, Turn
 
 ScorerFn = Callable[[Trace], LayerResult]
@@ -58,17 +58,22 @@ def all_of(*fns: ScorerFn) -> ScorerFn:
     a ``"; "``-joined string.  Exceptions from child scorers are treated as
     ordinary failures so composition preserves the outcome layer's
     fail-closed semantics while retaining useful diagnostics.
+
+    Every child's ``metrics`` are merged into the result in argument order;
+    when two children report the same name, the later child's value wins.
     """
 
     def _score(trace: Trace) -> LayerResult:
         failures: list[str] = []
+        metrics: dict[str, MetricValue] = {}
         for fn in fns:
             result = _run_scorer(fn, trace)
+            metrics.update(result.metrics)
             if not result.passed:
                 failures.append(result.detail)
         if failures:
-            return LayerResult(passed=False, detail="; ".join(failures))
-        return LayerResult(passed=True, detail="all scorers passed")
+            return LayerResult(passed=False, detail="; ".join(failures), metrics=metrics)
+        return LayerResult(passed=True, detail="all scorers passed", metrics=metrics)
 
     return _score
 
@@ -79,21 +84,27 @@ def any_of(*fns: ScorerFn) -> ScorerFn:
     If every child fails, the result detail is the same ``"; "``-joined
     diagnostic string used by ``all_of`` and ``evaluate_trajectory``.  Empty
     ``any_of()`` is a failure because there is no passing branch to witness.
+
+    Metrics of every child that ran (the failing ones plus the first passing
+    one) are merged in order, later children winning on a name collision.
     """
 
     def _score(trace: Trace) -> LayerResult:
         failures: list[str] = []
+        metrics: dict[str, MetricValue] = {}
         for fn in fns:
             result = _run_scorer(fn, trace)
+            metrics.update(result.metrics)
             if result.passed:
                 return LayerResult(
                     passed=True,
                     detail=f"one scorer passed: {result.detail}",
+                    metrics=metrics,
                 )
             failures.append(result.detail)
         if not failures:
             return LayerResult(passed=False, detail="no scorers supplied")
-        return LayerResult(passed=False, detail="; ".join(failures))
+        return LayerResult(passed=False, detail="; ".join(failures), metrics=metrics)
 
     return _score
 

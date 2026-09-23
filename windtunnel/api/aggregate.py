@@ -19,15 +19,97 @@ Stddev uses population stddev (divide by N, not N-1) — consistent with
 τ-bench's pass^k metric framing. With small N the sample stddev would
 overestimate variance; population stddev is the right denominator when N
 is the full set of runs we actually ran.
+
+Metrics (LayerResult.metrics) aggregate by value type across the runs that
+reported them: booleans as a rate, numbers as mean/min/max, strings as value
+counts. aggregate_metrics() is the single implementation behind
+AggregateResult.metrics, `wt results`, and `wt compare`'s metric deltas.
 """
 from __future__ import annotations
 
+import json
 import math
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict, dataclass, field
+from typing import Any, Literal
 
-from windtunnel.api.score import GATE_LAYER_ORDER, GateLayer, Score
+from windtunnel.api.score import GATE_LAYER_ORDER, GateLayer, MetricValue, Score
 from windtunnel.api.trace import Trace
+
+MetricKind = Literal["bool", "number", "string", "mixed"]
+
+
+@dataclass(frozen=True)
+class MetricSummary:
+    """One named metric aggregated across the runs that reported it.
+
+    kind:       "bool" (rate of True), "number" (mean/min/max), "string"
+                (value counts), or "mixed" when runs disagree on the value
+                type (value counts over the values' JSON renderings).
+    count:      runs that reported the metric; a run that omits a metric is
+                not counted, so ``count`` may be below the run total.
+    true_count/rate:  bool only.
+    mean/min/max:     number only.
+    counts:           string and mixed only, most frequent first.
+    """
+    kind: MetricKind
+    count: int
+    true_count: int | None = None
+    rate: float | None = None
+    mean: float | None = None
+    min: float | None = None
+    max: float | None = None
+    counts: dict[str, int] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-ready dict without the fields that do not apply to ``kind``."""
+        return {key: value for key, value in asdict(self).items() if value is not None}
+
+
+def aggregate_metrics(
+    samples: Iterable[Mapping[str, MetricValue]],
+) -> dict[str, MetricSummary]:
+    """Aggregate per-run metric maps into one MetricSummary per name.
+
+    ``samples`` is one mapping per run (for example ``Score.metrics``).
+    Names are returned sorted so text and JSON output are stable.
+    """
+    values: dict[str, list[MetricValue]] = {}
+    for sample in samples:
+        for name, value in sample.items():
+            values.setdefault(name, []).append(value)
+    return {name: _summarize_metric(values[name]) for name in sorted(values)}
+
+
+def _summarize_metric(values: list[MetricValue]) -> MetricSummary:
+    count = len(values)
+    if all(isinstance(value, bool) for value in values):
+        true_count = sum(1 for value in values if value)
+        return MetricSummary(
+            kind="bool", count=count, true_count=true_count, rate=true_count / count
+        )
+    numbers = [value for value in values if not isinstance(value, bool | str)]
+    if len(numbers) == count:
+        return MetricSummary(
+            kind="number",
+            count=count,
+            mean=sum(float(value) for value in numbers) / count,
+            min=min(numbers),
+            max=max(numbers),
+        )
+    if all(isinstance(value, str) for value in values):
+        return MetricSummary(kind="string", count=count, counts=_ranked_counts(map(str, values)))
+    return MetricSummary(
+        kind="mixed",
+        count=count,
+        counts=_ranked_counts(json.dumps(value) for value in values),
+    )
+
+
+def _ranked_counts(keys: Iterable[str]) -> dict[str, int]:
+    counted = Counter(keys)
+    return dict(sorted(counted.items(), key=lambda item: (-item[1], item[0])))
 
 
 @dataclass
@@ -66,6 +148,9 @@ class AggregateResult:
     gate_layers: tuple[GateLayer, ...] = GATE_LAYER_ORDER
     risk_weight: int = 0
     failure_risk: float = 0.0
+
+    # Score.metrics of every run, aggregated per "<layer>.<name>" key.
+    metrics: dict[str, MetricSummary] = field(default_factory=dict)
 
     @property
     def robustness_pass_rate(self) -> float:
@@ -169,4 +254,5 @@ def aggregate_runs(
         gate_layers=selected_gates,
         risk_weight=risk_weight,
         failure_risk=failure_risk,
+        metrics=aggregate_metrics(run.score.metrics for run in runs),
     )
