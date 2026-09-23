@@ -6,7 +6,7 @@ Subcommands:
                 [--label LABEL] [--runs N] [--format junit|json --out FILE]
     wt selftest [--scenario S]... [--tag TAG]... [--pack PACK]...
                 --runtime RUNTIME [--format junit|json --out FILE]
-    wt rescore  (--runs DIR | --trace PATH...) [--write]
+    wt rescore  (--runs DIR | --trace PATH...) [--write] [--label L]... [--json]
     wt report   [--runs DIR] [--out FILE] [--format html|markdown|json]
     wt compare  --labels L1 L2 ...
     wt replay   --trace PATH --runtime RUNTIME
@@ -137,6 +137,9 @@ from windtunnel._cli.storage import (
     _origin_from_tags as _origin_from_tags_impl,
 )
 from windtunnel._cli.storage import (
+    _run_verdict as _run_verdict_impl,
+)
+from windtunnel._cli.storage import (
     _sweep_artifact_timestamp as _sweep_artifact_timestamp_impl,
 )
 from windtunnel._cli.storage import (
@@ -203,6 +206,7 @@ _artifact_component = _artifact_component_impl
 _sweep_artifact_timestamp = _sweep_artifact_timestamp_impl
 _ledger_timestamp = _ledger_timestamp_impl
 _origin_from_tags = _origin_from_tags_impl
+_run_verdict = _run_verdict_impl
 _git_sha = _git_sha_impl
 _wt_version = _wt_version_impl
 _ledger_record = _ledger_record_impl
@@ -623,6 +627,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
 _SCORE_LAYERS = ("outcome", "trajectory", "constraint", "integrity")
 
 
+RESCORE_OUTPUT_VERSION = 1
+
+
 def _cmd_rescore(args: argparse.Namespace) -> int:
     """Handle the `wt rescore` subcommand.
 
@@ -630,10 +637,16 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
     It never provisions a runtime and never modifies trace files.  Exit codes
     mirror `wt run`: 0 when all newly-scored gates pass, 1 when any newly
     scored gate fails or is invalid, and 2 for usage/configuration errors such as missing
-    traces or unresolved scenario definitions.
+    traces, unresolved scenario definitions, or a --label that matches no trace.
+
+    ``--json`` replaces the per-trace lines with one JSON document on stdout:
+    for every trace, the old (sidecar) and new verdict of each layer plus the
+    headline verdict, so a scorer edit's flips are machine-readable.
     """
     from windtunnel.api.trace import load_trace  # noqa: PLC0415
 
+    as_json = bool(getattr(args, "json", False))
+    label_filters: list[str] = list(getattr(args, "label", None) or [])
     trace_paths = _rescore_trace_paths(args)
     if trace_paths is None:
         return 2
@@ -662,14 +675,32 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
     errors = 0
     written = 0
     skipped = 0
+    entries: list[dict[str, Any]] = []
+    labels_seen: set[str] = set()
+    labels_matched: set[str] = set()
+
+    def _emit(entry: dict[str, Any], line: str) -> None:
+        entries.append(entry)
+        if not as_json:
+            print(line)
 
     for trace_path in trace_paths:
         try:
             trace = load_trace(trace_path)
         except Exception as exc:  # noqa: BLE001 - keep walking the corpus
             errors += 1
-            print(f"{trace_path}: ERROR could not load trace ({exc})")
+            message = f"could not load trace ({exc})"
+            _emit(
+                {"trace": str(trace_path), "status": "error", "error": message},
+                f"{trace_path}: ERROR {message}",
+            )
             continue
+
+        labels_seen.add(trace.variant_id)
+        if label_filters and trace.variant_id not in label_filters:
+            skipped += 1
+            continue
+        labels_matched.add(trace.variant_id)
 
         if args.scenario and not any(
             fnmatch.fnmatchcase(trace.scenario_id, pattern) for pattern in args.scenario
@@ -677,25 +708,43 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
             skipped += 1
             continue
 
+        identity = {
+            "trace": str(trace_path),
+            "scenario_id": trace.scenario_id,
+            "label": trace.variant_id,
+            "run_id": trace.run_id,
+        }
         scenario = scenarios_by_id.get(trace.scenario_id)
         if scenario is None:
             unresolved += 1
-            print(
-                f"{trace_path}: ERROR no current scenario definition for "
-                f"scenario_id={trace.scenario_id!r}"
+            message = f"no current scenario definition for scenario_id={trace.scenario_id!r}"
+            _emit(
+                {**identity, "status": "unresolved", "error": message},
+                f"{trace_path}: ERROR {message}",
             )
             continue
 
         old_score = _read_score_sidecar(trace_path)
         new_score = _score_saved_trace(trace, scenario)
         layer_parts: list[str] = []
+        layers: dict[str, dict[str, Any]] = {}
         trace_changed = False
         for layer_name in _SCORE_LAYERS:
             old_verdict = _old_layer_verdict(old_score, layer_name)
             new_verdict = _score_layer_verdict(new_score, layer_name)
-            if old_verdict != "UNKNOWN" and old_verdict != new_verdict:
-                trace_changed = True
+            layer_changed = old_verdict != "UNKNOWN" and old_verdict != new_verdict
+            trace_changed = trace_changed or layer_changed
             layer_parts.append(f"{layer_name} {old_verdict} -> {new_verdict}")
+            old_layer = _old_layer(old_score, layer_name)
+            layers[layer_name] = {
+                "old": old_verdict,
+                "new": new_verdict,
+                "changed": layer_changed,
+                "old_detail": (
+                    str(old_layer.get("detail", "")) if old_layer is not None else None
+                ),
+                "detail": getattr(new_score, layer_name).detail,
+            }
 
         if trace_changed:
             changed += 1
@@ -720,14 +769,51 @@ def _cmd_rescore(args: argparse.Namespace) -> int:
             written += 1
             write_note = " [sidecar written]"
 
-        print(f"{trace_path}: scenario={trace.scenario_id} " + " | ".join(layer_parts) + write_note)
+        _emit(
+            {
+                **identity,
+                "status": "ok",
+                "changed": trace_changed,
+                "verdict": {
+                    "old": _old_headline_verdict(old_score),
+                    "new": _run_verdict(new_score, scenario),
+                },
+                "layers": layers,
+                "written": bool(args.write),
+            },
+            f"{trace_path}: scenario={trace.scenario_id} " + " | ".join(layer_parts) + write_note,
+        )
 
-    total = len(trace_paths)
-    print(
-        "summary: "
-        f"traces={total} changed={changed} new_gate_failures={new_fail} invalid={invalid} "
-        f"unresolved={unresolved} errors={errors} written={written} skipped={skipped}"
-    )
+    unmatched_labels = sorted(set(label_filters) - labels_matched)
+    if unmatched_labels:
+        present = ", ".join(sorted(labels_seen)) or "(none)"
+        print(
+            f"wt rescore: no traces with label(s): {', '.join(unmatched_labels)} "
+            f"(labels present: {present})",
+            file=sys.stderr,
+        )
+    if label_filters and not labels_matched:
+        return 2
+
+    summary = {
+        "traces": len(trace_paths),
+        "changed": changed,
+        "new_gate_failures": new_fail,
+        "invalid": invalid,
+        "unresolved": unresolved,
+        "errors": errors,
+        "written": written,
+        "skipped": skipped,
+    }
+    if as_json:
+        document = {
+            "windtunnel_rescore": RESCORE_OUTPUT_VERSION,
+            "traces": entries,
+            "summary": summary,
+        }
+        print(json.dumps(document, indent=2, ensure_ascii=False))
+    else:
+        print("summary: " + " ".join(f"{key}={value}" for key, value in summary.items()))
 
     if unresolved or errors:
         return 2
@@ -812,9 +898,10 @@ def _read_score_sidecar(trace_path: Path) -> dict[str, Any] | None:
         return None
 
 
-def _old_layer_verdict(score_data: dict[str, Any] | None, layer_name: str) -> str:
+def _old_layer(score_data: dict[str, Any] | None, layer_name: str) -> dict[str, Any] | None:
+    """Return one layer's persisted dict from a sidecar, or None when absent."""
     if score_data is None:
-        return "UNKNOWN"
+        return None
     layer = score_data.get(layer_name)
     if layer_name == "integrity" and not isinstance(layer, dict):
         layer = score_data.get("robustness")
@@ -824,9 +911,20 @@ def _old_layer_verdict(score_data: dict[str, Any] | None, layer_name: str) -> st
             layer = nested.get(layer_name)
             if layer_name == "integrity" and not isinstance(layer, dict):
                 layer = nested.get("robustness")
-    if not isinstance(layer, dict) or "passed" not in layer:
+    return layer if isinstance(layer, dict) else None
+
+
+def _old_layer_verdict(score_data: dict[str, Any] | None, layer_name: str) -> str:
+    layer = _old_layer(score_data, layer_name)
+    if layer is None or "passed" not in layer:
         return "UNKNOWN"
     return "PASS" if bool(layer["passed"]) else "FAIL"
+
+
+def _old_headline_verdict(score_data: dict[str, Any] | None) -> str:
+    """Return the headline verdict a sidecar recorded, or UNKNOWN."""
+    verdict = score_data.get("verdict") if score_data is not None else None
+    return verdict if verdict in ("PASS", "FAIL", "INVALID") else "UNKNOWN"
 
 
 def _score_layer_verdict(score: Score, layer_name: str) -> str:
@@ -1660,6 +1758,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "--write",
         action="store_true",
         help="Update .score.json sidecars. Trace files are never modified.",
+    )
+    rescore_p.add_argument(
+        "--label",
+        action="append",
+        metavar="LABEL",
+        default=None,
+        help="Only re-score traces recorded under variant label LABEL (the `wt run "
+        "--label` value). Repeat for multiple labels; exits 2 when no trace matches.",
+    )
+    rescore_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print one JSON document instead of per-trace lines: per trace, the old "
+        "(sidecar) and new verdict and detail of every layer, the headline verdict, "
+        "and a summary.",
     )
     rescore_p.add_argument(
         "--scenario",

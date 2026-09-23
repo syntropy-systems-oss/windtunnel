@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/writing-a-scenario.md at 4173c7192a4c — do not edit; edit docs/writing-a-scenario.md. -->
+<!-- GENERATED from docs/writing-a-scenario.md at 84d057757078 — do not edit; edit docs/writing-a-scenario.md. -->
 ---
 description: "Reference for authoring backend-agnostic Scenario objects, scoring fields, perturbations, dimensions, and scenario packs."
 ---
@@ -192,6 +192,7 @@ corpus." Use:
 
 ```bash
 wt rescore --runs runs/
+wt rescore --runs runs/ --label candidate --json
 wt rescore --trace runs/.../20260102T030405000000Z_abcd1234.json --write
 ```
 
@@ -203,7 +204,42 @@ command is read-only by default; `--write` updates the
 `.score.json` sidecar with an `origin.kind = "rescore"` marker. Trace files are
 never modified. Exit codes mirror `wt run`: `0` when all newly-scored gates
 pass, `1` when any gate fails or any run is invalid, and `2` for usage or
-configuration errors such as missing traces or unresolved scenario definitions.
+configuration errors such as missing traces, unresolved scenario definitions,
+or a `--label` that matches no trace.
+
+`--label L` (repeatable) restricts the pass to traces recorded by
+`wt run --label L`. `--json` replaces the per-trace lines with one JSON
+document, so an agent that just edited an outcome function sees exactly what
+flipped with one command:
+
+```json
+{
+  "windtunnel_rescore": 1,
+  "traces": [
+    {
+      "trace": "runs/lookup_order/.../20260102T030405000000Z_abcd1234.json",
+      "scenario_id": "lookup_order",
+      "label": "candidate",
+      "run_id": "abcd1234-...",
+      "status": "ok",
+      "changed": true,
+      "verdict": {"old": "PASS", "new": "FAIL"},
+      "layers": {
+        "outcome": {"old": "PASS", "new": "FAIL", "changed": true,
+                    "old_detail": "...", "detail": "missing fact groups: ..."},
+        "trajectory": {"old": "PASS", "new": "PASS", "changed": false, "...": "..."}
+      },
+      "written": false
+    }
+  ],
+  "summary": {"traces": 1, "changed": 1, "new_gate_failures": 1, "invalid": 0,
+              "unresolved": 0, "errors": 0, "written": 0, "skipped": 0}
+}
+```
+
+`old` is `UNKNOWN` when the trace has no sidecar yet. Traces that fail to load
+or whose scenario no longer exists appear with `"status": "error"` or
+`"unresolved"` and an `error` message.
 
 **AND-of-OR `target_facts`:** a list of groups; each inner group is satisfied if
 **any** member appears (OR), and **every** outer group must be satisfied (AND).

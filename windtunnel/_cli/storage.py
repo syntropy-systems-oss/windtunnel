@@ -18,6 +18,17 @@ from windtunnel.spi.hooks import HookArtifact
 LEDGER_FORMAT_VERSION = 1
 
 
+def _run_verdict(score: Score, scenario: Scenario) -> str:
+    """Return one run's headline verdict: INVALID, PASS, or FAIL.
+
+    The single definition shared by the score sidecar and `wt rescore --json`,
+    so a run can never be PASS on one surface and FAIL on another.
+    """
+    if not score.integrity.passed:
+        return "INVALID"
+    return "PASS" if score.gate_passed(scenario.resolved_gate_layers()) else "FAIL"
+
+
 def _write_score_sidecar(
     trace_path: Path,
     score: Score,
@@ -29,7 +40,7 @@ def _write_score_sidecar(
     flat = score_to_dict(score)
     gate_layers = scenario.resolved_gate_layers()
     gate_passed = score.gate_passed(gate_layers)
-    verdict = "INVALID" if not score.integrity.passed else ("PASS" if gate_passed else "FAIL")
+    verdict = _run_verdict(score, scenario)
     sidecar = {
         **flat,
         "verdict": verdict,

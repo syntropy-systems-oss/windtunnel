@@ -1,9 +1,9 @@
-<!-- GENERATED from docs/cli-reference.md at af35b5c0cbf7 — do not edit; edit docs/cli-reference.md. -->
+<!-- GENERATED from docs/cli-reference.md at fc322eebbf8d — do not edit; edit docs/cli-reference.md. -->
 ---
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at 2b74639603de — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at e6df7dbb0b10 — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
 The `wt` command ships 12 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
@@ -123,7 +123,7 @@ Re-score saved traces against current scenario definitions.
 Usage:
 
 ```bash
-wt rescore [-h] (--runs DIR | --trace PATH [PATH ...]) [--write] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--owner OWNER]
+wt rescore [-h] (--runs DIR | --trace PATH [PATH ...]) [--write] [--label LABEL] [--json] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--owner OWNER]
 ```
 
 Arguments and options:
@@ -133,6 +133,8 @@ Arguments and options:
 | `--runs` | no |  | Walk a runs/ directory and re-score every saved trace. |
 | `--trace` | no |  | Explicit trace JSON path(s) to re-score. |
 | `--write` | no | false | Update .score.json sidecars. Trace files are never modified. |
+| `--label` | no |  | Only re-score traces recorded under variant label LABEL (the `wt run --label` value). Repeat for multiple labels; exits 2 when no trace matches. |
+| `--json` | no | false | Print one JSON document instead of per-trace lines: per trace, the old (sidecar) and new verdict and detail of every layer, the headline verdict, and a summary. |
 | `--scenario` | no |  | Only re-score traces whose scenario_id matches S. Repeat for multiple; shell-style globs such as 'lookup_*' are supported. |
 | `--tag` | no |  | Restrict scenario definitions to packs/scenarios carrying TAG. |
 | `--pack` | no |  | Restrict scenario definitions to pack PACK. |
