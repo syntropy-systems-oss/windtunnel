@@ -1234,6 +1234,147 @@ class TestWtRescore:
         assert sidecar["origin"]["kind"] == "rescore"
         assert trace_data["scenario_id"] == "rescore_write"
 
+    @staticmethod
+    def _saved_run(runs_dir: Path, scenario, label: str) -> Path:
+        """Run `scenario` once in memory under `label` and persist trace + sidecar."""
+        import windtunnel.cli as cli
+        from windtunnel.api.runner import run_scenario
+        from windtunnel.api.trace import save_trace, storage_path
+        from windtunnel.runtimes.in_memory import InMemoryRuntime
+        from windtunnel.spi.agent_runtime import AgentConfig
+
+        result = run_scenario(
+            scenario,
+            InMemoryRuntime(scripted_responses=["ok"]),
+            config=AgentConfig(agent_id="wt-cli", variant_id=label),
+        )
+        trace_path = storage_path(result.runs[0].trace, base_dir=runs_dir)
+        save_trace(result.runs[0].trace, trace_path)
+        cli._write_score_sidecar(trace_path, result.runs[0].score, scenario)
+        return trace_path
+
+    def test_rescore_label_filters_traces_to_that_variant_label(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+    ) -> None:
+        import windtunnel.cli as cli
+        from windtunnel.api.pack import ScenarioPack
+        from windtunnel.api.scenario import Scenario
+
+        scenario = Scenario(name="labelled", prompt="say ok", target_facts=[["ok"]])
+        runs_dir = tmp_path / "runs"
+        wanted = self._saved_run(runs_dir, scenario, "candidate")
+        other = self._saved_run(runs_dir, scenario, "baseline")
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [
+            ScenarioPack(name="local", scenarios=[scenario]),
+        ])
+
+        rc = cli.main(["rescore", "--runs", str(runs_dir), "--label", "candidate"])
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert str(wanted) in out
+        assert str(other) not in out
+        assert "summary: traces=2 changed=0" in out
+        assert "skipped=1" in out
+
+    def test_rescore_label_matching_nothing_exits_two_and_names_present_labels(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+    ) -> None:
+        import windtunnel.cli as cli
+        from windtunnel.api.pack import ScenarioPack
+        from windtunnel.api.scenario import Scenario
+
+        scenario = Scenario(name="labelled", prompt="say ok", target_facts=[["ok"]])
+        runs_dir = tmp_path / "runs"
+        self._saved_run(runs_dir, scenario, "baseline")
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [
+            ScenarioPack(name="local", scenarios=[scenario]),
+        ])
+
+        rc = cli.main(["rescore", "--runs", str(runs_dir), "--label", "typo"])
+
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "no traces with label(s): typo" in err
+        assert "labels present: baseline" in err
+
+    def test_rescore_json_reports_old_and_new_verdict_per_layer(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+    ) -> None:
+        """One command shows exactly what an outcome edit flipped, as data."""
+        import windtunnel.cli as cli
+        from windtunnel.api.pack import ScenarioPack
+        from windtunnel.api.scenario import Scenario
+
+        scenario = Scenario(name="json_flip", prompt="say ok", target_facts=[["ok"]])
+        trace_path = self._saved_run(tmp_path / "runs", scenario, "candidate")
+        scenario.target_facts = [["missing-now"]]
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [
+            ScenarioPack(name="local", scenarios=[scenario]),
+        ])
+
+        rc = cli.main(["rescore", "--trace", str(trace_path), "--json"])
+
+        document = json.loads(capsys.readouterr().out)
+        assert rc == 1
+        assert document["windtunnel_rescore"] == 1
+        assert document["summary"]["changed"] == 1
+        assert document["summary"]["new_gate_failures"] == 1
+        (entry,) = document["traces"]
+        assert entry["trace"] == str(trace_path)
+        assert entry["scenario_id"] == "json_flip"
+        assert entry["label"] == "candidate"
+        assert entry["status"] == "ok"
+        assert entry["changed"] is True
+        assert entry["verdict"] == {"old": "PASS", "new": "FAIL"}
+        assert entry["layers"]["outcome"]["old"] == "PASS"
+        assert entry["layers"]["outcome"]["new"] == "FAIL"
+        assert entry["layers"]["outcome"]["changed"] is True
+        assert "missing fact groups" in entry["layers"]["outcome"]["detail"]
+        assert entry["layers"]["trajectory"] == {
+            "old": "PASS",
+            "new": "PASS",
+            "changed": False,
+            "old_detail": entry["layers"]["trajectory"]["old_detail"],
+            "detail": entry["layers"]["trajectory"]["detail"],
+        }
+        assert entry["written"] is False
+
+    def test_rescore_json_reports_unresolved_traces_as_entries(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+    ) -> None:
+        import windtunnel.cli as cli
+        from windtunnel.api.pack import ScenarioPack
+        from windtunnel.api.scenario import Scenario
+
+        saved = Scenario(name="gone_now", prompt="say ok", target_facts=[["ok"]])
+        trace_path = self._saved_run(tmp_path / "runs", saved, "candidate")
+        current = Scenario(name="still_here", prompt="say ok", target_facts=[["ok"]])
+        monkeypatch.setattr(cli, "_discover_scenario_packs", lambda: [
+            ScenarioPack(name="local", scenarios=[current]),
+        ])
+
+        rc = cli.main(["rescore", "--trace", str(trace_path), "--json"])
+
+        document = json.loads(capsys.readouterr().out)
+        assert rc == 2
+        (entry,) = document["traces"]
+        assert entry["status"] == "unresolved"
+        assert "gone_now" in entry["error"]
+        assert document["summary"]["unresolved"] == 1
+
 
 class TestWtReplay:
     def test_replay_without_args_exits_nonzero(self) -> None:
