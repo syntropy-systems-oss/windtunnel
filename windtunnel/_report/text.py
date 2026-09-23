@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 from windtunnel._report.load import load_runs
 from windtunnel._report.model import _build_report_data
@@ -126,3 +126,64 @@ def generate_json(
     cells = load_runs(runs_dir=runs_dir)
     data = _build_report_data(cells)
     print(json.dumps(data, indent=2, ensure_ascii=False), file=out)
+
+
+# ─── Metric formatting (wt results / wt compare) ─────────────────────────────
+
+
+def _format_number(value: object) -> str:
+    """Integers verbatim, other numbers to four significant digits."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return str(value)
+    if isinstance(value, int) or float(value).is_integer():
+        return str(int(value))
+    return f"{value:.4g}"
+
+
+def _format_counts(counts: dict[str, int]) -> str:
+    return ", ".join(f"{value}={count}" for value, count in counts.items())
+
+
+def format_metric_summary(summary: dict[str, Any] | None) -> str:
+    """Render one MetricSummary.to_dict() as a compact human line."""
+    if summary is None:
+        return "absent"
+    kind = summary.get("kind")
+    count = summary.get("count", 0)
+    if kind == "bool":
+        rate = float(summary.get("rate") or 0.0)
+        return f"{rate:.0%} true ({summary.get('true_count', 0)}/{count})"
+    if kind == "number":
+        return (
+            f"mean {_format_number(summary.get('mean'))}  "
+            f"min {_format_number(summary.get('min'))}  "
+            f"max {_format_number(summary.get('max'))}  (n={count})"
+        )
+    prefix = "mixed: " if kind == "mixed" else ""
+    return f"{prefix}{_format_counts(summary.get('counts') or {})}  (n={count})"
+
+
+def format_metric_delta(entry: dict[str, Any]) -> str:
+    """Render one compute_metric_deltas() entry as ``baseline -> candidate (delta)``."""
+    baseline = entry.get("baseline")
+    candidate = entry.get("candidate")
+    delta = entry.get("delta")
+    kind = entry.get("kind")
+    if baseline is None or candidate is None or delta is None:
+        return f"{format_metric_summary(baseline)} -> {format_metric_summary(candidate)}"
+    if kind == "number":
+        return (
+            f"mean {_format_number(baseline.get('mean'))} -> "
+            f"{_format_number(candidate.get('mean'))} ({float(delta):+.4g})"
+        )
+    if kind == "bool":
+        return (
+            f"rate {float(baseline.get('rate') or 0.0):.0%} -> "
+            f"{float(candidate.get('rate') or 0.0):.0%} ({float(delta) * 100:+.0f}pp)"
+        )
+    changes = {value: diff for value, diff in dict(delta).items() if diff}
+    rendered = ", ".join(f"{value} {diff:+d}" for value, diff in changes.items())
+    return (
+        f"{_format_counts(baseline.get('counts') or {})} -> "
+        f"{_format_counts(candidate.get('counts') or {})} ({rendered or 'no change'})"
+    )

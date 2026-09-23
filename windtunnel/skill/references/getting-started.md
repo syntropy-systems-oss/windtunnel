@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/getting-started.md at 828023c27c81 — do not edit; edit docs/getting-started.md. -->
+<!-- GENERATED from docs/getting-started.md at 3229f3599827 — do not edit; edit docs/getting-started.md. -->
 ---
 description: "Step-by-step guide to install Wind Tunnel, run and report scenarios, gate CI, and triage failures."
 ---
@@ -149,7 +149,11 @@ pin):
 ```bash
 wt run ... --label candidate
 wt compare --labels baseline candidate
+wt results --label candidate          # per-scenario pass counts + aggregated metrics
 ```
+
+[Iterating on an agent](iterating.md) walks through that loop, including the
+`--json` output a coding agent should read instead of the tables.
 
 Selection scales past exact names: `--tag dim:recovery` runs a dimension,
 `--pack <name>` a pack, `--owner team-ops` everything that team owns, and
@@ -171,7 +175,9 @@ Wind Tunnel ships the following `wt` commands:
 | `wt run` | Execute scenarios against a runtime and write traces, score sidecars, ledger rows, and optional CI artifacts. |
 | `wt selftest` | Certify scenario gates with live golden and poison references through a capable runtime. |
 | `wt report` | Render saved runs as HTML, Markdown, or JSON. |
-| `wt compare` | Compare run labels. |
+| `wt compare` | Compare run labels: verdicts, risk-ranked changes, and metric deltas. |
+| `wt results` | Tabulate a label's runs per scenario with aggregated metrics. |
+| `wt rescore` | Re-score saved traces against the current scenario definitions. |
 | `wt replay` | Replay a saved trace's last user turn against a runtime. |
 | `wt doctor` | Run the reset-isolation canary against a live runtime. |
 | `wt import` | Generate a scenario skeleton from a Contract A `*.wtin.json` trace envelope. |

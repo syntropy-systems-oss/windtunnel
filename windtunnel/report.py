@@ -31,6 +31,9 @@ from windtunnel._report.load import (
     _load_latest_aggregates as _load_latest_aggregates_impl,
 )
 from windtunnel._report.load import (
+    load_run_groups as _load_run_groups_impl,
+)
+from windtunnel._report.load import (
     load_runs as _load_runs_impl,
 )
 from windtunnel._report.model import (
@@ -48,6 +51,12 @@ from windtunnel._report.model import (
 from windtunnel._report.model import (
     compute_diff as _compute_diff_impl,
 )
+from windtunnel._report.model import (
+    compute_metric_deltas as _compute_metric_deltas_impl,
+)
+from windtunnel._report.model import (
+    summarize_group as _summarize_group_impl,
+)
 from windtunnel._report.text import (
     generate_json as _generate_json_impl,
 )
@@ -58,6 +67,9 @@ from windtunnel._report.text import (
 # Compatibility facade: report consumers keep the same imports while loading,
 # modeling, and text rendering evolve independently behind this module.
 load_runs = _load_runs_impl
+load_run_groups = _load_run_groups_impl
+summarize_group = _summarize_group_impl
+compute_metric_deltas = _compute_metric_deltas_impl
 _load_latest_aggregates = _load_latest_aggregates_impl
 _tool_call_count = _tool_call_count_impl
 _cell_from_run = _cell_from_run_impl

@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from windtunnel._report.load import load_runs
-from windtunnel.api.score import GATE_LAYER_ORDER, FailureCost
+from windtunnel._report.load import LoadedRun, RunGroup, load_runs
+from windtunnel.api.aggregate import MetricSummary, aggregate_metrics
+from windtunnel.api.score import GATE_LAYER_ORDER, FailureCost, score_from_dict
 
 _DEFAULT_GATE_LAYERS = list(GATE_LAYER_ORDER)
 
@@ -277,3 +278,123 @@ def _verdict_rank(verdict: object) -> int:
     if verdict == "FAIL":
         return 1
     return 0
+
+
+# ─── Per-label results and metric deltas ─────────────────────────────────────
+
+
+def _run_row(run: LoadedRun) -> dict[str, Any]:
+    """One saved run as `wt results` reports it: identity, verdict, metrics."""
+    return {
+        "path": str(run.path),
+        "run_id": str(run.trace.get("run_id", "")),
+        "started_at": str(run.trace.get("started_at", "")),
+        "verdict": _cell_from_run(run.trace, run.score)["verdict"],
+        "metrics": score_from_dict(run.score).metrics,
+    }
+
+
+def summarize_group(group: RunGroup) -> dict[str, Any]:
+    """Summarize one (scenario, label) group: pass counts and aggregated metrics.
+
+    Run verdicts use the report's own per-run rule; the headline verdict is
+    the ledger aggregate's when the group came from one (so variance
+    allowances are honored), otherwise it is derived strictly from the runs.
+    """
+    rows = [_run_row(run) for run in group.runs]
+    total = len(rows)
+    passed = sum(1 for row in rows if row["verdict"] == "PASS")
+    invalid = sum(1 for row in rows if row["verdict"] == "INVALID")
+    ledger_verdict = group.aggregate.get("verdict") if group.aggregate is not None else None
+    if isinstance(ledger_verdict, str):
+        verdict = ledger_verdict
+    elif invalid:
+        verdict = "INVALID"
+    else:
+        verdict = "PASS" if passed == total else "FAIL"
+    metrics = aggregate_metrics(row["metrics"] for row in rows)
+    return {
+        "scenario_id": group.scenario_id,
+        "label": group.label,
+        "verdict": verdict,
+        "runs": total,
+        "passed": passed,
+        "failed": total - passed - invalid,
+        "invalid": invalid,
+        "pass_rate": passed / total if total else 0.0,
+        "selection": "latest_aggregate" if group.aggregate is not None else "all_traces",
+        "metrics": {name: summary.to_dict() for name, summary in metrics.items()},
+        "traces": rows,
+    }
+
+
+def group_metric_summaries(group: RunGroup) -> dict[str, MetricSummary]:
+    """Aggregate every run's Score.metrics in one group."""
+    return aggregate_metrics(score_from_dict(run.score).metrics for run in group.runs)
+
+
+def metric_delta(
+    baseline: MetricSummary | None,
+    candidate: MetricSummary | None,
+) -> dict[str, Any]:
+    """Compare one metric's summaries across two labels.
+
+    ``delta`` is the candidate minus the baseline: the mean for numbers, the
+    rate for booleans, and a per-value count difference for strings and
+    mixed values. It is None when the metric is missing on one side or the
+    two sides disagree on its kind.
+    """
+    reference = candidate if candidate is not None else baseline
+    kind = reference.kind if reference is not None else "mixed"
+    delta: float | dict[str, int] | None = None
+    if baseline is not None and candidate is not None:
+        if baseline.kind != candidate.kind:
+            kind = "mixed"
+        elif kind == "number" and baseline.mean is not None and candidate.mean is not None:
+            delta = candidate.mean - baseline.mean
+        elif kind == "bool" and baseline.rate is not None and candidate.rate is not None:
+            delta = candidate.rate - baseline.rate
+        elif baseline.counts is not None and candidate.counts is not None:
+            values = sorted(set(baseline.counts) | set(candidate.counts))
+            delta = {
+                value: candidate.counts.get(value, 0) - baseline.counts.get(value, 0)
+                for value in values
+            }
+    return {
+        "kind": kind,
+        "baseline": baseline.to_dict() if baseline is not None else None,
+        "candidate": candidate.to_dict() if candidate is not None else None,
+        "delta": delta,
+    }
+
+
+def compute_metric_deltas(
+    groups: dict[tuple[str, str], RunGroup],
+    label_a: str,
+    label_b: str,
+) -> list[dict[str, Any]]:
+    """Return per-scenario metric deltas of ``label_b`` against ``label_a``.
+
+    Mirrors compute_diff's scope: only scenarios with runs under both labels.
+    Entries are sorted by scenario, then metric name.
+    """
+    scenario_ids = sorted({scenario_id for scenario_id, _label in groups})
+    result: list[dict[str, Any]] = []
+    for scenario_id in scenario_ids:
+        group_a = groups.get((scenario_id, label_a))
+        group_b = groups.get((scenario_id, label_b))
+        if group_a is None or group_b is None:
+            continue
+        metrics_a = group_metric_summaries(group_a)
+        metrics_b = group_metric_summaries(group_b)
+        for name in sorted(set(metrics_a) | set(metrics_b)):
+            result.append(
+                {
+                    "scenario_id": scenario_id,
+                    "baseline_label": label_a,
+                    "label": label_b,
+                    "metric": name,
+                    **metric_delta(metrics_a.get(name), metrics_b.get(name)),
+                }
+            )
+    return result

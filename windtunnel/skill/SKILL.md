@@ -3,7 +3,7 @@ name: windtunnel
 description: Bench tool-using LLM agents with the wt CLI, scenario packs, trace import/interchange,
   Contract C inject endpoints, reset isolation, and recorded tool universes.
 ---
-<!-- GENERATED from agents/skill-template.md + docs/ at e13010ba6753 — do not edit; edit docs/ or agents/skill-template.md. -->
+<!-- GENERATED from agents/skill-template.md + docs/ at d4374a38171a — do not edit; edit docs/ or agents/skill-template.md. -->
 # Wind Tunnel
 
 Wind Tunnel is unittest for agents: a reliability bench for tool-using LLM
@@ -45,6 +45,7 @@ serving recorded tool universes, or bringing up Contract C inject endpoints.
 - `references/getting-started.md` - Step-by-step guide to install Wind Tunnel, run and report scenarios, gate CI, and triage failures.
 - `references/importing-a-trace.md` - Workflow for validating a Contract A trace, importing a failing scenario skeleton, and authoring the regression gate.
 - `references/index.md` - Overview of Wind Tunnel's agent reliability gates, experiment integrity, import workflow, CLI, and starting points.
+- `references/iterating.md` - Tight iteration loop for people and coding agents: rescore saved traces, tabulate results and metrics per label, and compare labels.
 - `references/migrating-to-0.9.md` - Migration guide for Wind Tunnel 0.9 scoring gates, experiment integrity, failure risk, and persisted artifact versions.
 - `references/recording-a-universe.md` - Reference for recorded tool-universe fixtures, matching rules, divergence policies, and RecordedMCPServer usage.
 - `references/surface-goldens.md` - Task guide for capturing prompt-surface goldens and gating steering changes with wt surface.
