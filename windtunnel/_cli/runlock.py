@@ -15,6 +15,15 @@ backends (the built-in http_inject plugin keys by endpoint URL). The OS
 releases it when the holding process exits, so a killed sweep never leaves
 a stale lock behind. Lock files live in ``$WT_LOCK_DIR``, else a per-user
 directory under the system temp dir.
+
+Waiters are served by priority, then arrival (see docs/design/0005): each
+waiting sweep holds a lock on its own ticket file in ``<lock>.queue/``, named
+so that sorting the names orders the queue. Only the waiter at the head of the
+queue tries the runtime lock. A ticket whose file lock can be taken belongs to
+a process that is gone, and whoever notices removes it — the same
+kernel-released-lock argument that keeps the runtime lock itself from going
+stale. A new sweep never jumps ahead of a live waiter, including with
+``--no-wait``.
 """
 
 from __future__ import annotations
@@ -39,6 +48,9 @@ EXIT_RUNTIME_BUSY = 75
 # Windows byte-range locks are mandatory, so lock a byte far past the holder
 # record rather than the record itself, which waiters still need to read.
 _WINDOWS_LOCK_OFFSET = 1 << 30
+# Queue priorities (lower first); `wt run` maps probe/focused/regression here.
+DEFAULT_PRIORITY = 2
+_TICKET_SUFFIX = ".ticket"
 
 
 class RuntimeBusy(Exception):
@@ -99,26 +111,34 @@ def runtime_lock(
     on_wait: Callable[[dict[str, Any] | None], None] | None = None,
     on_acquired: Callable[[float], None] | None = None,
     poll_s: float = 0.5,
+    priority: int = DEFAULT_PRIORITY,
 ) -> Iterator[None]:
     """Hold the exclusive lock for ``key`` for the duration of the block.
 
-    If another process holds it: raise RuntimeBusy when ``wait`` is False;
-    otherwise call ``on_wait(holder)`` once, poll until the lock frees, and
-    call ``on_acquired(seconds_waited)``.
+    If another process holds it, or a live waiter is already queued for it:
+    raise RuntimeBusy when ``wait`` is False; otherwise queue a ticket at
+    ``priority`` (lower is served first; ties by arrival), call
+    ``on_wait(holder)`` once, poll until this ticket is at the head of the
+    queue and the lock frees, and call ``on_acquired(seconds_waited)``.
     """
     path = lock_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    queue = _queue_dir(path)
     try:
-        if not _try_lock(fd):
+        if _head_ticket(queue) is not None or not _try_lock(fd):
             current = _read_holder(path)
             if not wait:
                 raise RuntimeBusy(key, current)
-            if on_wait is not None:
-                on_wait(current)
             started = time.monotonic()
-            while not _try_lock(fd):
-                time.sleep(poll_s)
+            with _ticket(queue, priority) as mine:
+                if on_wait is not None:
+                    on_wait(current)
+                while True:
+                    mine.ensure()
+                    if mine.locked and _head_ticket(queue) == mine.path and _try_lock(fd):
+                        break
+                    time.sleep(poll_s)
             if on_acquired is not None:
                 on_acquired(time.monotonic() - started)
         try:
@@ -129,6 +149,98 @@ def runtime_lock(
             _unlock(fd)
     finally:
         os.close(fd)
+
+
+def _queue_dir(path: Path) -> Path:
+    return path.with_name(path.name + ".queue")
+
+
+class _Ticket:
+    """A waiter's place in the queue: a file this process holds locked.
+
+    Between creating the file and locking it, another waiter probing the queue
+    can hold the file's lock for a moment (to test whether it is dead), so the
+    first lock attempt may fail; or it can decide the file is dead and remove
+    it. ``ensure()`` is called on every poll and re-creates or re-locks the
+    same path (keeping its place in line) until this process holds it, and
+    ``locked`` is False until then, so the waiter never mistakes an unheld
+    ticket for its turn.
+    """
+
+    def __init__(self, queue: Path, priority: int) -> None:
+        priority = max(0, min(9, int(priority)))
+        self.path = queue / f"{priority}-{time.time_ns():020d}-{os.getpid()}{_TICKET_SUFFIX}"
+        self._fd: int | None = None
+        self.locked = False
+
+    def ensure(self) -> None:
+        if self.locked and self.path.exists():
+            return
+        self._close()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+        if _try_lock(fd):
+            self._fd, self.locked = fd, True
+        else:
+            os.close(fd)  # a prober holds it this instant; try again next poll
+
+    def _close(self) -> None:
+        if self._fd is None:
+            return
+        fd, self._fd = self._fd, None
+        if self.locked:
+            _unlock(fd)
+        self.locked = False
+        os.close(fd)
+
+    def release(self) -> None:
+        self._close()
+        try:
+            self.path.unlink()
+        except OSError:
+            pass
+
+
+@contextmanager
+def _ticket(queue: Path, priority: int) -> Iterator[_Ticket]:
+    """Hold a queue ticket for the duration of the wait."""
+    ticket = _Ticket(queue, priority)
+    ticket.ensure()
+    try:
+        yield ticket
+    finally:
+        ticket.release()
+
+
+def _head_ticket(queue: Path) -> Path | None:
+    """Return the first live ticket in queue order, reaping dead ones."""
+    try:
+        tickets = sorted(queue.glob(f"*{_TICKET_SUFFIX}"), key=lambda item: item.name)
+    except OSError:
+        return None
+    for ticket in tickets:
+        if _ticket_is_live(ticket):
+            return ticket
+    return None
+
+
+def _ticket_is_live(ticket: Path) -> bool:
+    try:
+        fd = os.open(ticket, os.O_RDWR)
+    except OSError:
+        return False  # already removed by its owner
+    try:
+        if not _try_lock(fd):
+            return True
+        # Nobody holds it: the waiter that queued it is gone.
+        _unlock(fd)
+    finally:
+        os.close(fd)
+    try:
+        ticket.unlink()
+    except OSError:
+        pass
+    return False
 
 
 def _read_holder(path: Path) -> dict[str, Any] | None:

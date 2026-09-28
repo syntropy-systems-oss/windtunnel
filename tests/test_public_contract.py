@@ -76,7 +76,7 @@ EXPECTED_DATACLASS_FIELDS = {
     Trace: (
         "scenario_id", "agent_id", "variant_id", "model", "quant", "sampler", "started_at",
         "finished_at", "turns", "tool_schema_hash", "worker_warnings", "mcp_calls",
-        "observations", "surface", "run_id",
+        "observations", "surface", "usage", "model_calls", "run_id",
     ),
     Score: ("outcome", "trajectory", "constraint", "integrity", "failure_cost"),
     AgentConfig: (
@@ -107,7 +107,8 @@ def test_public_dataclass_field_snapshot() -> None:
 def test_runner_signature_shape() -> None:
     assert tuple(inspect.signature(run_scenario).parameters) == (
         "scenario", "runtime", "mcps", "config", "runs_per_scenario", "skip_reset",
-        "state_probe", "hooks", "on_run_start", "on_run_complete",
+        "state_probe", "hooks", "on_run_start", "on_run_complete", "history_prefix",
+        "should_start_run",
     )
     assert tuple(inspect.signature(run_matrix).parameters) == (
         "scenario", "runtime", "mcps", "base_config", "sampling_variants", "runs_per_cell",

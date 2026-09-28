@@ -22,6 +22,17 @@ serving recorded tool universes, or bringing up Contract C inject endpoints.
 - Smoke scenario wiring with `uv run wt run --runtime in_memory --scenario <name> --runs 1`.
 - Prove runtime reset isolation with `uv run wt doctor --runtime <runtime>`.
 - Run the unit suite before changing bench semantics: `uv run pytest -q`.
+- Iterate small to large. After a failing sweep, probe the broken step
+  (`wt run --from-trace <trace> --question ... --expect ...`), then run the one
+  scenario on its own, and only then the whole pack. `wt run` enforces this:
+  a regression (several scenarios) is refused unless a focused run has passed
+  on the current artifact since the last regression, and each selected
+  scenario whose latest regression run failed has passed one of its own. To
+  see what is working, read `wt results`; never run the whole pack to find out, and every sweep into a runs directory with
+  history must declare `--question` and `--expect`. There is no bypass flag.
+  Say what each outcome will change (`--if-pass`, `--if-fail`), record what
+  it did (`wt review <sweep> --decision ...`), and check which tiers pay for
+  themselves with `wt results --ladder`.
 - Read `references/agents/anti-patterns.md` before building an importer,
   endpoint, or runtime driver.
 

@@ -42,6 +42,7 @@ Matrix dispatch:
 """
 from __future__ import annotations
 
+import copy
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
@@ -90,6 +91,9 @@ from windtunnel.api.evaluators import (
     evaluate_outcome,
     evaluate_trajectory,
 )
+from windtunnel.api.replay import HistoryPrefix
+from windtunnel.api.replay import scoring_view as _scoring_view
+from windtunnel.api.replay import with_prefix as _with_prefix
 from windtunnel.api.scenario import PreSendPerturbation, Scenario
 from windtunnel.api.score import LayerResult, Score
 from windtunnel.api.trace import Trace, Turn
@@ -135,6 +139,77 @@ class ScenarioResult:
 
 # ─── Core single-run driver ───────────────────────────────────────────────────
 
+def _add_usage(total: dict[str, int] | None, response: object) -> dict[str, int] | None:
+    """Add one response's token usage to ``total``; None once any send lacks it.
+
+    Reads ``usage`` in either common wire spelling (input/output_tokens or
+    prompt/completion_tokens). Anything else is "not reported", not zero.
+    """
+    usage = response.get("usage") if isinstance(response, dict) else None
+    if total is None or not isinstance(usage, dict):
+        return None
+    counts = []
+    for new_key, old_key in (("input_tokens", "prompt_tokens"), ("output_tokens",
+                                                                 "completion_tokens")):
+        value = usage.get(new_key, usage.get(old_key))
+        if type(value) is not int or value < 0:
+            return None
+        counts.append(value)
+    return {
+        "input_tokens": total["input_tokens"] + counts[0],
+        "output_tokens": total["output_tokens"] + counts[1],
+    }
+
+
+def _normalize_call_usage(usage: dict[str, Any]) -> dict[str, int | None]:
+    """Normalize one call's raw usage dict to {prompt_tokens, cached_tokens,
+    completion_tokens} — the shape stored in Trace.model_calls.
+
+    prompt_tokens is the TOTAL prompt tokens for that call, including any
+    served from a prompt cache. Accepts common wire spellings; a field is
+    None, never guessed or defaulted to 0, when this call's usage did not
+    report it.
+
+    cached:      cached_tokens, prompt_tokens_details.cached_tokens,
+                 cache_read_input_tokens, cacheRead
+    prompt:      prompt_tokens, input_tokens, input (+ cacheRead — some
+                 wire shapes report "input" as uncached-only, keeping the
+                 cache read separate rather than nesting it inside the
+                 prompt total; when both are present, prompt_tokens is
+                 their sum, so it always means "including cached")
+    completion:  completion_tokens, output_tokens, output
+    """
+    def _int(value: Any) -> int | None:
+        return value if type(value) is int and value >= 0 else None
+
+    cached = _int(usage.get("cached_tokens"))
+    if cached is None:
+        details = usage.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            cached = _int(details.get("cached_tokens"))
+    if cached is None:
+        cached = _int(usage.get("cache_read_input_tokens"))
+    cache_read = _int(usage.get("cacheRead"))
+    if cached is None:
+        cached = cache_read
+
+    prompt = _int(usage.get("prompt_tokens"))
+    if prompt is None:
+        prompt = _int(usage.get("input_tokens"))
+    if prompt is None:
+        raw_input = _int(usage.get("input"))
+        if raw_input is not None:
+            prompt = raw_input + cache_read if cache_read is not None else raw_input
+
+    completion = _int(usage.get("completion_tokens"))
+    if completion is None:
+        completion = _int(usage.get("output_tokens"))
+    if completion is None:
+        completion = _int(usage.get("output"))
+
+    return {"prompt_tokens": prompt, "cached_tokens": cached, "completion_tokens": completion}
+
+
 def _run_once(
     scenario: Scenario,
     handle: AgentHandle,
@@ -148,6 +223,7 @@ def _run_once(
     hooks: Sequence[object] = (),
     hook_state: _RunHookState | None = None,
     config: AgentConfig | None = None,
+    history_prefix: HistoryPrefix | None = None,
 ) -> tuple[Trace, Score]:
     """Drive one scenario through a live AgentHandle. Return (Trace, Score).
 
@@ -162,12 +238,27 @@ def _run_once(
     state_probe (optional) snapshots EXTERNAL non-MCP state into
     trace.observations, with the same per-run reset + freeze-before-score
     lifecycle as the call logs (see spi/state_probe.py).
+
+    history_prefix (optional) freezes recorded turns as history in front of
+    every live turn — the probe path of `wt run --from-trace`. The frozen
+    turns are copied to the start of the trace and marked with a
+    ``replay_prefix:`` worker warning.
     """
     if hooks and hook_state is None:
         hook_state = _RunHookState()
     session_id = hook_state.session_id if hook_state is not None else str(uuid.uuid4())
     started_at = datetime.now(UTC)
     turns: list[Turn] = []
+    prefix_messages: list[dict[str, Any]] = []
+    if history_prefix is not None:
+        if not getattr(handle, "_windtunnel_consumes_full_history", True):
+            raise RuntimeError(
+                "runtime cannot deliver a replayed history prefix to the model: it "
+                "sends only the newest user turn; refusing to score a probe the model "
+                "never saw"
+            )
+        turns.extend(copy.deepcopy(list(history_prefix.turns)))
+        prefix_messages = history_prefix.messages()
 
     pre_send_perturbations = [
         perturbation
@@ -215,8 +306,18 @@ def _run_once(
     user_turns: list[str] = scenario.user_turns or [scenario.scored_prompt]
     responses: list[str] = []
     runtime_warnings: list[str] = list(surface_warnings)
+    if history_prefix is not None:
+        runtime_warnings.append(history_prefix.marker)
     if hook_state is not None:
         runtime_warnings.extend(hook_state.warnings)
+
+    # Cost as the runtime reports it: summed tokens, or None once any send
+    # reports none (never a guessed or partial figure).
+    usage: dict[str, int] | None = {"input_tokens": 0, "output_tokens": 0}
+    reported_models: set[str] = set()
+    # Per-call usage, one entry per send — see Trace.model_calls. None
+    # (never an empty list) unless at least one send reported usage.
+    model_calls: list[dict[str, Any]] | None = None
 
     for turn_idx, user_text in enumerate(user_turns):
         # Record user turn
@@ -229,7 +330,7 @@ def _run_once(
         ))
 
         # Build accumulated message history
-        messages = _build_messages(user_turns[: turn_idx + 1], responses)
+        messages = prefix_messages + _build_messages(user_turns[: turn_idx + 1], responses)
 
         # Pre-send history shaping: PreSendPerturbation instances inject the
         # corrupted prior turns (wrong tool call + result, blank turn, stale
@@ -245,6 +346,35 @@ def _run_once(
         t0 = datetime.now(UTC)
         response = handle.send(messages, session_id)
         t1 = datetime.now(UTC)
+        usage = _add_usage(usage, response)
+        raw_usage = response.get("usage") if isinstance(response, dict) else None
+        if isinstance(raw_usage, dict):
+            if model_calls is None:
+                model_calls = []
+            # One send() can make several inference calls (a tool loop inside
+            # one turn) — usage["calls"] lets a runtime report each one, so a
+            # miss on any single call is still caught, not diluted into the
+            # turn's aggregate ratio. Each entry may carry its own
+            # "conversation" (e.g. a forked side conversation), overriding
+            # this run's session_id default so its own first call is judged
+            # as a first call of its own conversation.
+            per_call = raw_usage.get("calls")
+            if isinstance(per_call, list) and per_call:
+                for call_usage in per_call:
+                    if not isinstance(call_usage, dict):
+                        continue
+                    conversation = call_usage.get("conversation")
+                    if not isinstance(conversation, str) or not conversation:
+                        conversation = session_id
+                    model_calls.append(
+                        {"conversation": conversation, **_normalize_call_usage(call_usage)}
+                    )
+            else:
+                model_calls.append(
+                    {"conversation": session_id, **_normalize_call_usage(raw_usage)}
+                )
+        if isinstance(response, dict) and isinstance(response.get("model"), str):
+            reported_models.add(response["model"])
         latency_ms = (t1 - t0).total_seconds() * 1000
 
         # Extract assistant content + tool_calls (shape-tolerant)
@@ -276,7 +406,12 @@ def _run_once(
         "scenario_id": scenario.name,
         "agent_id": agent_id,
         "variant_id": variant_id,
-        "model": model,
+        # The configured model when there is one; otherwise the model the
+        # runtime's responses name, so the trace says which model answered.
+        "model": (
+            "+".join(sorted(reported_models))
+            if model == "unknown" and reported_models else model
+        ),
         "quant": quant,
         "sampler": sampler,
         "started_at": started_at,
@@ -287,10 +422,16 @@ def _run_once(
         "mcp_calls": mcp_calls,
         "observations": observations,
         "surface": surface,
+        "usage": usage,
+        "model_calls": model_calls,
     }
     if hook_state is not None:
         trace_kwargs["run_id"] = hook_state.run_id
-    trace = Trace(**trace_kwargs)
+    full_trace = Trace(**trace_kwargs)
+    # A probe's frozen history is the original run's behavior, not this one's:
+    # perturbations and every scorer see only the live turns, and the prefix
+    # is put back in front for the saved record.
+    trace = _scoring_view(full_trace)
 
     # Apply perturbations to the trace before scoring (robustness condition).
     # Pre-send perturbations were ALREADY injected into the live messages above —
@@ -315,6 +456,7 @@ def _run_once(
         integrity=evaluate_integrity(trace, scenario),
         failure_cost=scenario.failure_cost,
     )
+    trace = _with_prefix(trace, full_trace)
 
     if hook_state is not None:
         _dispatch_hooks(
@@ -361,6 +503,8 @@ def run_scenario(
     hooks: Sequence[object] = (),
     on_run_start: Callable[[int], None] | None = None,
     on_run_complete: Callable[[int, ScenarioRunResult], None] | None = None,
+    history_prefix: HistoryPrefix | None = None,
+    should_start_run: Callable[[int], bool] | None = None,
 ) -> ScenarioResult:
     """Run one Scenario N times against the given runtime + mcp set.
 
@@ -396,6 +540,15 @@ def run_scenario(
                             that run is scored, before the next run starts —
                             the seam for streaming each run to disk or to a
                             progress display instead of waiting for all N.
+
+        history_prefix:     optional recorded turns frozen as history in front
+                            of every live turn (see _run_once). Requires a
+                            handle that consumes the full message history.
+        should_start_run:   optional predicate consulted before every run
+                            after the first; returning False stops the
+                            remaining runs and aggregates the completed ones
+                            — the seam for a wall-clock budget. The first
+                            run always starts, so a result is never empty.
 
         Unlike hooks, the two callbacks are the caller's own control flow:
         they run synchronously on this thread, and an exception they raise
@@ -452,6 +605,12 @@ def run_scenario(
         run_results: list[ScenarioRunResult] = []
 
         for run_index in range(runs_per_scenario):
+            if (
+                run_index > 0
+                and should_start_run is not None
+                and not should_start_run(run_index)
+            ):
+                break
             if on_run_start is not None:
                 on_run_start(run_index)
             if not skip_reset:
@@ -472,6 +631,7 @@ def run_scenario(
                     hooks=hooks,
                     hook_state=hook_state,
                     config=config,
+                    history_prefix=history_prefix,
                 )
             except Exception as exc:
                 # Create a minimal failed trace so aggregate still works

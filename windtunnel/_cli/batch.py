@@ -27,6 +27,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from windtunnel._cli.ladder import ledger_has_history, read_ledger
+
 
 @dataclass(frozen=True)
 class _Spec:
@@ -80,6 +82,23 @@ def _cmd_batch(
             invalid = True
             continue
         specs.append(_Spec(line=number, text=shlex.join(tokens), args=parsed))
+
+    # The experiment ladder is checked here too, so a spec that would be
+    # refused for a missing --question/--expect fails the batch up front
+    # instead of after the rounds before it have spent their time.
+    seen_dirs: set[Path] = set()
+    for spec in specs:
+        spec_dir = Path(getattr(spec.args, "runs_dir", None) or "runs").resolve()
+        has_history = spec_dir in seen_dirs or ledger_has_history(read_ledger(spec_dir))
+        seen_dirs.add(spec_dir)
+        question = getattr(spec.args, "question", None)
+        if has_history and (not question or not question.strip() or spec.args.expect is None):
+            print(
+                f"wt batch: {source}:{spec.line}: runs directory {spec_dir} will already "
+                "hold sweeps when this spec runs, so it needs --question and --expect",
+                file=sys.stderr,
+            )
+            invalid = True
 
     if invalid:
         print("wt batch: no spec was run; fix the lines above.", file=sys.stderr)

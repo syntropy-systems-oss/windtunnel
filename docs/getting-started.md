@@ -146,7 +146,7 @@ To compare two configurations (a model swap, a prompt change, a temperature
 pin):
 
 ```bash
-wt run ... --label candidate
+wt run ... --label candidate --question "does the candidate match baseline?" --expect pass
 wt compare --labels baseline candidate
 wt results --label candidate          # per-scenario pass counts + aggregated metrics
 ```
@@ -211,8 +211,7 @@ call `run_reset_canary(..., probe_recall=False, state_probe=...)` from pytest.
 CI systems that want structure, not just an exit code:
 
 ```bash
-wt run --tag dim:recovery --runs 3 --format junit --out results.xml
-wt run --tag dim:recovery --runs 3 --format json  --out results.json
+wt run --tag dim:recovery --runs 3 --format junit --out results.xml   # or --format json
 wt selftest --runtime <reference-capable-runtime> --format junit --out selftest.xml
 ```
 

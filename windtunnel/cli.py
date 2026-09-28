@@ -28,12 +28,14 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import fnmatch
 import functools
 import json
 import shutil
 import sys
 import threading
+import time
 import traceback
 from importlib import resources
 from pathlib import Path
@@ -49,6 +51,41 @@ from windtunnel._cli.hooks import (
 )
 from windtunnel._cli.hooks import (
     _resolve_hooks as _resolve_hooks_impl,
+)
+from windtunnel._cli.ladder import (
+    EXPECT_CHOICES,
+    Budget,
+    Fingerprint,
+    LadderError,
+    call_usage_totals,
+    check_cache_misses,
+    check_model_policy,
+    check_regression_gate,
+    combine_cache_checks,
+    compute_cost_usd,
+    compute_fingerprint,
+    cost_block,
+    derive_tier,
+    describe_changes,
+    experiment_record,
+    gate_refusal_message,
+    ledger_has_history,
+    load_cache_config,
+    load_model_policy,
+    load_pricing,
+    load_tier_caps,
+    model_label,
+    normalize_target,
+    prediction_line,
+    read_ledger,
+    record_output,
+    record_review,
+    record_sweep,
+    recorded_outputs,
+    resolve_budget,
+    save_manifest,
+    sum_tokens,
+    tier_priority,
 )
 from windtunnel._cli.models import (
     _CompletedAggregate as _CompletedAggregateModel,
@@ -193,6 +230,21 @@ from windtunnel.api.trace import Trace
 from windtunnel.spi.scheduler import RunJob
 from windtunnel.triage.classifier import FailureClassification, FailureClassifier
 
+
+def _run_tokens(run: ScenarioRunResult) -> dict[str, Any]:
+    """One run's token totals: from its trace's per-call model_calls when the
+    runtime reported them, else its legacy usage total (cached unknown).
+    """
+    model_calls = getattr(run.trace, "model_calls", None)
+    if model_calls:
+        return call_usage_totals(model_calls)
+    usage = getattr(run.trace, "usage", None)
+    return {
+        "input_tokens": usage.get("input_tokens") if usage else None,
+        "cached_tokens": None,
+        "output_tokens": usage.get("output_tokens") if usage else None,
+    }
+
 # Compatibility facade: command orchestration and historical test seams remain
 # available from ``windtunnel.cli`` while their implementations live in focused
 # private service modules.
@@ -260,6 +312,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
     if fmt == "json":
         if args.out:
             out_path = Path(args.out)
+            record_output(runs_dir, out_path)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             with out_path.open("w", encoding="utf-8") as out:
                 generate_json(runs_dir=runs_dir, out=out)
@@ -270,6 +323,8 @@ def _cmd_report(args: argparse.Namespace) -> int:
 
     # HTML (default)
     out_path = Path(args.out) if args.out else Path("report.html")
+    # A report left in the working tree must not make focused evidence stale.
+    record_output(runs_dir, out_path)
     generate_html(runs_dir=runs_dir, out_path=out_path)
     print(f"wrote: {out_path}", file=sys.stderr)
     return 0
@@ -477,6 +532,24 @@ def _cmd_run(args: argparse.Namespace) -> int:
     hooks = _resolve_hooks(getattr(args, "hook", None))
     sweep_timestamp = _sweep_artifact_timestamp()
 
+    # Probe: a saved trace names the scenario and supplies the frozen history.
+    from_trace_arg: str | None = getattr(args, "from_trace", None)
+    from_turn: int | None = getattr(args, "from_turn", None)
+    source_trace = None
+    if from_turn is not None and from_trace_arg is None:
+        print("wt run: --from-turn requires --from-trace.", file=sys.stderr)
+        return 2
+    if from_trace_arg is not None:
+        from windtunnel.api.trace import TraceFormatError, load_trace  # noqa: PLC0415
+
+        try:
+            source_trace = load_trace(Path(from_trace_arg))
+        except (OSError, ValueError, KeyError, TraceFormatError) as exc:
+            print(f"wt run: cannot load --from-trace {from_trace_arg}: {exc}", file=sys.stderr)
+            return 2
+        if not scenario_patterns:
+            scenario_patterns = [source_trace.scenario_id]
+
     # Resolve once for the entire invocation: stateful plugins must receive
     # build() and pre_run() on the same object. build() itself waits until
     # every usage check has passed and the runtime lock is held (below).
@@ -503,12 +576,38 @@ def _cmd_run(args: argparse.Namespace) -> int:
     )
     _print_selection_warnings(selection)
     selected = selection.entries
-    scenarios = [entry.scenario for entry in selected]
     if not selected:
         print("wt run: no scenarios found. Use --scenario <name> to specify.", file=sys.stderr)
         return 2
+    history_prefix = None
+    if source_trace is not None:
+        if len(selected) != 1 or selected[0].scenario.name != source_trace.scenario_id:
+            names = ", ".join(entry.scenario.name for entry in selected)
+            print(
+                f"wt run: --from-trace replays scenario {source_trace.scenario_id!r}, but "
+                f"the selection is: {names}. A probe runs exactly the trace's scenario.",
+                file=sys.stderr,
+            )
+            return 2
+        from windtunnel.api.replay import split_at_user_turn  # noqa: PLC0415
 
-    from windtunnel.spi.agent_runtime import AgentConfig  # noqa: PLC0415
+        try:
+            history_prefix, live_turns = split_at_user_turn(source_trace, from_turn)
+        except ValueError as exc:
+            print(f"wt run: {exc}", file=sys.stderr)
+            return 2
+        entry = selected[0]
+        selected = [
+            _SelectedScenario(
+                pack=entry.pack,
+                scenario=dataclasses.replace(
+                    entry.scenario, prompt=live_turns[-1], user_turns=list(live_turns)
+                ),
+            )
+        ]
+    scenarios = [entry.scenario for entry in selected]
+
+    from windtunnel.spi.agent_runtime import AgentConfig, ModelSpec  # noqa: PLC0415
 
     # Thread --soul (a PATH) into AgentConfig.system_prompt so the platform
     # runtime's provision() writes it to the SOUL doc via `set-docs --soul`. The
@@ -532,12 +631,158 @@ def _cmd_run(args: argparse.Namespace) -> int:
             print(f"wt run: --agents file not found: {args.agents}", file=sys.stderr)
             return 2
         persona_doc = agents_path
+    # Which model answers, as the runtime plugin reports it: recorded in every
+    # trace, part of the artifact fingerprint, and checked against the tier's
+    # model policy below.
+    model = model_label(plugin, runtime_name)
     config = AgentConfig(
         agent_id="wt-cli",
         variant_id=label,
         system_prompt=system_prompt,
         persona_doc=persona_doc,
+        model=ModelSpec(name=model) if model is not None else None,
     )
+
+    # The experiment ladder (docs/design/0005): derive the tier from what this
+    # sweep runs, bound it in time, and refuse a regression whose previous
+    # failures have not each passed on their own against this artifact.
+    tier = derive_tier(from_trace=source_trace is not None, selected_count=len(selected))
+    question: str | None = getattr(args, "question", None)
+    expect: str | None = getattr(args, "expect", None)
+    if_pass: str | None = getattr(args, "if_pass", None)
+    if_fail: str | None = getattr(args, "if_fail", None)
+    try:
+        budget = Budget(
+            resolve_budget(tier, getattr(args, "budget", None), load_tier_caps())
+        )
+        check_model_policy(tier, model, load_model_policy())
+        pricing = load_pricing()
+        cache_config = load_cache_config()
+    except LadderError as exc:
+        print(f"wt run: {exc}", file=sys.stderr)
+        return 2
+    ledger_rows = read_ledger(runs_dir)
+    if ledger_has_history(ledger_rows) and (
+        question is None or not question.strip() or expect is None
+    ):
+        print(
+            f"wt run: {runs_dir} already holds sweeps, so this {tier} sweep must say "
+            "what it is for: add --question \"<what this run should tell you>\" and "
+            "--expect pass|fail. Both are recorded in the ledger, and the prediction "
+            "is checked when the sweep ends.",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        # The backend this runtime name reaches (http_inject: its endpoint URL),
+        # so evidence and failures are never mixed across two targets — and
+        # never split across two spellings of one.
+        target = normalize_target(plugin, runtime_lock_key(plugin, runtime_name), runtime_name)
+    except SchedulingError:
+        target = normalize_target(plugin, None, runtime_name)
+    wt_version = _wt_version()
+    if output_path:
+        record_output(runs_dir, Path(output_path))
+
+    def _fingerprint() -> Fingerprint:
+        return compute_fingerprint(
+            runtime_name=runtime_name,
+            soul_path=Path(args.soul) if args.soul else None,
+            agents_path=persona_doc,
+            # What wt itself writes (now or in any earlier command into this
+            # runs directory) is not the artifact.
+            exclude=[runs_dir, *recorded_outputs(runs_dir)],
+            target=target,
+            plugin=plugin,
+            wt_version=wt_version,
+            model=model,
+        )
+
+    fingerprint = _fingerprint()
+    save_manifest(runs_dir, fingerprint)
+    for note in fingerprint.notes:
+        print(f"wt run: note: {note}", file=sys.stderr)
+    gate = None
+    if tier == "regression":
+        gate = check_regression_gate(
+            ledger_rows,
+            selected=[
+                (getattr(entry.pack, "name", None), entry.scenario.name) for entry in selected
+            ],
+            fingerprint=fingerprint.value,
+            target=target,
+        )
+        if not gate.allowed:
+            context_flags = ["--runtime", runtime_name]
+            if Path(args.runs_dir) != Path("runs"):
+                context_flags += ["--runs-dir", str(args.runs_dir)]
+            for source in pack_sources:
+                context_flags += ["--pack-source", source]
+            for pack_name in getattr(args, "pack", None) or []:
+                context_flags += ["--pack", pack_name]
+            if getattr(args, "all_packs", False):
+                context_flags.append("--all-packs")
+            if args.soul:
+                context_flags += ["--soul", str(args.soul)]
+            if args.agents:
+                context_flags += ["--agents", str(args.agents)]
+            print(
+                gate_refusal_message(
+                    gate, fingerprint, context_flags=context_flags, runs_dir=runs_dir
+                ),
+                file=sys.stderr,
+            )
+            return 2
+        if gate.excluded_failing:
+            print(
+                "wt run: not testing scenario(s) whose most recent regression run "
+                f"failed: {', '.join(gate.excluded_failing)} — recorded as excluded; "
+                "they stay gated until a focused run passes",
+                file=sys.stderr,
+            )
+    started_jobs: set[int] = set()
+
+    def _experiment(
+        *, counts_as_failure: bool, cost: dict[str, Any], cache_check: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        recorded = fingerprint
+        if tier == "focused":
+            # Only focused rows are evidence, so make sure the artifact did not
+            # change underneath the run (an edit while it was queued or running).
+            now = _fingerprint()
+            if now.value != recorded.value:
+                changes = describe_changes(dict(recorded.parts), recorded.manifest, now)
+                print(
+                    "wt run: note: the artifact changed while this sweep ran "
+                    f"({changes}); its result is recorded but is not evidence for any "
+                    "artifact. If a listed file is something the runtime or your "
+                    "tooling writes (a log, a cache), gitignore it.",
+                    file=sys.stderr,
+                )
+                recorded = dataclasses.replace(recorded, value="changed-during-sweep")
+        return experiment_record(
+            tier=tier,
+            question=question,
+            expect=expect,
+            budget=budget,
+            fingerprint=recorded,
+            source_trace=from_trace_arg,
+            from_turn=from_turn if source_trace is not None else None,
+            decision=gate,
+            counts_as_failure=counts_as_failure,
+            if_pass=if_pass,
+            if_fail=if_fail,
+            cost=cost,
+            cost_usd=compute_cost_usd(
+                wall_s=cost.get("wall_s") or 0.0,
+                input_tokens=cost.get("input_tokens"),
+                cached_tokens=cost.get("cached_tokens"),
+                output_tokens=cost.get("output_tokens"),
+                model=model,
+                pricing=pricing,
+            ),
+            cache_check=cache_check,
+        )
 
     # How the scenario jobs execute. Never more at once than the runtime
     # plugin declares it tolerates (default 1): many runtimes bind fixed ports.
@@ -579,7 +824,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
         runs_per_scenario=n_runs,
         scheduler=scheduler.name,
         max_concurrency=max_jobs,
+        tier=tier,
+        question=question,
+        expect=expect,
+        budget_s=budget.seconds,
     )
+    budget_note = "" if budget.seconds is None else f", budget {budget.seconds:g}s"
+    print(f"wt run: {tier} sweep{budget_note}", file=sys.stderr)
     print(
         f"wt run: sweep {events.sweep_id} — follow with: "
         f"wt watch --runs {runs_dir} --sweep {events.sweep_id}",
@@ -601,7 +852,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
     completed_at: dict[int, _CompletedAggregate] = {}
     records_at: dict[int, dict[str, Any]] = {}
     git_sha = _git_sha()
-    wt_version = _wt_version()
 
     def _finish(rc: int) -> int:
         """Flush end-of-sweep side effects, on normal exit AND circuit-breaker abort.
@@ -702,6 +952,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # scenario across the whole sweep — so a circuit breaker stops the sweep after
         # N consecutive errors, and the FIRST error logs a full traceback (the
         # per-scenario lines clip the message to 120 chars).
+        job_started = time.monotonic()
         try:
             result = run_scenario(
                 scenario,
@@ -713,6 +964,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 hooks=hooks,
                 on_run_start=_on_run_start,
                 on_run_complete=_on_run_complete,
+                history_prefix=history_prefix,
+                should_start_run=lambda _index: budget.allows_start(),
             )
         except _PersistenceFailure as failure:
             # Persisting evidence is the sweep's own job, not the scenario's:
@@ -796,6 +1049,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             git_sha=git_sha,
             wt_version=wt_version,
         )
+        record["sweep_id"] = events.sweep_id
         agg = result.aggregate
         status = agg.verdict
         if had_runner_error:
@@ -808,6 +1062,30 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # model-quality signal, so it doesn't flip the exit code — UNLESS the run
         # hit a real execution error (no valid model turn happened).
         gate_failure = _counts_as_gate_failure(completed_entry)
+        model_calls = [
+            call
+            for run in result.runs
+            for call in (getattr(run.trace, "model_calls", None) or [])
+        ]
+        cache_check = (
+            check_cache_misses(model_calls, min_cached_ratio=cache_config["min_cached_ratio"])
+            if cache_config is not None
+            else None
+        )
+        cache_blocks = (
+            cache_check is not None
+            and cache_config is not None
+            and cache_config["fail_on_miss"]
+            and cache_check["result"] != "pass"
+        )
+        record["experiment"] = _experiment(
+            counts_as_failure=gate_failure or cache_blocks,
+            cost={
+                "wall_s": round(time.monotonic() - job_started, 3),
+                **sum_tokens(_run_tokens(run) for run in result.runs),
+            },
+            cache_check=cache_check,
+        )
         with state:
             consecutive_errors = 0  # a successful scenario resets the breaker
             for warning in getattr(result, "worker_warnings", []) or []:
@@ -819,7 +1097,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 f"  {status:<6}  {scenario.name:<40}  "
                 f"({agg.passed}/{agg.total} pass, rate={agg.pass_rate:.0%}){note}"
             )
-            if gate_failure:
+            if gate_failure or cache_blocks:
                 any_fail = True
         events.emit(
             "scenario_finished",
@@ -833,6 +1111,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     def _job(job_index: int, selected_entry: _SelectedScenario) -> None:
         with slots:
+            if not budget.allows_start():
+                stop.set()
+                return
+            with state:
+                started_jobs.add(job_index)
             _run_entry(job_index, selected_entry)
 
     def _run_sweep() -> int:
@@ -847,6 +1130,55 @@ def _cmd_run(args: argparse.Namespace) -> int:
         ]
         scheduler.execute(jobs, stop)
         return _finish(1 if aborted or any_fail else 0)
+
+    def _record_sweep(rc: int) -> None:
+        """Append the sweep's cost and outcome to <runs>/experiments.ndjsonl, and print it."""
+        with state:
+            costs = [record["experiment"]["cost"] for record in records_at.values()]
+            cache_checks = [
+                record["experiment"]["cache_check"]
+                for record in records_at.values()
+                if record["experiment"].get("cache_check") is not None
+            ]
+            errored = scenario_errors > 0
+        # A scenario that errored has no row, so its tokens are unknown.
+        tokens = (
+            {"input_tokens": None, "cached_tokens": None, "output_tokens": None}
+            if errored
+            else sum_tokens(costs)
+        )
+        wall_s = round(budget.elapsed(), 3)
+        cost = {"wall_s": wall_s, **tokens}
+        cost_usd = compute_cost_usd(
+            wall_s=wall_s, input_tokens=tokens["input_tokens"],
+            cached_tokens=tokens["cached_tokens"],
+            output_tokens=tokens["output_tokens"], model=model, pricing=pricing,
+        )
+        cache_check = combine_cache_checks(cache_checks) if cache_config is not None else None
+        print(cost_block(question, cost, cost_usd, cache_check), file=sys.stderr)
+        fields: dict[str, Any] = dict(
+            sweep_id=events.sweep_id,
+            label=label,
+            tier=tier,
+            model=model,
+            question=question,
+            expect=expect,
+            if_pass=if_pass,
+            if_fail=if_fail,
+            outcome="pass" if rc == 0 else "fail",
+            prediction_held=None if expect is None else (expect == "pass") == (rc == 0),
+            budget_exhausted=budget.exhausted,
+            scenarios=len(selected),
+            cost=cost,
+        )
+        if cost_usd is not None:
+            fields["cost_usd"] = cost_usd
+        if cache_check is not None:
+            fields["cache_check"] = cache_check
+        try:
+            record_sweep(runs_dir, **fields)
+        except OSError as exc:
+            print(f"wt run: warning: could not record the sweep: {exc}", file=sys.stderr)
 
     def _lock_waiting(holder: dict[str, Any] | None) -> None:
         print(
@@ -880,6 +1212,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                         ),
                         on_wait=_lock_waiting,
                         on_acquired=_lock_acquired,
+                        priority=tier_priority(tier),
                     )
                 )
             except RuntimeBusy as busy:
@@ -890,6 +1223,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 )
                 exit_code, status = EXIT_RUNTIME_BUSY, "busy"
                 return EXIT_RUNTIME_BUSY
+        # The budget is charged from here: time queued behind another sweep for
+        # the runtime is not this sweep's doing.
+        budget.start()
         runtime = _build_runtime(runtime_name, label, soul_path=args.soul, _plugin=plugin)
         # Platform-specific bench prep (runtime-pluggable seam): the resolved
         # plugin's OPTIONAL pre_run() hook runs once here — after _build_runtime
@@ -901,6 +1237,31 @@ def _cmd_run(args: argparse.Namespace) -> int:
             pre_run(runtime, scenarios, runtime_name)
         try:
             rc = _run_sweep()
+            if budget.exhausted:
+                # An experiment cut short answered a smaller question than it
+                # asked, so it never reports success (and its rows never count
+                # as focused evidence; see ladder.check_regression_gate).
+                rc = max(rc, 1)
+                unstarted = [
+                    entry.scenario.name
+                    for index, entry in enumerate(selected)
+                    if index not in started_jobs
+                ]
+                skipped = f"; not started: {', '.join(unstarted)}" if unstarted else ""
+                print(
+                    f"wt run: budget of {budget.seconds:g}s spent after "
+                    f"{budget.elapsed():.0f}s — remaining runs were not started{skipped}. "
+                    "The sweep is incomplete and exits non-zero; make the experiment "
+                    "smaller rather than the budget larger.",
+                    file=sys.stderr,
+                )
+            prediction = prediction_line(expect, rc == 0)
+            if prediction is not None:
+                print(prediction, file=sys.stderr)
+            planned = if_pass if rc == 0 else if_fail
+            if planned:
+                print(f"wt run: you planned, on this outcome: {planned}", file=sys.stderr)
+            _record_sweep(rc)
         finally:
             # Symmetric counterpart to pre_run(): a plugin that provisioned
             # bench-wide resources there (a subprocess, a mock server, anything
@@ -923,11 +1284,22 @@ def _cmd_run(args: argparse.Namespace) -> int:
             scenarios=len(selected),
             completed=len(completed_at),
             errors=scenario_errors,
+            budget_exhausted=budget.exhausted,
         )
 
 
 
 # ─── batch ───────────────────────────────────────────────────────────────────
+
+
+def _cmd_review(args: argparse.Namespace) -> int:
+    """Handle `wt review`: record whether a finished sweep changed a decision."""
+    try:
+        record_review(Path(args.runs), args.sweep, decision=args.decision)
+    except LadderError as exc:
+        print(f"wt review: {exc}", file=sys.stderr)
+        return 2
+    return 0
 
 
 def _cmd_batch(args: argparse.Namespace) -> int:
@@ -1207,8 +1579,12 @@ def _score_saved_trace(trace: Trace, scenario: Scenario) -> Score:
         evaluate_outcome,
         evaluate_trajectory,
     )
+    from windtunnel.api.replay import scoring_view  # noqa: PLC0415
     from windtunnel.api.score import Score  # noqa: PLC0415
 
+    # A probe's frozen history is not the probe's own behavior (see
+    # windtunnel.api.replay.scoring_view); live and offline scoring agree.
+    trace = scoring_view(trace)
     return Score(
         outcome=evaluate_outcome(trace, scenario),
         trajectory=evaluate_trajectory(trace, scenario),
@@ -1924,6 +2300,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print one JSON document with every run's trace path, verdict, and "
         "metrics alongside the per-scenario aggregates.",
     )
+    results_p.add_argument(
+        "--ladder",
+        action="store_true",
+        help="Instead of per-scenario results, summarize the experiment ladder per "
+        "tier: sweeps, wall time, tokens, predictions held, and how often a "
+        "reviewed sweep changed a decision (from experiments.ndjsonl).",
+    )
+
+    # ── review ───────────────────────────────────────────────────────────────
+    review_p = sub.add_parser(
+        "review",
+        help="Record what a finished sweep changed: --decision TEXT, or "
+        "--no-change. Summarized by `wt results --ladder`.",
+    )
+    review_p.add_argument("sweep", metavar="SWEEP_ID", help="The sweep id `wt run` printed.")
+    review_p.add_argument(
+        "--runs",
+        default="runs",
+        metavar="DIR",
+        help="Path to the runs/ directory (default: ./runs)",
+    )
+    outcome = review_p.add_mutually_exclusive_group(required=True)
+    outcome.add_argument(
+        "--decision",
+        metavar="TEXT",
+        help="What this sweep's result made you decide or change.",
+    )
+    outcome.add_argument(
+        "--no-change",
+        action="store_true",
+        help="The sweep changed no decision.",
+    )
 
     # ── watch ────────────────────────────────────────────────────────────────
     watch_p = sub.add_parser(
@@ -2091,6 +2499,68 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="FILE",
         help="Path for --format junit/json output. Must be paired with --format.",
+    )
+    ladder = run_p.add_argument_group(
+        "experiment ladder",
+        "Every sweep is a probe (--from-trace), focused (one scenario), or "
+        "regression (several). Once the runs directory has history, each sweep "
+        "declares --question and --expect, and a regression must be earned: a "
+        "focused run must have passed on the current artifact since the last "
+        "regression, and so must each selected scenario whose most recent "
+        "regression run failed. See docs/design/0005-experiment-ladder.md.",
+    )
+    ladder.add_argument(
+        "--question",
+        default=None,
+        metavar="TEXT",
+        help="What this sweep is meant to find out. Recorded in the ledger; "
+        "required once the runs directory has history.",
+    )
+    ladder.add_argument(
+        "--expect",
+        choices=list(EXPECT_CHOICES),
+        default=None,
+        help="The verdict you predict (pass or fail). Recorded, and compared with "
+        "the result at the end; required once the runs directory has history.",
+    )
+    ladder.add_argument(
+        "--if-pass",
+        default=None,
+        metavar="TEXT",
+        help="What you will do if the sweep passes. Optional; recorded, and "
+        "repeated back when that is the outcome.",
+    )
+    ladder.add_argument(
+        "--if-fail",
+        default=None,
+        metavar="TEXT",
+        help="What you will do if the sweep fails. Optional; recorded, and "
+        "repeated back when that is the outcome.",
+    )
+    ladder.add_argument(
+        "--budget",
+        type=_positive_float,
+        default=None,
+        metavar="SECONDS",
+        help="Wall-clock budget, counted from acquiring the runtime. May lower but "
+        "not raise the tier cap (probe 300s, focused 900s by default; set in "
+        "[tool.windtunnel.ladder]). Regression sweeps are uncapped by default.",
+    )
+    ladder.add_argument(
+        "--from-trace",
+        default=None,
+        metavar="PATH",
+        help="Probe: replay a saved trace's scenario with the turns before "
+        "--from-turn frozen as history, running the rest live. Needs a runtime "
+        "that consumes full message history.",
+    )
+    ladder.add_argument(
+        "--from-turn",
+        type=_positive_int,
+        default=None,
+        metavar="K",
+        help="With --from-trace: the 1-based user turn to resume at (default: the "
+        "last, scored user turn).",
     )
     _add_sweep_execution_args(run_p)
 
@@ -2547,6 +3017,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_compare(args)
     if args.command == "results":
         return _cmd_results(args)
+    if args.command == "review":
+        return _cmd_review(args)
     if args.command == "watch":
         return _cmd_watch(args)
     if args.command == "batch":

@@ -8,6 +8,34 @@ agent:
 These are not style preferences. Each one maps to a failure mode Wind Tunnel is
 designed to make visible.
 
+## Re-running the whole pack to check one fix, or to "see what's working"
+
+A scenario fails, you change one thing, and you re-run every scenario to find
+out whether that one thing worked. That spends the pack's wall-clock time on a
+question one scenario answers, and on a slow bench it turns a five-minute
+debugging step into an hour. Running everything "to see what's working" is the
+same mistake: `wt results` already answers that from the runs on disk. `wt run`
+refuses both: a regression must be earned by a focused pass on the current
+artifact since the last regression, and every scenario that failed in its
+latest regression needs a focused pass of its own.
+
+Climb the ladder instead, and say what each rung is for:
+
+```bash
+# probe: replay the broken step on its recorded history (full-history runtimes)
+uv run wt run --from-trace runs/lookup_order/.../<trace>.json \
+  --question "does the schema error reach the model now?" --expect pass
+# focused: the one scenario, a few runs
+uv run wt run --scenario lookup_order --runs 3 \
+  --question "does the fix hold across samples?" --expect pass
+# regression: everything, once the fixes have earned it
+uv run wt run --pack my_pack --runs 3 \
+  --question "did the fix break anything else?" --expect pass
+```
+
+Any edit after a focused pass makes it stale. A sweep that runs out of budget
+exits non-zero; shrink the experiment instead of raising the budget.
+
 ## JSON-stringified tool-call arguments
 
 Contract A and Contract C both require tool-call arguments as JSON objects, not

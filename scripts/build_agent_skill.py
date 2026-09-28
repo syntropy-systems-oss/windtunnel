@@ -26,6 +26,7 @@ TOP_REFERENCE_DOCS = [
     Path("agent-quickstart.md"),
     Path("agents/integration-checklist.md"),
     Path("agents/anti-patterns.md"),
+    Path("design/0005-experiment-ladder.md"),
     Path("writing-a-runtime.md"),
     Path("design/0004-reference-selftest.md"),
     Path("design/0002-inject-protocol.md"),

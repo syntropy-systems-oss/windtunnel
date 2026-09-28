@@ -441,6 +441,8 @@ class TestRunLedger:
         monkeypatch.setattr(cli, "_wt_version", lambda: "9.9.9")
 
         argv = ["run", "--runtime", "in_memory", "--runs-dir", str(runs_dir), "--label", label]
+        # A runs directory with history requires a declared experiment.
+        argv.extend(["--question", "does the ledger append?", "--expect", "pass"])
         for scenario in scenarios:
             argv.extend(["--scenario", scenario])
         return cli.main(argv)
@@ -493,6 +495,8 @@ class TestRunLedger:
             "origin",
             "git_sha",
             "wt_version",
+            "sweep_id",
+            "experiment",
         }
         assert origin_record["pack"] == "ledger_dim"
         assert origin_record["owner"] == "@team-ledger"

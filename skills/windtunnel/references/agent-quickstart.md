@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/agent-quickstart.md at 6637b9afae63 — do not edit; edit docs/agent-quickstart.md. -->
+<!-- GENERATED from docs/agent-quickstart.md at 8b4d5bd61483 — do not edit; edit docs/agent-quickstart.md. -->
 ---
 description: "Self-contained guide for coding agents to add Wind Tunnel scenarios, runtime wiring, and run commands to a project."
 ---
@@ -86,7 +86,8 @@ Rules you must not violate when authoring:
 
 ```bash
 uv run wt run --runtime in_memory --runs 1        # smoke the scenario wiring (no infra)
-uv run wt run --runtime <your-driver> --runs 5 --label baseline
+uv run wt run --runtime <your-driver> --runs 5 --label baseline \
+  --question "what does the live agent score today?" --expect fail
 uv run wt report --runs runs/ --format html --out report.html
 ```
 

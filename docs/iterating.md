@@ -14,6 +14,80 @@ provisions a runtime.
 Each one has a `--json` mode whose document is stable and versioned, so an
 agent never has to parse the human table.
 
+## 0. Climb the ladder
+
+`wt run` treats every sweep as an experiment with a size. A replay of one
+recorded step (`--from-trace`) is a **probe**, one scenario is **focused**, and
+several are a **regression**. Probes and focused sweeps have wall-clock caps
+(300 s and 900 s unless `[tool.windtunnel.ladder]` in `pyproject.toml` says
+otherwise); a sweep that runs out stops starting runs and exits non-zero.
+
+Once a runs directory has history, every sweep says what it is for:
+
+```bash
+wt run --scenario lookup_order --runs 3 \
+  --question "does returning the schema error stop the fabricated table?" \
+  --expect pass
+```
+
+and a regression (the whole pack) must be earned: it is refused unless a
+focused sweep has passed on the current artifact since the last regression —
+"run everything to see what's working" is answered by `wt results`, not a new
+sweep — and unless each scenario that failed in its most recent regression run has passed
+a focused sweep of its own. "The current artifact" is the working tree,
+`--soul`/`--agents`, and the runtime; any edit makes an earlier pass stale.
+The refusal says which rule failed, what to run, and which files made a pass
+stale. Only the first sweep against a runtime (the baseline) is free. The full rules are in
+[0005: Experiment ladder](design/0005-experiment-ladder.md).
+
+The model is part of the artifact: a runtime that reports its model label
+scopes evidence to it, so a pass on a small model never earns a regression on
+the target model, and `[tool.windtunnel.ladder.models]` can say which models
+each tier may use. Each sweep records its cost (wall seconds, and tokens when
+the runtime reports them) in the ledger and in `experiments.ndjsonl`.
+`--if-pass`/`--if-fail` say up front what the result will change, and
+`wt review <sweep> --decision "..."` (or `--no-change`) records what it did;
+`wt results --ladder` shows, per tier, what the sweeps cost and how often they
+changed a decision.
+
+An optional `[tool.windtunnel.ladder.pricing]` turns that cost into dollars —
+a `time_per_hour` rate and, per model label, three `$`/million-token rates
+(uncached input, an optional cheaper cache-read rate, and output):
+
+```toml
+[tool.windtunnel.ladder.pricing]
+time_per_hour = 60.0    # example rate, not a real price
+
+[tool.windtunnel.ladder.pricing.models]
+"target-model" = { input_per_m = 1.00, cache_read_per_m = 0.10, output_per_m = 4.00 }
+default = { input_per_m = 1.00, cache_read_per_m = 0.10, output_per_m = 4.00 }
+```
+
+With pricing configured, `wt run` prints a $ breakdown (uncached input, cache
+read, output, time, total) when each sweep ends, and `wt results --ladder`
+adds the same breakdown per tier and a cumulative total, flagging sweeps
+whose tokens (or cache split) were never reported. With no pricing table,
+both commands show tokens in (cached)/out and wall time only; no rates are
+built in. See
+[Pricing](design/0005-experiment-ladder.md#pricing-turning-cost-into-dollars).
+
+A runtime that reports usage per model call, not just per run, lets `wt`
+check that a multi-turn conversation is actually hitting its prompt cache.
+`[tool.windtunnel.cache]` is optional and off by default:
+
+```toml
+[tool.windtunnel.cache]
+fail_on_miss = true      # a miss (or unreported cache split) fails the sweep
+min_cached_ratio = 0.5   # cached_tokens / prompt_tokens floor, per call
+```
+
+With it configured, every model call after a conversation's first must meet
+`min_cached_ratio` or it is a miss, recorded per sweep and printed in the
+cost block as `cache check: pass|fail|unknown` plus one `call k: cached M/P`
+line per checked call — `unknown` (never a silent pass) when a runtime
+doesn't report a call's cache split. See
+[Per-call usage and the prompt-cache-miss check](design/0005-experiment-ladder.md#per-call-usage-and-the-prompt-cache-miss-check).
+
 ## 1. Label every round
 
 `--label` is the unit everything else groups by. Use a new label per change:
@@ -21,8 +95,16 @@ agent never has to parse the human table.
 ```bash
 wt run --pack my_pack --runs 5 --label baseline
 # ...edit the prompt, the agent, or the model config...
-wt run --pack my_pack --runs 5 --label candidate
+wt run --scenario lookup_order --runs 3 --label candidate \
+  --question "does the stricter prompt fix lookup_order?" --expect pass
+wt run --pack my_pack --runs 5 --label candidate \
+  --question "does the stricter prompt keep every scenario green?" --expect pass
 ```
+
+(The first sweep into an empty runs directory needs no `--question`; every
+later one does, and the full-pack candidate is only allowed because the
+focused sweep before it passed on the same code. See
+[Climb the ladder](#0-climb-the-ladder).)
 
 Re-using a label is allowed. Reports, `wt compare`, and `wt results` then read
 the label's latest sweep as recorded in the ledger (or every saved run with the
@@ -132,17 +214,22 @@ optional leading `wt run` — and hand the file to `wt batch`:
 ```text
 # rounds.txt
 --pack my_pack --runs 5 --label baseline
---pack my_pack --runs 5 --label candidate --agents notes/candidate.md
-wt run --pack my_pack --runs 5 --label candidate-t0 --soul prompts/strict.md
+--pack my_pack --runs 5 --label candidate --agents notes/candidate.md --question "do the notes help?" --expect pass
+wt run --pack my_pack --runs 5 --label candidate-t0 --soul prompts/strict.md --question "does the strict soul hold?" --expect pass
 ```
 
 ```bash
 wt batch rounds.txt --runs-dir runs/ --scheduler concurrent
-printf -- '--pack my_pack --label again\n' | wt batch -     # specs from stdin
+printf -- '--pack my_pack --label again --question "flaky?" --expect pass\n' | wt batch -
 ```
 
-Every line is parsed before the first spec runs, so a typo on line 9 fails the
-batch (exit `2`, naming the line) without spending rounds 1–8. Specs then run
+Every line is parsed before the first spec runs, and every spec that will run
+into a runs directory with history (including one an earlier spec in the file
+creates) must carry `--question` and `--expect`. A typo on line 9 fails the
+batch (exit `2`, naming the line) without spending rounds 1–8. The evidence
+gate itself can only be decided when a spec runs: if the baseline above has a
+failure, the candidate regression after it is refused (exit `2`) and the batch
+moves on, so queue focused specs for the failures you expect to fix. Specs then run
 in file order, each as its own sweep — own sweep id and events, own ledger
 rows, own runtime lock — and a failing spec never stops the next. The batch's
 `--runs-dir`, `--scheduler`, `--max-concurrency`, and `--no-wait` are defaults

@@ -90,7 +90,7 @@ class TestWtBatch:
             "# round one\n"
             "--label first --runs 2\n"
             "\n"
-            "wt run --label second --scenario alpha   # a trailing comment\n",
+            "wt run --label second --scenario alpha --question q --expect pass  # a comment\n",
             "--runs-dir", str(runs_dir),
         )
 
@@ -142,13 +142,16 @@ class TestWtBatch:
 
         rc = _batch(
             tmp_path,
-            "--label bad --runtime failing\n--label good\n",
+            # The second spec is focused: after a failing regression, another
+            # regression would (rightly) be refused by the experiment ladder.
+            "--label bad --runtime failing\n"
+            "--label good --scenario alpha --question 'recovers?' --expect pass\n",
             "--runs-dir", str(runs_dir),
         )
 
         err = capsys.readouterr().err
         assert rc == 1
-        assert _ledger_labels(runs_dir) == ["bad", "bad", "good", "good"]
+        assert _ledger_labels(runs_dir) == ["bad", "bad", "good"]
         assert "line 1    label bad" in err and "exit 1" in err
         assert "line 2    label good" in err
 
@@ -162,12 +165,33 @@ class TestWtBatch:
 
         rc = _batch(
             tmp_path,
-            "--label empty --scenario no_such_scenario\n--label good\n",
+            "--label empty --scenario no_such_scenario\n"
+            "--label good --question 'still green?' --expect pass\n",
             "--runs-dir", str(runs_dir),
         )
 
         assert rc == 2  # "no scenarios found" is a usage error for that spec
         assert _ledger_labels(runs_dir) == ["good", "good"]
+
+    def test_a_spec_missing_its_declared_experiment_fails_the_batch_up_front(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Round 2 would be refused by the ladder; refuse before round 1 spends time."""
+        built: list[str] = []
+        _wire(monkeypatch, built=built)
+
+        rc = _batch(
+            tmp_path,
+            "--label first\n--label second --scenario alpha\n",
+            "--runs-dir", str(tmp_path / "runs"),
+        )
+
+        assert rc == 2
+        assert built == []
+        assert "rounds.txt:2" in capsys.readouterr().err
 
     def test_batch_defaults_apply_and_a_specs_own_value_wins(
         self,

@@ -48,6 +48,12 @@ class _TerminusPlugin:
 
         return TerminusRuntime()
 
+    def model_label(self, runtime_name: str) -> str | None:
+        """The model Terminus-2 answers with (WT_TERMINUS_MODEL), for the ladder."""
+        import os
+
+        return os.environ.get("WT_TERMINUS_MODEL") or None
+
 
 def _resolve_runtime_plugin(runtime_name: str) -> RuntimePlugin:
     """Resolve a built-in, entry-point, or dotted-path runtime plugin."""

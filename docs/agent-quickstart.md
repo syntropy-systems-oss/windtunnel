@@ -85,7 +85,8 @@ Rules you must not violate when authoring:
 
 ```bash
 uv run wt run --runtime in_memory --runs 1        # smoke the scenario wiring (no infra)
-uv run wt run --runtime <your-driver> --runs 5 --label baseline
+uv run wt run --runtime <your-driver> --runs 5 --label baseline \
+  --question "what does the live agent score today?" --expect fail
 uv run wt report --runs runs/ --format html --out report.html
 ```
 
