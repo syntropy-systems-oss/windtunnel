@@ -131,7 +131,10 @@ def load_pricing(start: Path | None = None) -> dict[str, Any] | None:
     Per label, ``cache_read_per_m`` is optional and falls back to that
     label's own ``input_per_m`` when unset (a runtime that never reports a
     cache split then still prices correctly — every input token at the one
-    rate).
+    rate). ``time_per_hour`` is also optional per label and overrides the
+    top-level ``time_per_hour`` for sweeps on that model (different compute
+    lanes cost different amounts per hour); a label without one falls back
+    to the global rate.
     """
     pyproject, data = _ladder_table(start)
     table = data.get("pricing")
@@ -160,6 +163,10 @@ def load_pricing(start: Path | None = None) -> dict[str, Any] | None:
         if "cache_read_per_m" in rates:
             entry["cache_read_per_m"] = _non_negative(
                 pyproject, rates_where, "cache_read_per_m", rates.get("cache_read_per_m")
+            )
+        if "time_per_hour" in rates:
+            entry["time_per_hour"] = _non_negative(
+                pyproject, rates_where, "time_per_hour", rates.get("time_per_hour")
             )
         models[label] = entry
     return {"time_per_hour": time_per_hour, "models": models}
@@ -194,13 +201,18 @@ def compute_cost_usd(
     didn't report a per-call cache split), every input token is priced at
     the uncached ``input_per_m`` rate and ``cache_split_known`` is False —
     ``cache_read`` stays null rather than guessing the split.
+
+    The time cost uses the model label's own ``time_per_hour`` when its
+    pricing entry sets one, else the top-level rate — a cheap GPU lane and
+    an expensive shared lane are not priced the same per hour.
     """
     if pricing is None:
         return None
     rates = pricing["models"].get(model) if model is not None else None
     if rates is None:
         rates = pricing["models"].get("default")
-    time_cost = round(wall_s / 3600.0 * pricing["time_per_hour"], 6)
+    time_per_hour = rates.get("time_per_hour", pricing["time_per_hour"]) if rates else pricing["time_per_hour"]
+    time_cost = round(wall_s / 3600.0 * time_per_hour, 6)
     if rates is None or not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
         return {
             "uncached_input": None,

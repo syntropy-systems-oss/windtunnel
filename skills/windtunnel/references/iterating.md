@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/iterating.md at 1fd770c0251b — do not edit; edit docs/iterating.md. -->
+<!-- GENERATED from docs/iterating.md at 32e4e46f2a07 — do not edit; edit docs/iterating.md. -->
 ---
 description: "Tight iteration loop for people and coding agents: follow sweeps live, tabulate results and metrics per label, compare labels, and rescore saved traces."
 ---
@@ -53,14 +53,17 @@ changed a decision.
 
 An optional `[tool.windtunnel.ladder.pricing]` turns that cost into dollars —
 a `time_per_hour` rate and, per model label, three `$`/million-token rates
-(uncached input, an optional cheaper cache-read rate, and output):
+(uncached input, an optional cheaper cache-read rate, and output). A label
+can also set its own `time_per_hour`, overriding the global rate for sweeps
+on that model — a cheap lane and an expensive lane aren't priced the same
+per hour:
 
 ```toml
 [tool.windtunnel.ladder.pricing]
 time_per_hour = 60.0    # example rate, not a real price
 
 [tool.windtunnel.ladder.pricing.models]
-"target-model" = { input_per_m = 1.00, cache_read_per_m = 0.10, output_per_m = 4.00 }
+"target-model" = { input_per_m = 1.00, cache_read_per_m = 0.10, output_per_m = 4.00, time_per_hour = 12.0 }
 default = { input_per_m = 1.00, cache_read_per_m = 0.10, output_per_m = 4.00 }
 ```
 
