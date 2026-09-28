@@ -1248,6 +1248,22 @@ class TestPricing:
             "input_per_m": 1.0, "output_per_m": 2.0, "cache_read_per_m": 0.1,
         }
 
+    def test_pricing_accepts_an_optional_per_label_time_rate(self, tmp_path: Path) -> None:
+        from windtunnel._cli.ladder import load_pricing
+
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.windtunnel.ladder.pricing]\n"
+            "time_per_hour = 60.0\n"
+            "[tool.windtunnel.ladder.pricing.models]\n"
+            '"cheap" = { input_per_m = 1.0, output_per_m = 2.0, time_per_hour = 12.0 }\n'
+            '"default" = { input_per_m = 1.0, output_per_m = 2.0 }\n'
+        )
+        pricing = load_pricing(tmp_path)
+        assert pricing["models"]["cheap"] == {
+            "input_per_m": 1.0, "output_per_m": 2.0, "time_per_hour": 12.0,
+        }
+        assert "time_per_hour" not in pricing["models"]["default"]
+
     def test_compute_cost_usd_splits_uncached_cache_read_and_output(self) -> None:
         from windtunnel._cli.ladder import compute_cost_usd
 
@@ -1324,6 +1340,28 @@ class TestPricing:
             wall_s=2.0, input_tokens=100, cached_tokens=0, output_tokens=50,
             model="big", pricing=pricing,
         ) == expected
+
+    def test_compute_cost_usd_uses_a_labels_own_time_rate_over_the_global_one(self) -> None:
+        from windtunnel._cli.ladder import compute_cost_usd
+
+        pricing = {
+            "time_per_hour": 60.0,
+            "models": {
+                "cheap": {"input_per_m": 0.0, "output_per_m": 0.0, "time_per_hour": 12.0},
+                "default": {"input_per_m": 0.0, "output_per_m": 0.0},
+            },
+        }
+        priced = compute_cost_usd(
+            wall_s=3600.0, input_tokens=0, cached_tokens=0, output_tokens=0,
+            model="cheap", pricing=pricing,
+        )
+        assert priced["time"] == 12.0 and priced["total"] == 12.0
+        # a label with no time_per_hour of its own falls back to the global rate
+        fallback = compute_cost_usd(
+            wall_s=3600.0, input_tokens=0, cached_tokens=0, output_tokens=0,
+            model="default", pricing=pricing,
+        )
+        assert fallback["time"] == 60.0 and fallback["total"] == 60.0
 
     def test_compute_cost_usd_is_none_without_pricing(self) -> None:
         from windtunnel._cli.ladder import compute_cost_usd

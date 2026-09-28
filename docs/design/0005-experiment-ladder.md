@@ -336,7 +336,7 @@ time_per_hour = 60.0             # $ per wall-clock hour (example rate)
 
 [tool.windtunnel.ladder.pricing.models]
 # $ per million tokens — example rates, not real prices.
-"target-model" = { input_per_m = 1.00, cache_read_per_m = 0.10, output_per_m = 4.00 }
+"target-model" = { input_per_m = 1.00, cache_read_per_m = 0.10, output_per_m = 4.00, time_per_hour = 12.0 }
 default = { input_per_m = 1.00, cache_read_per_m = 0.10, output_per_m = 4.00 }
 ```
 
@@ -346,9 +346,12 @@ ledger already records (see
 A label with no entry of its own falls back to `models.default` when the
 table gives one. `cache_read_per_m` is optional and falls back to that same
 label's `input_per_m` — a runtime that never reports a cache split still
-prices correctly, every input token at the one rate. `time_per_hour` and
-every rate must be a non-negative number; an invalid table is refused (exit
-`2`), not silently ignored.
+prices correctly, every input token at the one rate. A label may also set its
+own `time_per_hour`, overriding the top-level rate for sweeps on that model —
+a cheap GPU lane and an expensive shared lane are not priced the same per
+hour; a label without one still falls back to the top-level `time_per_hour`.
+`time_per_hour` and every rate must be a non-negative number; an invalid
+table is refused (exit `2`), not silently ignored.
 
 When pricing is configured, every ledger row's `experiment.cost_usd` and
 every sweep record's `cost_usd` in `experiments.ndjsonl` hold:
