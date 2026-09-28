@@ -1,5 +1,5 @@
 ---
-description: "Design specification for the experiment ladder: derived run tiers, wall-clock budgets, declared questions, artifact fingerprints, the regression evidence gate, prefix replay probes, and tier-ordered runtime queueing."
+description: "Design specification for the experiment ladder: derived run tiers, wall-clock budgets, declared questions, artifact fingerprints, the regression evidence gate, prefix replay probes, tier-ordered runtime queueing, per-tier model policy, and recorded experiment cost and value."
 ---
 # 0005: The experiment ladder
 
@@ -119,6 +119,8 @@ computes a fingerprint from:
   `artifact_fingerprint(runtime_name) -> str | None`, for drivers whose
   agent under test lives outside the working tree (an image digest, a
   deployed commit);
+- `model` — the runtime's model label (see
+  [Model tag and per-tier model policy](#model-tag-and-per-tier-model-policy));
 - `wt_version` — the installed Wind Tunnel version.
 
 The fingerprint is a hash over those parts; the parts are recorded alongside
@@ -245,6 +247,70 @@ that is alive but stopped (suspended with SIGSTOP, say) holds up everyone
 behind it even while the runtime is idle, because a live ticket is never
 reaped.
 
+### Model tag and per-tier model policy
+
+A pass on a small model says little about the model the agent ships with.
+The model is therefore part of what is under test.
+
+A runtime plugin reports the model it will answer with through an optional
+hook, `model_label(runtime_name) -> str | None` (the built-in `terminus`
+runtime reports `WT_TERMINUS_MODEL`). The label is an opaque string, compared
+exactly. `wt run` puts it on the agent config, so every trace records it, and
+into the fingerprint's `model` part, so a focused pass on one model never
+earns or satisfies a regression on another; the refusal names `model` as
+what changed. When the hook is absent the label is null, and a trace records
+the model the runtime's responses name (an OpenAI-style `model` field), or
+`unknown`. There is no `--model` flag: a label the caller can set is a label
+the caller can launder a pass through.
+
+A repository may restrict which models each tier runs on:
+
+```toml
+[tool.windtunnel.ladder.models]
+probe = ["small-model", "target-model"]
+focused = ["target-model"]
+regression = ["target-model"]
+```
+
+A tier that is not listed may use any model. A sweep whose label is not
+listed for its tier, or whose runtime reports no label while its tier is
+listed, exits `2` before it takes the runtime lock. An invalid table (an
+unknown tier, an empty or non-string list) is refused, not ignored.
+
+### Cost and value
+
+Every sweep records what it cost and, later, what it was worth, so a team
+can see which tiers pay for themselves.
+
+**Cost.** Each ledger row's `experiment.cost` holds the scenario's wall
+seconds (its job, provisioning included) and the model tokens its runs
+consumed. Tokens come from the `usage` object on the runtime's responses
+(`input_tokens`/`output_tokens`, or `prompt_tokens`/`completion_tokens`),
+summed per run into the trace's `usage`. A run with any send that reported no
+usage records `usage: null`, and any null makes the row's token counts null:
+a partial sum would understate the cost, so tokens are never guessed.
+
+**The plan.** `--if-pass TEXT` and `--if-fail TEXT` optionally say, up front,
+what the result will change. They are recorded, and `wt run` repeats the one
+that applies when the sweep ends.
+
+**The outcome.** When a sweep ends, `wt run` appends one record to
+`<runs>/experiments.ndjsonl` with the sweep's tier, model, question,
+expectation, plan, outcome (`pass` when it exits `0`), whether the prediction
+held, and its cost: wall seconds from acquiring the runtime, and the sum of
+its rows' tokens (null if any row, or any scenario that errored before
+producing one, did not report them).
+
+**The review.** Afterwards, `wt review SWEEP_ID --decision "what it changed"`
+or `wt review SWEEP_ID --no-change` records whether the sweep changed a
+decision; a later review of the same sweep replaces an earlier one.
+
+`wt results --ladder` (and `--json`) summarizes the file per tier: sweeps,
+wall seconds, tokens (with how many sweeps reported them), predictions held,
+and how many reviewed sweeps changed a decision. A tier whose sweeps are
+expensive and rarely change anything is one to climb past faster; one whose
+predictions keep missing is where the agent is guessing.
+
 ## Ledger record
 
 Every ledger row written by `wt run` gains two fields:
@@ -257,12 +323,15 @@ Every ledger row written by `wt run` gains two fields:
     "tier": "focused",
     "question": "does returning the schema error stop the fabricated table?",
     "expect": "pass",
+    "if_pass": "run the pack",
+    "if_fail": "probe turn 2",
+    "cost": {"wall_s": 41.2, "input_tokens": 18230, "output_tokens": 1504},
     "budget_s": 900,
     "budget_exhausted": false,
     "fingerprint": "sha256:…",
     "fingerprint_parts": {
       "git_tree": "4b825dc…", "runtime": "my_runtime", "target": "my_runtime",
-      "soul": "sha256:…", "agents": null, "plugin": null, "wt_version": "0.12.0"
+      "model": "target-model", "soul": "sha256:…", "agents": null, "plugin": null, "wt_version": "0.12.0"
     },
     "source_trace": null,
     "from_turn": null,
@@ -276,7 +345,7 @@ Every ledger row written by `wt run` gains two fields:
 `counts_as_failure` is the sweep's own judgement of the row (the rule behind
 the exit code). `evidence_for` on a regression row names the regression
 sweeps whose failures were satisfied by focused evidence, and `earned_by` the
-focused sweep that earned it. The changes are additive; readers ignore unknown
+focused sweep that earned it. Traces gain `usage`. The changes are additive; readers ignore unknown
 fields, so `windtunnel_ledger` stays at version 1.
 
 ## Out of scope

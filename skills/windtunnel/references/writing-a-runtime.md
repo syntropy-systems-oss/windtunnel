@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/writing-a-runtime.md at ec4fc7e61dc7 — do not edit; edit docs/writing-a-runtime.md. -->
+<!-- GENERATED from docs/writing-a-runtime.md at d03595deafcd — do not edit; edit docs/writing-a-runtime.md. -->
 ---
 description: "Guide to implementing Wind Tunnel runtime protocols or Contract C endpoints with reset isolation and tool-call evidence."
 ---
@@ -253,6 +253,12 @@ class HttpPlugin:
     def lock_key(self, runtime_name):
         return f"{runtime_name}:{os.environ.get('MY_AGENT_URL', 'http://127.0.0.1:9000')}"
 
+    # The model this runtime answers with, as an opaque label. Scopes ladder
+    # evidence to the model and is checked against [tool.windtunnel.ladder.models].
+    # Return None when unknown; never guess.
+    def model_label(self, runtime_name):
+        return os.environ.get("MY_AGENT_MODEL")
+
     def pre_run(self, runtime, scenarios, runtime_name):   # once, before the sweep
         ...
 
@@ -268,6 +274,12 @@ session, must not be driven concurrently. Any finite value also makes each
 sweep hold a machine-wide lock on `lock_key` from before `build()` until after
 `post_run()`, so a second sweep queues instead of colliding (see
 [iterating on an agent](iterating.md#sharing-a-runtime-the-run-lock)).
+
+Token cost comes from the handle, not the plugin: a `send()` response that
+carries an OpenAI-style `usage` object (`input_tokens`/`output_tokens` or
+`prompt_tokens`/`completion_tokens`) is summed into the trace's `usage`; a
+response without one records the run's usage as unknown (see
+[0005: Experiment ladder](design/0005-experiment-ladder.md#cost-and-value)).
 
 ## Checklist before trusting your runtime
 

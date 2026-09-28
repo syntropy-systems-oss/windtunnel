@@ -30,6 +30,9 @@ serving recorded tool universes, or bringing up Contract C inject endpoints.
   scenario whose latest regression run failed has passed one of its own. To
   see what is working, read `wt results`; never run the whole pack to find out, and every sweep into a runs directory with
   history must declare `--question` and `--expect`. There is no bypass flag.
+  Say what each outcome will change (`--if-pass`, `--if-fail`), record what
+  it did (`wt review <sweep> --decision ...`), and check which tiers pay for
+  themselves with `wt results --ladder`.
 - Read `references/agents/anti-patterns.md` before building an importer,
   endpoint, or runtime driver.
 

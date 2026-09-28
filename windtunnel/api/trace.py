@@ -152,6 +152,11 @@ class Trace:
         distinct from a probed "unavailable". A captured surface IS the
         system prompt: treat trace files embedding one as sensitively as
         the prompt itself.
+
+    usage: model tokens the run's live turns consumed, as the runtime
+        reported them: {"input_tokens": int, "output_tokens": int}, summed
+        over every send. None when any send reported no usage — a partial
+        sum would understate the cost, so it is never recorded as one.
     """
     scenario_id: str
     agent_id: str
@@ -167,6 +172,7 @@ class Trace:
     mcp_calls: list[dict[str, Any]] = field(default_factory=list)
     observations: dict[str, Any] = field(default_factory=dict)
     surface: dict[str, Any] | None = None
+    usage: dict[str, int] | None = None
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     def _to_dict(self) -> dict[str, Any]:
@@ -187,6 +193,7 @@ class Trace:
             "mcp_calls": self.mcp_calls,
             "observations": self.observations,
             "surface": self.surface,
+            "usage": self.usage,
         }
 
     @classmethod
@@ -218,6 +225,7 @@ class Trace:
             mcp_calls=d.get("mcp_calls") or [],
             observations=d.get("observations") or {},
             surface=d.get("surface"),
+            usage=d.get("usage"),
         )
 
 

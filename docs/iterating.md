@@ -40,6 +40,16 @@ The refusal says which rule failed, what to run, and which files made a pass
 stale. Only the first sweep against a runtime (the baseline) is free. The full rules are in
 [0005: Experiment ladder](design/0005-experiment-ladder.md).
 
+The model is part of the artifact: a runtime that reports its model label
+scopes evidence to it, so a pass on a small model never earns a regression on
+the target model, and `[tool.windtunnel.ladder.models]` can say which models
+each tier may use. Each sweep records its cost (wall seconds, and tokens when
+the runtime reports them) in the ledger and in `experiments.ndjsonl`.
+`--if-pass`/`--if-fail` say up front what the result will change, and
+`wt review <sweep> --decision "..."` (or `--no-change`) records what it did;
+`wt results --ladder` shows, per tier, what the sweeps cost and how often they
+changed a decision.
+
 ## 1. Label every round
 
 `--label` is the unit everything else groups by. Use a new label per change:

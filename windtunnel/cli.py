@@ -35,6 +35,7 @@ import json
 import shutil
 import sys
 import threading
+import time
 import traceback
 from importlib import resources
 from pathlib import Path
@@ -56,6 +57,7 @@ from windtunnel._cli.ladder import (
     Budget,
     Fingerprint,
     LadderError,
+    check_model_policy,
     check_regression_gate,
     compute_fingerprint,
     derive_tier,
@@ -63,14 +65,19 @@ from windtunnel._cli.ladder import (
     experiment_record,
     gate_refusal_message,
     ledger_has_history,
+    load_model_policy,
     load_tier_caps,
+    model_label,
     normalize_target,
     prediction_line,
     read_ledger,
     record_output,
+    record_review,
+    record_sweep,
     recorded_outputs,
     resolve_budget,
     save_manifest,
+    sum_tokens,
     tier_priority,
 )
 from windtunnel._cli.models import (
@@ -578,7 +585,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         ]
     scenarios = [entry.scenario for entry in selected]
 
-    from windtunnel.spi.agent_runtime import AgentConfig  # noqa: PLC0415
+    from windtunnel.spi.agent_runtime import AgentConfig, ModelSpec  # noqa: PLC0415
 
     # Thread --soul (a PATH) into AgentConfig.system_prompt so the platform
     # runtime's provision() writes it to the SOUL doc via `set-docs --soul`. The
@@ -602,11 +609,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
             print(f"wt run: --agents file not found: {args.agents}", file=sys.stderr)
             return 2
         persona_doc = agents_path
+    # Which model answers, as the runtime plugin reports it: recorded in every
+    # trace, part of the artifact fingerprint, and checked against the tier's
+    # model policy below.
+    model = model_label(plugin, runtime_name)
     config = AgentConfig(
         agent_id="wt-cli",
         variant_id=label,
         system_prompt=system_prompt,
         persona_doc=persona_doc,
+        model=ModelSpec(name=model) if model is not None else None,
     )
 
     # The experiment ladder (docs/design/0005): derive the tier from what this
@@ -615,10 +627,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
     tier = derive_tier(from_trace=source_trace is not None, selected_count=len(selected))
     question: str | None = getattr(args, "question", None)
     expect: str | None = getattr(args, "expect", None)
+    if_pass: str | None = getattr(args, "if_pass", None)
+    if_fail: str | None = getattr(args, "if_fail", None)
     try:
         budget = Budget(
             resolve_budget(tier, getattr(args, "budget", None), load_tier_caps())
         )
+        check_model_policy(tier, model, load_model_policy())
     except LadderError as exc:
         print(f"wt run: {exc}", file=sys.stderr)
         return 2
@@ -656,6 +671,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             target=target,
             plugin=plugin,
             wt_version=wt_version,
+            model=model,
         )
 
     fingerprint = _fingerprint()
@@ -702,7 +718,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             )
     started_jobs: set[int] = set()
 
-    def _experiment(*, counts_as_failure: bool) -> dict[str, Any]:
+    def _experiment(*, counts_as_failure: bool, cost: dict[str, Any]) -> dict[str, Any]:
         recorded = fingerprint
         if tier == "focused":
             # Only focused rows are evidence, so make sure the artifact did not
@@ -728,6 +744,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
             from_turn=from_turn if source_trace is not None else None,
             decision=gate,
             counts_as_failure=counts_as_failure,
+            if_pass=if_pass,
+            if_fail=if_fail,
+            cost=cost,
         )
 
     # How the scenario jobs execute. Never more at once than the runtime
@@ -898,6 +917,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # scenario across the whole sweep — so a circuit breaker stops the sweep after
         # N consecutive errors, and the FIRST error logs a full traceback (the
         # per-scenario lines clip the message to 120 chars).
+        job_started = time.monotonic()
         try:
             result = run_scenario(
                 scenario,
@@ -1007,7 +1027,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # model-quality signal, so it doesn't flip the exit code — UNLESS the run
         # hit a real execution error (no valid model turn happened).
         gate_failure = _counts_as_gate_failure(completed_entry)
-        record["experiment"] = _experiment(counts_as_failure=gate_failure)
+        record["experiment"] = _experiment(
+            counts_as_failure=gate_failure,
+            cost={
+                "wall_s": round(time.monotonic() - job_started, 3),
+                **sum_tokens(getattr(run.trace, "usage", None) for run in result.runs),
+            },
+        )
         with state:
             consecutive_errors = 0  # a successful scenario resets the breaker
             for warning in getattr(result, "worker_warnings", []) or []:
@@ -1052,6 +1078,35 @@ def _cmd_run(args: argparse.Namespace) -> int:
         ]
         scheduler.execute(jobs, stop)
         return _finish(1 if aborted or any_fail else 0)
+
+    def _record_sweep(rc: int) -> None:
+        """Append the sweep's cost and outcome to <runs>/experiments.ndjsonl."""
+        with state:
+            costs = [record["experiment"]["cost"] for record in records_at.values()]
+            errored = scenario_errors > 0
+        # A scenario that errored has no row, so its tokens are unknown.
+        tokens = (
+            {"input_tokens": None, "output_tokens": None} if errored else sum_tokens(costs)
+        )
+        try:
+            record_sweep(
+                runs_dir,
+                sweep_id=events.sweep_id,
+                label=label,
+                tier=tier,
+                model=model,
+                question=question,
+                expect=expect,
+                if_pass=if_pass,
+                if_fail=if_fail,
+                outcome="pass" if rc == 0 else "fail",
+                prediction_held=None if expect is None else (expect == "pass") == (rc == 0),
+                budget_exhausted=budget.exhausted,
+                scenarios=len(selected),
+                cost={"wall_s": round(budget.elapsed(), 3), **tokens},
+            )
+        except OSError as exc:
+            print(f"wt run: warning: could not record the sweep: {exc}", file=sys.stderr)
 
     def _lock_waiting(holder: dict[str, Any] | None) -> None:
         print(
@@ -1131,6 +1186,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
             prediction = prediction_line(expect, rc == 0)
             if prediction is not None:
                 print(prediction, file=sys.stderr)
+            planned = if_pass if rc == 0 else if_fail
+            if planned:
+                print(f"wt run: you planned, on this outcome: {planned}", file=sys.stderr)
+            _record_sweep(rc)
         finally:
             # Symmetric counterpart to pre_run(): a plugin that provisioned
             # bench-wide resources there (a subprocess, a mock server, anything
@@ -1159,6 +1218,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 # ─── batch ───────────────────────────────────────────────────────────────────
+
+
+def _cmd_review(args: argparse.Namespace) -> int:
+    """Handle `wt review`: record whether a finished sweep changed a decision."""
+    try:
+        record_review(Path(args.runs), args.sweep, decision=args.decision)
+    except LadderError as exc:
+        print(f"wt review: {exc}", file=sys.stderr)
+        return 2
+    return 0
 
 
 def _cmd_batch(args: argparse.Namespace) -> int:
@@ -2159,6 +2228,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print one JSON document with every run's trace path, verdict, and "
         "metrics alongside the per-scenario aggregates.",
     )
+    results_p.add_argument(
+        "--ladder",
+        action="store_true",
+        help="Instead of per-scenario results, summarize the experiment ladder per "
+        "tier: sweeps, wall time, tokens, predictions held, and how often a "
+        "reviewed sweep changed a decision (from experiments.ndjsonl).",
+    )
+
+    # ── review ───────────────────────────────────────────────────────────────
+    review_p = sub.add_parser(
+        "review",
+        help="Record what a finished sweep changed: --decision TEXT, or "
+        "--no-change. Summarized by `wt results --ladder`.",
+    )
+    review_p.add_argument("sweep", metavar="SWEEP_ID", help="The sweep id `wt run` printed.")
+    review_p.add_argument(
+        "--runs",
+        default="runs",
+        metavar="DIR",
+        help="Path to the runs/ directory (default: ./runs)",
+    )
+    outcome = review_p.add_mutually_exclusive_group(required=True)
+    outcome.add_argument(
+        "--decision",
+        metavar="TEXT",
+        help="What this sweep's result made you decide or change.",
+    )
+    outcome.add_argument(
+        "--no-change",
+        action="store_true",
+        help="The sweep changed no decision.",
+    )
 
     # ── watch ────────────────────────────────────────────────────────────────
     watch_p = sub.add_parser(
@@ -2349,6 +2450,20 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="The verdict you predict (pass or fail). Recorded, and compared with "
         "the result at the end; required once the runs directory has history.",
+    )
+    ladder.add_argument(
+        "--if-pass",
+        default=None,
+        metavar="TEXT",
+        help="What you will do if the sweep passes. Optional; recorded, and "
+        "repeated back when that is the outcome.",
+    )
+    ladder.add_argument(
+        "--if-fail",
+        default=None,
+        metavar="TEXT",
+        help="What you will do if the sweep fails. Optional; recorded, and "
+        "repeated back when that is the outcome.",
     )
     ladder.add_argument(
         "--budget",
@@ -2830,6 +2945,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_compare(args)
     if args.command == "results":
         return _cmd_results(args)
+    if args.command == "review":
+        return _cmd_review(args)
     if args.command == "watch":
         return _cmd_watch(args)
     if args.command == "batch":

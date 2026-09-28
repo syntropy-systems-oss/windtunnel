@@ -139,6 +139,28 @@ class ScenarioResult:
 
 # ─── Core single-run driver ───────────────────────────────────────────────────
 
+def _add_usage(total: dict[str, int] | None, response: object) -> dict[str, int] | None:
+    """Add one response's token usage to ``total``; None once any send lacks it.
+
+    Reads ``usage`` in either common wire spelling (input/output_tokens or
+    prompt/completion_tokens). Anything else is "not reported", not zero.
+    """
+    usage = response.get("usage") if isinstance(response, dict) else None
+    if total is None or not isinstance(usage, dict):
+        return None
+    counts = []
+    for new_key, old_key in (("input_tokens", "prompt_tokens"), ("output_tokens",
+                                                                 "completion_tokens")):
+        value = usage.get(new_key, usage.get(old_key))
+        if type(value) is not int or value < 0:
+            return None
+        counts.append(value)
+    return {
+        "input_tokens": total["input_tokens"] + counts[0],
+        "output_tokens": total["output_tokens"] + counts[1],
+    }
+
+
 def _run_once(
     scenario: Scenario,
     handle: AgentHandle,
@@ -240,6 +262,11 @@ def _run_once(
     if hook_state is not None:
         runtime_warnings.extend(hook_state.warnings)
 
+    # Cost as the runtime reports it: summed tokens, or None once any send
+    # reports none (never a guessed or partial figure).
+    usage: dict[str, int] | None = {"input_tokens": 0, "output_tokens": 0}
+    reported_models: set[str] = set()
+
     for turn_idx, user_text in enumerate(user_turns):
         # Record user turn
         turns.append(Turn(
@@ -267,6 +294,9 @@ def _run_once(
         t0 = datetime.now(UTC)
         response = handle.send(messages, session_id)
         t1 = datetime.now(UTC)
+        usage = _add_usage(usage, response)
+        if isinstance(response, dict) and isinstance(response.get("model"), str):
+            reported_models.add(response["model"])
         latency_ms = (t1 - t0).total_seconds() * 1000
 
         # Extract assistant content + tool_calls (shape-tolerant)
@@ -298,7 +328,12 @@ def _run_once(
         "scenario_id": scenario.name,
         "agent_id": agent_id,
         "variant_id": variant_id,
-        "model": model,
+        # The configured model when there is one; otherwise the model the
+        # runtime's responses name, so the trace says which model answered.
+        "model": (
+            "+".join(sorted(reported_models))
+            if model == "unknown" and reported_models else model
+        ),
         "quant": quant,
         "sampler": sampler,
         "started_at": started_at,
@@ -309,6 +344,7 @@ def _run_once(
         "mcp_calls": mcp_calls,
         "observations": observations,
         "surface": surface,
+        "usage": usage,
     }
     if hook_state is not None:
         trace_kwargs["run_id"] = hook_state.run_id

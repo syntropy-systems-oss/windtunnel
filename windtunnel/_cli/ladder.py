@@ -79,19 +79,7 @@ def load_tier_caps(start: Path | None = None) -> dict[str, float | None]:
     silently ignoring a cap the operator set would be worse than refusing.
     """
     caps = dict(DEFAULT_TIER_CAPS_S)
-    pyproject = _nearest_pyproject(start or Path.cwd())
-    if pyproject is None:
-        return caps
-    try:
-        import tomllib
-
-        data: Any = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return caps
-    for key in LADDER_CONFIG_TABLE:
-        data = data.get(key) if isinstance(data, dict) else None
-    if not isinstance(data, dict):
-        return caps
+    pyproject, data = _ladder_table(start)
     for tier, key in _CAP_KEYS.items():
         if key not in data:
             continue
@@ -103,6 +91,89 @@ def load_tier_caps(start: Path | None = None) -> dict[str, float | None]:
             )
         caps[tier] = float(value)
     return caps
+
+
+def load_model_policy(start: Path | None = None) -> dict[str, list[str]]:
+    """Read ``[tool.windtunnel.ladder.models]``: which model labels each tier may use.
+
+    A tier that is not listed may use any model. Labels are opaque strings
+    compared exactly, as the runtime reports them (see ``model_label``).
+    """
+    pyproject, data = _ladder_table(start)
+    table = data.get("models", {})
+    if not isinstance(table, dict):
+        raise LadderError(f"{pyproject}: [tool.windtunnel.ladder] models must be a table")
+    policy: dict[str, list[str]] = {}
+    for tier, labels in table.items():
+        if tier not in TIER_ORDER:
+            raise LadderError(
+                f"{pyproject}: [tool.windtunnel.ladder.models] {tier!r} is not a tier "
+                f"({', '.join(TIER_ORDER)})"
+            )
+        if (
+            not isinstance(labels, list) or not labels
+            or not all(isinstance(label, str) and label for label in labels)
+        ):
+            raise LadderError(
+                f"{pyproject}: [tool.windtunnel.ladder.models] {tier} must be a "
+                f"non-empty list of model labels, got {labels!r}"
+            )
+        policy[tier] = list(labels)
+    return policy
+
+
+def check_model_policy(tier: Tier, label: str | None, policy: dict[str, list[str]]) -> None:
+    """Refuse a sweep whose model the tier's policy does not allow."""
+    allowed = policy.get(tier)
+    if allowed is None or label in allowed:
+        return
+    if label is None:
+        raise LadderError(
+            f"a {tier} sweep must use one of: {', '.join(allowed)} "
+            "([tool.windtunnel.ladder.models]), but this runtime does not report "
+            "which model it uses (a runtime plugin reports it with model_label())"
+        )
+    raise LadderError(
+        f"a {tier} sweep must use one of: {', '.join(allowed)} "
+        f"([tool.windtunnel.ladder.models]); this runtime uses {label!r}"
+    )
+
+
+def model_label(plugin: object, runtime_name: str) -> str | None:
+    """The model the runtime will answer with, from its plugin's optional hook.
+
+    ``model_label(runtime_name) -> str | None`` on the runtime plugin. A
+    missing hook, a None, or a hook that raises all mean "not reported":
+    the label is never inferred from anything else.
+    """
+    hook = getattr(plugin, "model_label", None)
+    if not callable(hook):
+        return None
+    try:
+        label = hook(runtime_name)
+    except Exception:  # noqa: BLE001 - a broken optional hook reports nothing
+        return None
+    return str(label) if label else None
+
+
+def _ladder_table(start: Path | None) -> tuple[Path | None, dict[str, Any]]:
+    """Return the nearest pyproject.toml and its ``[tool.windtunnel.ladder]`` table.
+
+    A missing file, a missing table, or unreadable TOML all give an empty
+    table, so the defaults apply.
+    """
+    pyproject = _nearest_pyproject(start or Path.cwd())
+    if pyproject is None:
+        return None, {}
+    try:
+        import tomllib
+
+        data: Any = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return pyproject, {}
+    for key in LADDER_CONFIG_TABLE:
+        data = data.get(key) if isinstance(data, dict) else None
+    return pyproject, data if isinstance(data, dict) else {}
 
 
 def _nearest_pyproject(start: Path) -> Path | None:
@@ -184,6 +255,7 @@ def compute_fingerprint(
     plugin: object | None = None,
     wt_version: str | None = None,
     cwd: Path | None = None,
+    model: str | None = None,
 ) -> Fingerprint:
     """Fingerprint the artifact under test (see the design doc for the parts).
 
@@ -191,7 +263,8 @@ def compute_fingerprint(
     directory, a --out report): they change every sweep and are not part of
     the artifact. ``target`` is the runtime's lock key — the backend a runtime
     name resolves to, e.g. http_inject's endpoint URL — so evidence from one
-    endpoint never counts for another.
+    endpoint never counts for another. ``model`` is the runtime's model
+    label, so a pass on one model never earns a regression on another.
     """
     notes: list[str] = []
     git_tree, git_error, manifest = _worktree_snapshot(cwd or Path.cwd(), exclude=exclude)
@@ -220,6 +293,7 @@ def compute_fingerprint(
         "git_tree": git_tree,
         "runtime": runtime_name,
         "target": target if target is not None else runtime_name,
+        "model": model,
         "soul": _file_hash(soul_path),
         "agents": _file_hash(agents_path),
         "plugin": plugin_part,
@@ -416,7 +490,7 @@ def describe_changes(
 ) -> str:
     """Name what differs between an earlier fingerprint and ``new``."""
     changed = [
-        name for name in ("target", "soul", "agents", "plugin", "wt_version")
+        name for name in ("target", "model", "soul", "agents", "plugin", "wt_version")
         if old_parts.get(name) != new.parts.get(name)
     ]
     pieces: list[str] = []
@@ -751,6 +825,9 @@ def experiment_record(
     from_turn: int | None = None,
     decision: GateDecision | None = None,
     counts_as_failure: bool | None = None,
+    if_pass: str | None = None,
+    if_fail: str | None = None,
+    cost: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The ``experiment`` object written into each of the sweep's ledger rows."""
     return {
@@ -758,6 +835,9 @@ def experiment_record(
         "tier": tier,
         "question": question,
         "expect": expect,
+        "if_pass": if_pass,
+        "if_fail": if_fail,
+        "cost": cost,
         "budget_s": budget.seconds,
         "budget_exhausted": budget.exhausted,
         "fingerprint": fingerprint.value,
@@ -770,3 +850,111 @@ def experiment_record(
         "earned_by": decision.earned_by if decision is not None else None,
         "excluded_failing": list(decision.excluded_failing) if decision else [],
     }
+
+
+# ─── Cost and value: the experiments record ───────────────────────────────────
+
+EXPERIMENTS_FILENAME = "experiments.ndjsonl"
+EXPERIMENTS_FORMAT_VERSION = 1
+
+
+def sum_tokens(usages: Iterable[dict[str, Any] | None]) -> dict[str, int | None]:
+    """Sum token usage; a field is None as soon as any part did not report it."""
+    totals: dict[str, int | None] = {"input_tokens": 0, "output_tokens": 0}
+    for usage in usages:
+        for key in totals:
+            value = usage.get(key) if isinstance(usage, dict) else None
+            current = totals[key]
+            totals[key] = (
+                current + value if current is not None and type(value) is int else None
+            )
+    return totals
+
+
+def _append_experiments(runs_dir: Path, record: dict[str, Any]) -> None:
+    Path(runs_dir).mkdir(parents=True, exist_ok=True)
+    with (Path(runs_dir) / EXPERIMENTS_FILENAME).open("a", encoding="utf-8") as sink:
+        sink.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def record_sweep(runs_dir: Path, **fields: Any) -> None:
+    """Append one finished sweep (what it asked, what it cost, how it came out)."""
+    _append_experiments(
+        runs_dir,
+        {"windtunnel_experiment": EXPERIMENTS_FORMAT_VERSION, "kind": "sweep",
+         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **fields},
+    )
+
+
+def read_experiments(runs_dir: Path) -> list[dict[str, Any]]:
+    """Every parseable experiments record, in file order."""
+    rows: list[dict[str, Any]] = []
+    try:
+        lines = (Path(runs_dir) / EXPERIMENTS_FILENAME).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return rows
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("windtunnel_experiment") == 1:
+            rows.append(row)
+    return rows
+
+
+def record_review(runs_dir: Path, sweep_id: str, *, decision: str | None) -> None:
+    """Record what a finished sweep changed (``decision``), or that it changed nothing.
+
+    Raises LadderError for a sweep this runs directory never finished.
+    """
+    if not any(
+        row.get("kind") == "sweep" and row.get("sweep_id") == sweep_id
+        for row in read_experiments(runs_dir)
+    ):
+        raise LadderError(f"no finished sweep {sweep_id!r} in {runs_dir}/{EXPERIMENTS_FILENAME}")
+    _append_experiments(
+        runs_dir,
+        {"windtunnel_experiment": EXPERIMENTS_FORMAT_VERSION, "kind": "review",
+         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+         "sweep_id": sweep_id, "changed": decision is not None, "decision": decision},
+    )
+
+
+def ladder_summary(rows: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Per tier: how many sweeps, what they cost, and what they were worth.
+
+    Token totals cover only the sweeps that reported tokens
+    (``tokens_reported``); a sweep that did not report is counted, never
+    guessed. A later review of the same sweep replaces an earlier one.
+    """
+    reviews = {
+        row.get("sweep_id"): bool(row.get("changed"))
+        for row in rows if row.get("kind") == "review"
+    }
+    summary: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if row.get("kind") != "sweep":
+            continue
+        tier = str(row.get("tier"))
+        entry = summary.setdefault(tier, {
+            "sweeps": 0, "wall_s": 0.0, "input_tokens": 0, "output_tokens": 0,
+            "tokens_reported": 0, "predictions": 0, "predictions_held": 0,
+            "reviewed": 0, "changed_decision": 0,
+        })
+        entry["sweeps"] += 1
+        raw_cost = row.get("cost")
+        cost: dict[str, Any] = raw_cost if isinstance(raw_cost, dict) else {}
+        entry["wall_s"] = round(entry["wall_s"] + float(cost.get("wall_s") or 0.0), 3)
+        if type(cost.get("input_tokens")) is int and type(cost.get("output_tokens")) is int:
+            entry["tokens_reported"] += 1
+            entry["input_tokens"] += cost["input_tokens"]
+            entry["output_tokens"] += cost["output_tokens"]
+        if isinstance(row.get("prediction_held"), bool):
+            entry["predictions"] += 1
+            entry["predictions_held"] += int(row["prediction_held"])
+        sweep_id = row.get("sweep_id")
+        if sweep_id in reviews:
+            entry["reviewed"] += 1
+            entry["changed_decision"] += int(reviews[sweep_id])
+    return {tier: summary[tier] for tier in (*TIER_ORDER, *summary) if tier in summary}

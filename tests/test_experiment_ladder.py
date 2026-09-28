@@ -1020,3 +1020,228 @@ class TestTargets:
         b = normalize_target(Inject(), "HTTP://127.0.0.1:8647", "http_inject")
         assert a == b
         assert a != normalize_target(Inject(), "http://127.0.0.1:9000", "http_inject")
+
+
+# ─── Cost, value, and the model under test ────────────────────────────────────
+
+
+class _UsageHandle(_RecordingHandle):
+    def __init__(self, replies: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self._replies = iter(replies)
+
+    def send(self, messages, session_id):  # noqa: ANN001, ANN201
+        super().send(messages, session_id)
+        return {"role": "assistant", "content": "ok", "tool_calls": [], **next(self._replies)}
+
+
+def _two_turns(handle: _RecordingHandle, config: Any = None):  # noqa: ANN202
+    from windtunnel.api.runner import run_scenario
+    from windtunnel.api.scenario import Scenario
+
+    scenario = Scenario(name="s", prompt="b", user_turns=["a", "b"], target_facts=[["ok"]])
+    kwargs = {"config": config} if config is not None else {}
+    return run_scenario(scenario, _Runtime(handle), **kwargs).runs[0].trace
+
+
+class TestCost:
+    def test_tokens_are_summed_across_sends_in_either_spelling(self) -> None:
+        trace = _two_turns(_UsageHandle([
+            {"usage": {"prompt_tokens": 10, "completion_tokens": 2}},
+            {"usage": {"input_tokens": 30, "output_tokens": 4}},
+        ]))
+        assert trace.usage == {"input_tokens": 40, "output_tokens": 6}
+
+    def test_a_send_without_usage_makes_the_run_unreported_not_undercounted(self) -> None:
+        trace = _two_turns(_UsageHandle([
+            {"usage": {"prompt_tokens": 10, "completion_tokens": 2}}, {},
+        ]))
+        assert trace.usage is None
+
+    def test_sum_tokens_is_none_once_any_part_did_not_report(self) -> None:
+        from windtunnel._cli.ladder import sum_tokens
+
+        both = {"input_tokens": 1, "output_tokens": 2}
+        assert sum_tokens([both, both]) == {"input_tokens": 2, "output_tokens": 4}
+        assert sum_tokens([both, None]) == {"input_tokens": None, "output_tokens": None}
+
+    def test_usage_survives_a_save_and_load(self, tmp_path: Path) -> None:
+        from windtunnel.api.trace import load_trace, save_trace
+
+        trace = _two_turns(_UsageHandle([
+            {"usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+        ] * 2))
+        save_trace(trace, tmp_path / "t.json")
+        assert load_trace(tmp_path / "t.json").usage == {"input_tokens": 2, "output_tokens": 2}
+
+
+class TestModel:
+    def test_the_model_the_responses_name_is_recorded(self) -> None:
+        trace = _two_turns(_UsageHandle([{"model": "small-1"}] * 2))
+        assert trace.model == "small-1"
+
+    def test_a_configured_model_wins_over_what_responses_say(self) -> None:
+        from windtunnel.spi.agent_runtime import AgentConfig, ModelSpec
+
+        trace = _two_turns(
+            _UsageHandle([{"model": "other"}] * 2), AgentConfig(model=ModelSpec(name="target"))
+        )
+        assert trace.model == "target"
+
+    def test_the_model_label_comes_only_from_the_plugin_hook(self) -> None:
+        from windtunnel._cli.ladder import model_label
+
+        class Labelled:
+            def model_label(self, runtime_name: str) -> str:
+                return "big"
+
+        class Broken:
+            def model_label(self, runtime_name: str) -> str:
+                raise RuntimeError("no config")
+
+        assert model_label(Labelled(), "rt") == "big"
+        assert model_label(Broken(), "rt") is None
+        assert model_label(object(), "rt") is None
+
+    def test_the_model_is_part_of_the_fingerprint_and_named_when_it_changes(
+        self, tmp_path: Path
+    ) -> None:
+        from windtunnel._cli.ladder import compute_fingerprint, describe_changes
+
+        def fingerprint(model: str) -> Fingerprint:
+            return compute_fingerprint(
+                runtime_name="rt", soul_path=None, agents_path=None, cwd=tmp_path, model=model
+            )
+
+        small, big = fingerprint("small"), fingerprint("big")
+        assert small.value != big.value
+        assert describe_changes(dict(small.parts), None, big) == "changed: model"
+
+    def test_the_policy_maps_tiers_to_allowed_labels(self, tmp_path: Path) -> None:
+        from windtunnel._cli.ladder import check_model_policy, load_model_policy
+
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.windtunnel.ladder.models]\nprobe = ["small", "big"]\nregression = ["big"]\n'
+        )
+        policy = load_model_policy(tmp_path)
+        check_model_policy("probe", "small", policy)
+        check_model_policy("focused", None, policy)  # unlisted tier: any model
+        with pytest.raises(LadderError, match="must use one of: big"):
+            check_model_policy("regression", "small", policy)
+        with pytest.raises(LadderError, match="does not report which model"):
+            check_model_policy("regression", None, policy)
+
+    def test_an_invalid_policy_is_refused_not_ignored(self, tmp_path: Path) -> None:
+        from windtunnel._cli.ladder import load_model_policy
+
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.windtunnel.ladder.models]\nsmoke = [\"x\"]\n"
+        )
+        with pytest.raises(LadderError, match="not a tier"):
+            load_model_policy(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.windtunnel.ladder.models]\nprobe = []\n"
+        )
+        with pytest.raises(LadderError, match="non-empty list"):
+            load_model_policy(tmp_path)
+
+
+class TestWtRunCostAndModel:
+    """End to end through `wt run`, on TestWtRunLadder's bench."""
+
+    bench = TestWtRunLadder.bench
+    _ledger = staticmethod(TestWtRunLadder._ledger)
+
+    @pytest.fixture
+    def labelled(self, bench, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN001, ANN201
+        import windtunnel.cli as cli
+
+        run, state, runs_dir = bench
+        state["model"] = "small"
+
+        class Plugin:
+            def model_label(self, runtime_name: str) -> str:
+                return str(state["model"])
+
+        monkeypatch.setattr(cli, "_resolve_runtime_plugin", lambda runtime_name: Plugin())
+        monkeypatch.setattr(
+            cli,
+            "compute_fingerprint",
+            lambda **kwargs: Fingerprint(
+                value=f"{state['fp']}|{kwargs['model']}",
+                parts={"git_tree": state["fp"], "target": kwargs["target"],
+                       "model": kwargs["model"]},
+            ),
+        )
+        return run, state, runs_dir
+
+    def test_a_pass_on_one_model_does_not_earn_a_regression_on_another(
+        self, labelled, capsys: pytest.CaptureFixture[str]  # noqa: ANN001
+    ) -> None:
+        run, state, _runs_dir = labelled
+        declare = ("--question", "q", "--expect", "pass")
+        assert run("--scenario", "alpha") == 0  # focused pass on the small model
+        state["model"] = "big"
+        capsys.readouterr()
+        assert run(*declare) == 2
+        assert "changed: model" in capsys.readouterr().err
+        assert run("--scenario", "alpha", *declare) == 0  # the same pass, on big
+        assert run(*declare) == 1  # earned (beta still fails)
+
+    def test_the_tier_model_policy_refuses_the_wrong_model(
+        self, labelled, tmp_path: Path, capsys: pytest.CaptureFixture[str]  # noqa: ANN001
+    ) -> None:
+        run, state, runs_dir = labelled
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.windtunnel.ladder.models]\nfocused = ["big"]\n'
+        )
+        assert run("--scenario", "alpha") == 2
+        assert "this runtime uses 'small'" in capsys.readouterr().err
+        assert not (runs_dir / "ledger.ndjsonl").exists()
+        state["model"] = "big"
+        assert run("--scenario", "alpha") == 0
+
+    def test_a_sweep_records_its_cost_plan_and_outcome(
+        self, labelled, capsys: pytest.CaptureFixture[str]  # noqa: ANN001
+    ) -> None:
+        from windtunnel._cli.ladder import read_experiments
+
+        run, _state, runs_dir = labelled
+        assert run("--scenario", "alpha", "--expect", "fail", "--if-pass",
+                   "ship it", "--if-fail", "probe turn 2") == 0
+        assert "you planned, on this outcome: ship it" in capsys.readouterr().err
+        row = self._ledger(runs_dir)[-1]
+        cost = row["experiment"]["cost"]
+        assert isinstance(cost["wall_s"], float)
+        # The fake runs report no tokens: recorded as unknown, never as zero.
+        assert cost["input_tokens"] is None and cost["output_tokens"] is None
+        assert row["experiment"]["if_pass"] == "ship it"
+        [sweep] = read_experiments(runs_dir)
+        assert sweep["sweep_id"] == row["sweep_id"]
+        assert sweep["tier"] == "focused"
+        assert sweep["model"] == "small"
+        assert sweep["outcome"] == "pass"
+        assert sweep["prediction_held"] is False
+
+    def test_reviews_feed_the_per_tier_summary(
+        self, labelled, capsys: pytest.CaptureFixture[str]  # noqa: ANN001
+    ) -> None:
+        import windtunnel.cli as cli
+
+        run, _state, runs_dir = labelled
+        declare = ("--question", "q", "--expect", "pass")
+        run("--scenario", "alpha")
+        run("--scenario", "gamma", *declare)
+        first, second = (row["sweep_id"] for row in self._ledger(runs_dir))
+        assert cli.main(["review", first, "--runs", str(runs_dir), "--decision", "kept"]) == 0
+        assert cli.main(["review", second, "--runs", str(runs_dir), "--no-change"]) == 0
+        assert cli.main(["review", "nope", "--runs", str(runs_dir), "--no-change"]) == 2
+        capsys.readouterr()
+        assert cli.main(["results", "--runs", str(runs_dir), "--ladder", "--json"]) == 0
+        focused = json.loads(capsys.readouterr().out)["tiers"]["focused"]
+        assert focused["sweeps"] == 2
+        assert focused["predictions"] == 1 and focused["predictions_held"] == 1
+        assert focused["reviewed"] == 2 and focused["changed_decision"] == 1
+        assert focused["tokens_reported"] == 0
+        assert cli.main(["results", "--runs", str(runs_dir), "--ladder"]) == 0
+        assert "1/2 reviewed changed a decision" in capsys.readouterr().out

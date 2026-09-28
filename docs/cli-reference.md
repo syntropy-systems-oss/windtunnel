@@ -2,16 +2,17 @@
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at f35eff440c41 — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at 55585547f644 — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
-The `wt` command ships 15 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
+The `wt` command ships 16 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
 
 | Command | Purpose |
 |---|---|
 | `wt report` | Generate a report from a runs/ directory. |
 | `wt compare` | Compare results across variant labels. |
 | `wt results` | Summarize saved runs per label and scenario: pass counts and aggregated metrics. |
+| `wt review` | Record what a finished sweep changed: --decision TEXT, or --no-change. Summarized by `wt results --ladder`. |
 | `wt watch` | Follow a sweep's progress events (run started, run finished with verdict, sweep finished) and exit with the sweep's exit code. |
 | `wt run` | Run scenarios against a runtime. |
 | `wt batch` | Run a file of `wt run` specs (one per line, same options) back to back. |
@@ -71,7 +72,7 @@ Summarize saved runs per label and scenario: pass counts and aggregated metrics.
 Usage:
 
 ```bash
-wt results [-h] [--runs DIR] [--label LABEL] [--scenario S] [--json]
+wt results [-h] [--runs DIR] [--label LABEL] [--scenario S] [--json] [--ladder]
 ```
 
 Arguments and options:
@@ -82,6 +83,26 @@ Arguments and options:
 | `--label` | no |  | Variant label to summarize (the `wt run --label` value). Repeat for several; omit for every label under --runs. |
 | `--scenario` | no |  | Only summarize scenarios matching S (shell-style globs). Repeat for multiple. |
 | `--json` | no | false | Print one JSON document with every run's trace path, verdict, and metrics alongside the per-scenario aggregates. |
+| `--ladder` | no | false | Instead of per-scenario results, summarize the experiment ladder per tier: sweeps, wall time, tokens, predictions held, and how often a reviewed sweep changed a decision (from experiments.ndjsonl). |
+
+## `wt review`
+
+Record what a finished sweep changed: --decision TEXT, or --no-change. Summarized by `wt results --ladder`.
+
+Usage:
+
+```bash
+wt review [-h] [--runs DIR] (--decision TEXT | --no-change) SWEEP_ID
+```
+
+Arguments and options:
+
+| Name | Required | Default | Help |
+|---|---:|---|---|
+| `sweep` | yes |  | The sweep id `wt run` printed. |
+| `--runs` | no | runs | Path to the runs/ directory (default: ./runs) |
+| `--decision` | no |  | What this sweep's result made you decide or change. |
+| `--no-change` | no | false | The sweep changed no decision. |
 
 ## `wt watch`
 
@@ -111,7 +132,7 @@ Run scenarios against a runtime.
 Usage:
 
 ```bash
-wt run [-h] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--all-packs] [--owner OWNER] [--soul PATH] [--agents PATH] [--runtime RUNTIME] [--hook HOOK] [--label LABEL] [--runs N] [--runs-dir DIR] [--format {junit,json}] [--out FILE] [--question TEXT] [--expect {pass,fail}] [--budget SECONDS] [--from-trace PATH] [--from-turn K] [--scheduler SCHEDULER] [--max-concurrency N] [--no-wait]
+wt run [-h] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--all-packs] [--owner OWNER] [--soul PATH] [--agents PATH] [--runtime RUNTIME] [--hook HOOK] [--label LABEL] [--runs N] [--runs-dir DIR] [--format {junit,json}] [--out FILE] [--question TEXT] [--expect {pass,fail}] [--if-pass TEXT] [--if-fail TEXT] [--budget SECONDS] [--from-trace PATH] [--from-turn K] [--scheduler SCHEDULER] [--max-concurrency N] [--no-wait]
 ```
 
 Arguments and options:
@@ -135,6 +156,8 @@ Arguments and options:
 | `--out` | no |  | Path for --format junit/json output. Must be paired with --format. |
 | `--question` | no |  | What this sweep is meant to find out. Recorded in the ledger; required once the runs directory has history. |
 | `--expect` | no |  | The verdict you predict (pass or fail). Recorded, and compared with the result at the end; required once the runs directory has history. Choices: pass, fail. |
+| `--if-pass` | no |  | What you will do if the sweep passes. Optional; recorded, and repeated back when that is the outcome. |
+| `--if-fail` | no |  | What you will do if the sweep fails. Optional; recorded, and repeated back when that is the outcome. |
 | `--budget` | no |  | Wall-clock budget, counted from acquiring the runtime. May lower but not raise the tier cap (probe 300s, focused 900s by default; set in [tool.windtunnel.ladder]). Regression sweeps are uncapped by default. |
 | `--from-trace` | no |  | Probe: replay a saved trace's scenario with the turns before --from-turn frozen as history, running the rest live. Needs a runtime that consumes full message history. |
 | `--from-turn` | no |  | With --from-trace: the 1-based user turn to resume at (default: the last, scored user turn). |
