@@ -1,4 +1,4 @@
-<!-- GENERATED from agents/skill-template.md + docs/ at 626d653d0c9c — do not edit; edit docs/ or agents/skill-template.md. -->
+<!-- GENERATED from agents/skill-template.md + docs/ at 22241df66718 — do not edit; edit docs/ or agents/skill-template.md. -->
 # Wind Tunnel Agent Index
 
 Wind Tunnel is unittest for tool-using LLM agents: scenarios gate declared
@@ -11,7 +11,7 @@ Installed skill: `wt skill path`
 - `references/agent-quickstart.md` - Self-contained guide for coding agents to add Wind Tunnel scenarios, runtime wiring, and run commands to a project.
 - `references/agents/integration-checklist.md` - Agent-only shortest path for getting a project benched by Wind Tunnel through Contract C and one authored scenario.
 - `references/agents/anti-patterns.md` - Agent-only list of Wind Tunnel integration mistakes that produce misleading benches or hard validation failures.
-- `references/design/0005-experiment-ladder.md` - Design specification for the experiment ladder: derived run tiers, wall-clock budgets, declared questions, artifact fingerprints, the regression evidence gate, prefix replay probes, tier-ordered runtime queueing, per-tier model policy, and recorded experiment cost and value.
+- `references/design/0005-experiment-ladder.md` - Design specification for the experiment ladder: derived run tiers, wall-clock budgets, declared questions, artifact fingerprints, the regression evidence gate, prefix replay probes, tier-ordered runtime queueing, per-tier model policy, recorded experiment cost and value, cache-aware pricing, and the prompt-cache-miss check.
 - `references/writing-a-runtime.md` - Guide to implementing Wind Tunnel runtime protocols or Contract C endpoints with reset isolation and tool-call evidence.
 - `references/design/0004-reference-selftest.md` - Design specification for live golden/poison scenario self-tests, the optional runtime inference-substitution capability, isolation, probe timing, and CI verdicts.
 - `references/design/0002-inject-protocol.md` - Design specification for Contract C inject protocol, its reset route, optional surface-introspection route, error handling, built-in runtime, and canary.

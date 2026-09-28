@@ -161,6 +161,55 @@ def _add_usage(total: dict[str, int] | None, response: object) -> dict[str, int]
     }
 
 
+def _normalize_call_usage(usage: dict[str, Any]) -> dict[str, int | None]:
+    """Normalize one call's raw usage dict to {prompt_tokens, cached_tokens,
+    completion_tokens} — the shape stored in Trace.model_calls.
+
+    prompt_tokens is the TOTAL prompt tokens for that call, including any
+    served from a prompt cache. Accepts common wire spellings; a field is
+    None, never guessed or defaulted to 0, when this call's usage did not
+    report it.
+
+    cached:      cached_tokens, prompt_tokens_details.cached_tokens,
+                 cache_read_input_tokens, cacheRead
+    prompt:      prompt_tokens, input_tokens, input (+ cacheRead — some
+                 wire shapes report "input" as uncached-only, keeping the
+                 cache read separate rather than nesting it inside the
+                 prompt total; when both are present, prompt_tokens is
+                 their sum, so it always means "including cached")
+    completion:  completion_tokens, output_tokens, output
+    """
+    def _int(value: Any) -> int | None:
+        return value if type(value) is int and value >= 0 else None
+
+    cached = _int(usage.get("cached_tokens"))
+    if cached is None:
+        details = usage.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            cached = _int(details.get("cached_tokens"))
+    if cached is None:
+        cached = _int(usage.get("cache_read_input_tokens"))
+    cache_read = _int(usage.get("cacheRead"))
+    if cached is None:
+        cached = cache_read
+
+    prompt = _int(usage.get("prompt_tokens"))
+    if prompt is None:
+        prompt = _int(usage.get("input_tokens"))
+    if prompt is None:
+        raw_input = _int(usage.get("input"))
+        if raw_input is not None:
+            prompt = raw_input + cache_read if cache_read is not None else raw_input
+
+    completion = _int(usage.get("completion_tokens"))
+    if completion is None:
+        completion = _int(usage.get("output_tokens"))
+    if completion is None:
+        completion = _int(usage.get("output"))
+
+    return {"prompt_tokens": prompt, "cached_tokens": cached, "completion_tokens": completion}
+
+
 def _run_once(
     scenario: Scenario,
     handle: AgentHandle,
@@ -266,6 +315,9 @@ def _run_once(
     # reports none (never a guessed or partial figure).
     usage: dict[str, int] | None = {"input_tokens": 0, "output_tokens": 0}
     reported_models: set[str] = set()
+    # Per-call usage, one entry per send — see Trace.model_calls. None
+    # (never an empty list) unless at least one send reported usage.
+    model_calls: list[dict[str, Any]] | None = None
 
     for turn_idx, user_text in enumerate(user_turns):
         # Record user turn
@@ -295,6 +347,32 @@ def _run_once(
         response = handle.send(messages, session_id)
         t1 = datetime.now(UTC)
         usage = _add_usage(usage, response)
+        raw_usage = response.get("usage") if isinstance(response, dict) else None
+        if isinstance(raw_usage, dict):
+            if model_calls is None:
+                model_calls = []
+            # One send() can make several inference calls (a tool loop inside
+            # one turn) — usage["calls"] lets a runtime report each one, so a
+            # miss on any single call is still caught, not diluted into the
+            # turn's aggregate ratio. Each entry may carry its own
+            # "conversation" (e.g. a forked side conversation), overriding
+            # this run's session_id default so its own first call is judged
+            # as a first call of its own conversation.
+            per_call = raw_usage.get("calls")
+            if isinstance(per_call, list) and per_call:
+                for call_usage in per_call:
+                    if not isinstance(call_usage, dict):
+                        continue
+                    conversation = call_usage.get("conversation")
+                    if not isinstance(conversation, str) or not conversation:
+                        conversation = session_id
+                    model_calls.append(
+                        {"conversation": conversation, **_normalize_call_usage(call_usage)}
+                    )
+            else:
+                model_calls.append(
+                    {"conversation": session_id, **_normalize_call_usage(raw_usage)}
+                )
         if isinstance(response, dict) and isinstance(response.get("model"), str):
             reported_models.add(response["model"])
         latency_ms = (t1 - t0).total_seconds() * 1000
@@ -345,6 +423,7 @@ def _run_once(
         "observations": observations,
         "surface": surface,
         "usage": usage,
+        "model_calls": model_calls,
     }
     if hook_state is not None:
         trace_kwargs["run_id"] = hook_state.run_id

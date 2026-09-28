@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/writing-a-runtime.md at d03595deafcd — do not edit; edit docs/writing-a-runtime.md. -->
+<!-- GENERATED from docs/writing-a-runtime.md at ea5747f281ff — do not edit; edit docs/writing-a-runtime.md. -->
 ---
 description: "Guide to implementing Wind Tunnel runtime protocols or Contract C endpoints with reset isolation and tool-call evidence."
 ---
@@ -280,6 +280,67 @@ carries an OpenAI-style `usage` object (`input_tokens`/`output_tokens` or
 `prompt_tokens`/`completion_tokens`) is summed into the trace's `usage`; a
 response without one records the run's usage as unknown (see
 [0005: Experiment ladder](design/0005-experiment-ladder.md#cost-and-value)).
+
+**Per-call usage (optional).** If your `usage` object also reports a cache
+split, it is picked up automatically — `wt` normalizes every send's raw
+`usage` dict into one entry on `trace.model_calls`, in turn order:
+
+```json
+{"conversation": "<this run's session_id>", "prompt_tokens": 1500, "cached_tokens": 1300, "completion_tokens": 30}
+```
+
+`prompt_tokens` is the TOTAL prompt tokens for that call, including any
+served from a prompt cache — the same meaning as `usage.input_tokens`. A
+field is `null`, never guessed, when that one call's `usage` dict didn't
+report it. Accepted spellings, checked in order, first match wins:
+
+| Field | Spellings |
+|---|---|
+| `cached_tokens` | `cached_tokens`, `prompt_tokens_details.cached_tokens` (nested), `cache_read_input_tokens`, `cacheRead` |
+| `prompt_tokens` | `prompt_tokens`, `input_tokens`, `input` |
+| `completion_tokens` | `completion_tokens`, `output_tokens`, `output` |
+
+One wire shape reports `input` as uncached-only, keeping the cache read in a
+separate `cacheRead` field rather than nesting it inside the prompt total —
+when a `usage` dict has both, `prompt_tokens` is their sum, so it always
+means "including cached" like every other spelling.
+
+Nothing is required beyond what your `usage` object already reports: without
+a cache split, calls still get `prompt_tokens`/`completion_tokens` entries
+(`cached_tokens: null`), and a runtime that reports no usage at all leaves
+`trace.model_calls` as `null`. Per-call usage feeds the pricing cache-read
+rate and the prompt-cache-miss check — see
+[Per-call usage and the prompt-cache-miss check](design/0005-experiment-ladder.md#per-call-usage-and-the-prompt-cache-miss-check).
+
+**Several inference calls in one send.** One `send()` can cover several
+model calls under the hood — an agent loop's tool call, tool result, call
+again, all inside the one turn your handle returns. Reporting only that
+turn's aggregate usage would dilute a miss on one of those calls into the
+turn's overall ratio. Nest a `"calls"` list under `usage` instead, one usage
+dict per inference call, in order:
+
+```json
+{
+  "usage": {
+    "prompt_tokens": 10000, "cached_tokens": 9500, "completion_tokens": 60,
+    "calls": [
+      {"prompt_tokens": 1000, "cached_tokens": 0, "completion_tokens": 10},
+      {"prompt_tokens": 4000, "cached_tokens": 500, "completion_tokens": 20},
+      {"prompt_tokens": 5000, "cached_tokens": 4900, "completion_tokens": 30}
+    ]
+  }
+}
+```
+
+When `usage.calls` is a non-empty list, each entry becomes its own
+`trace.model_calls` entry (normalized the same way as a per-send `usage`
+dict) instead of the one aggregated entry — so the prompt-cache-miss check
+still catches a single bad call even when the send's own aggregate looks
+fine. Without `calls`, `wt` falls back to one entry per send, as above. An
+entry may also carry its own `"conversation"` string, overriding this run's
+`session_id` default — for a call that starts its own side conversation
+(e.g. a forked review call), so its own first call is judged as a first call
+of its own conversation, not folded into the run's.
 
 ## Checklist before trusting your runtime
 

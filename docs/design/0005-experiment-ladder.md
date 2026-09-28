@@ -1,5 +1,5 @@
 ---
-description: "Design specification for the experiment ladder: derived run tiers, wall-clock budgets, declared questions, artifact fingerprints, the regression evidence gate, prefix replay probes, tier-ordered runtime queueing, per-tier model policy, and recorded experiment cost and value."
+description: "Design specification for the experiment ladder: derived run tiers, wall-clock budgets, declared questions, artifact fingerprints, the regression evidence gate, prefix replay probes, tier-ordered runtime queueing, per-tier model policy, recorded experiment cost and value, cache-aware pricing, and the prompt-cache-miss check."
 ---
 # 0005: The experiment ladder
 
@@ -284,11 +284,21 @@ can see which tiers pay for themselves.
 
 **Cost.** Each ledger row's `experiment.cost` holds the scenario's wall
 seconds (its job, provisioning included) and the model tokens its runs
-consumed. Tokens come from the `usage` object on the runtime's responses
-(`input_tokens`/`output_tokens`, or `prompt_tokens`/`completion_tokens`),
-summed per run into the trace's `usage`. A run with any send that reported no
-usage records `usage: null`, and any null makes the row's token counts null:
-a partial sum would understate the cost, so tokens are never guessed.
+consumed: `input_tokens` (the TOTAL prompt tokens, including any served from
+a prompt cache), `cached_tokens`, and `output_tokens`. Tokens come from the
+`usage` object on the runtime's responses (`input_tokens`/`output_tokens`, or
+`prompt_tokens`/`completion_tokens`), summed per run into the trace's
+`usage`. A run with any send that reported no usage records `usage: null`,
+and any null makes the row's token counts null: a partial sum would
+understate the cost, so tokens are never guessed.
+
+When a runtime reports usage per model call (not just a per-run total), the
+trace also carries `model_calls` — see
+[Per-call usage and the prompt-cache-miss check](#per-call-usage-and-the-prompt-cache-miss-check)
+— and `input_tokens`/`cached_tokens`/`output_tokens` are the sums over every
+call instead: a call missing its prompt or completion count makes the whole
+run's tokens unknown, and a call missing only its cache split makes
+`cached_tokens` unknown on its own (the totals still stand).
 
 **The plan.** `--if-pass TEXT` and `--if-fail TEXT` optionally say, up front,
 what the result will change. They are recorded, and `wt run` repeats the one
@@ -311,6 +321,143 @@ and how many reviewed sweeps changed a decision. A tier whose sweeps are
 expensive and rarely change anything is one to climb past faster; one whose
 predictions keep missing is where the agent is guessing.
 
+### Pricing: turning cost into dollars
+
+Wall seconds and tokens say what a sweep spent; a team also wants to know
+what it cost. `[tool.windtunnel.ladder.pricing]` is optional and holds no
+built-in prices — rates are config, an operator's own numbers, never code.
+Three token price classes, per model label: an uncached-input rate, an
+optional cache-read rate (cheaper, since a cache hit skips most of the
+prefill), and an output rate.
+
+```toml
+[tool.windtunnel.ladder.pricing]
+time_per_hour = 60.0             # $ per wall-clock hour (example rate)
+
+[tool.windtunnel.ladder.pricing.models]
+# $ per million tokens — example rates, not real prices.
+"target-model" = { input_per_m = 1.00, cache_read_per_m = 0.10, output_per_m = 4.00 }
+default = { input_per_m = 1.00, cache_read_per_m = 0.10, output_per_m = 4.00 }
+```
+
+Model labels are opaque strings, matched exactly against the `model` the
+ledger already records (see
+[Model tag and per-tier model policy](#model-tag-and-per-tier-model-policy)).
+A label with no entry of its own falls back to `models.default` when the
+table gives one. `cache_read_per_m` is optional and falls back to that same
+label's `input_per_m` — a runtime that never reports a cache split still
+prices correctly, every input token at the one rate. `time_per_hour` and
+every rate must be a non-negative number; an invalid table is refused (exit
+`2`), not silently ignored.
+
+When pricing is configured, every ledger row's `experiment.cost_usd` and
+every sweep record's `cost_usd` in `experiments.ndjsonl` hold:
+
+```json
+{
+  "uncached_input": 0.0090, "cache_read": 0.0004, "output": 0.0400,
+  "time": 0.0010, "total": 0.0504,
+  "tokens_known": true, "cache_split_known": true
+}
+```
+
+`uncached_input` prices `input_tokens - cached_tokens` at `input_per_m`;
+`cache_read` prices `cached_tokens` at `cache_read_per_m`. Every component is
+null and `tokens_known` is false when the row's token usage was not
+reported, or its model has no price and no `models.default` — `total` then
+covers `time` alone, same as before three price classes existed. When tokens
+are known but the run's `cached_tokens` is null (the runtime never reported a
+per-call cache split), every input token prices at `input_per_m`,
+`cache_split_known` is false, and `cache_read` stays null rather than
+guessing the split. With no `[tool.windtunnel.ladder.pricing]` table,
+`cost_usd` is absent entirely (not null), so a runs directory recorded before
+pricing was configured, or by a repository that never configures it, stays
+exactly as before.
+
+`wt run` prints a cost block when each sweep ends — the question, tokens in
+(cached)/out (or "unknown"), wall time, and, when pricing is configured, the
+`$ uncached + cache read + output + time = total` breakdown, flagging "cache
+split unknown" when `cached_tokens` was never reported and "tokens unknown —
+time cost only" when token usage was not reported at all. `wt results
+--ladder` adds the same $ breakdown per tier (how many of its sweeps were
+priced, and how many of those had unknown tokens) and a cumulative total
+across tiers, shown only once at least one sweep in the file was priced.
+
+### Per-call usage and the prompt-cache-miss check
+
+A runtime that reports usage per model call, not just a per-run total, lets
+`wt` price a cache split and check that a multi-turn conversation is actually
+using its prompt cache.
+
+**The shape a runtime emits.** When an `AgentHandle.send()` response carries a
+`usage` object, the runner normalizes it and appends one entry to
+`Trace.model_calls`, in turn order:
+
+```json
+{"conversation": "3f2a9c1b-…", "prompt_tokens": 1500, "cached_tokens": 1300, "completion_tokens": 30}
+```
+
+`conversation` is that run's `session_id` — every call in one trace shares
+it; pooling several runs' (or several scenarios') `model_calls` into one list
+(as the ladder does for cost and the cache check) uses it to tell one run's
+calls from another's, so "the first call in a conversation" and "call k" stay
+relative to one run's own turn order however many conversations are pooled.
+`prompt_tokens` is the same TOTAL-including-cached figure as `usage.input_tokens`.
+A field is `null`, never guessed, when that one call didn't report it — unlike
+`usage`, one call's gap does not blank the run's other totals. `model_calls`
+is `null` (not an empty list) when the runtime never reported usage at all.
+
+One `send()` can itself cover several model calls (an agent loop's tool
+call, tool result, call again, all inside one turn) — reporting only that
+turn's aggregate would dilute a miss on one of those calls into the turn's
+overall ratio. A runtime instead nests a `"calls"` list of per-inference-call
+usage dicts under `usage`, and each entry becomes its own `model_calls`
+entry (in order) instead of the one aggregated entry; an entry may carry its
+own `"conversation"` string, overriding the run's `session_id` default, for
+a call that starts its own side conversation. See
+[Writing a runtime](../writing-a-runtime.md) for the wire spellings accepted
+when normalizing a call's raw usage dict, and the exact `usage.calls` shape.
+
+**The check.** `[tool.windtunnel.cache]` is optional and off by default:
+
+```toml
+[tool.windtunnel.cache]
+fail_on_miss = true       # a miss (or an unknown split) fails the sweep; default false
+min_cached_ratio = 0.5    # cached_tokens / prompt_tokens floor; default 0.5
+```
+
+For every model call after the first in a conversation — the first turn has
+nothing to have cached yet, so it is never checked — `cached_tokens /
+prompt_tokens` must be at least `min_cached_ratio`, or it is a miss:
+`prompt cache miss at call k: cached M of P prompt tokens`. The check never
+derives an expected prefix or compares prompts between calls; it only reads
+the reported numbers and this ratio. When a checked call's cache split was
+not reported, the result is `unknown` — never `pass` — and said so in the
+output. With `fail_on_miss = true`, a `fail` or `unknown` result makes the
+row's `counts_as_failure` true regardless of the scenario's own verdict.
+
+The result — `{"result": "pass" | "fail" | "unknown", "reason": ..., "calls":
+[...]}` — is recorded as `experiment.cache_check` on the ledger row (and
+`cache_check` on the sweep's `experiments.ndjsonl` record) whenever
+`[tool.windtunnel.cache]` is configured, and `wt run`'s end-of-sweep cost
+block prints the verdict plus one compact `call k: cached M/P` line per
+checked call:
+
+```text
+wt run: cost — 'does the multi-turn prompt still hit the cache?'
+wt run:   tokens: 3700 in (1400 cached) / 120 out
+wt run:   wall: 4.2s
+wt run:   $ uncached 0.0023 + cache read 0.0001 + output 0.0005 + time 0.0700 = total 0.0729
+wt run:   cache check: fail — prompt cache miss at call 2: cached 100 of 1200 prompt tokens
+wt run:   call 2: cached 100/1200
+wt run:   call 3: cached 1300/1500
+```
+
+When the runtime never reports per-call usage (or a checked call's cache
+split goes unreported), the block instead reads e.g. `cache check: unknown —
+cache split not reported for one or more calls`, with `call k: cache split
+unknown` in place of the counts — never a silent pass.
+
 ## Ledger record
 
 Every ledger row written by `wt run` gains two fields:
@@ -325,7 +472,12 @@ Every ledger row written by `wt run` gains two fields:
     "expect": "pass",
     "if_pass": "run the pack",
     "if_fail": "probe turn 2",
-    "cost": {"wall_s": 41.2, "input_tokens": 18230, "output_tokens": 1504},
+    "cost": {"wall_s": 41.2, "input_tokens": 18230, "cached_tokens": 15000, "output_tokens": 1504},
+    "cost_usd": {
+      "uncached_input": 0.0032, "cache_read": 0.0015, "output": 0.0060, "time": 0.6867,
+      "total": 0.6974, "tokens_known": true, "cache_split_known": true
+    },
+    "cache_check": {"result": "pass", "reason": null, "calls": ["call 2: cached 15000/18230"]},
     "budget_s": 900,
     "budget_exhausted": false,
     "fingerprint": "sha256:…",
@@ -343,10 +495,15 @@ Every ledger row written by `wt run` gains two fields:
 ```
 
 `counts_as_failure` is the sweep's own judgement of the row (the rule behind
-the exit code). `evidence_for` on a regression row names the regression
-sweeps whose failures were satisfied by focused evidence, and `earned_by` the
-focused sweep that earned it. Traces gain `usage`. The changes are additive; readers ignore unknown
-fields, so `windtunnel_ledger` stays at version 1.
+the exit code) — a prompt-cache miss with `fail_on_miss = true` can make it
+true even when the scenario itself passed. `evidence_for` on a regression row
+names the regression sweeps whose failures were satisfied by focused
+evidence, and `earned_by` the focused sweep that earned it. Traces gain
+`usage` and, when a runtime reports per-call usage, `model_calls`. `cost_usd`
+is present only when `[tool.windtunnel.ladder.pricing]` is configured, and
+`cache_check` only when `[tool.windtunnel.cache]` is. The changes are
+additive; readers ignore unknown fields, so `windtunnel_ledger` stays at
+version 1.
 
 ## Out of scope
 

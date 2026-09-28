@@ -3,7 +3,7 @@ name: windtunnel
 description: Bench tool-using LLM agents with the wt CLI, scenario packs, trace import/interchange,
   Contract C inject endpoints, reset isolation, and recorded tool universes.
 ---
-<!-- GENERATED from agents/skill-template.md + docs/ at 626d653d0c9c — do not edit; edit docs/ or agents/skill-template.md. -->
+<!-- GENERATED from agents/skill-template.md + docs/ at 22241df66718 — do not edit; edit docs/ or agents/skill-template.md. -->
 # Wind Tunnel
 
 Wind Tunnel is unittest for agents: a reliability bench for tool-using LLM
@@ -50,7 +50,7 @@ serving recorded tool universes, or bringing up Contract C inject endpoints.
 - `references/design/0002-inject-protocol.md` - Design specification for Contract C inject protocol, its reset route, optional surface-introspection route, error handling, built-in runtime, and canary.
 - `references/design/0003-hook-system.md` - Design specification for lifecycle hooks: the windtunnel.hooks plugin SPI, per-point ordering contracts, the scoped hook context, sidecar artifacts, and the debrief reference hook.
 - `references/design/0004-reference-selftest.md` - Design specification for live golden/poison scenario self-tests, the optional runtime inference-substitution capability, isolation, probe timing, and CI verdicts.
-- `references/design/0005-experiment-ladder.md` - Design specification for the experiment ladder: derived run tiers, wall-clock budgets, declared questions, artifact fingerprints, the regression evidence gate, prefix replay probes, tier-ordered runtime queueing, per-tier model policy, and recorded experiment cost and value.
+- `references/design/0005-experiment-ladder.md` - Design specification for the experiment ladder: derived run tiers, wall-clock budgets, declared questions, artifact fingerprints, the regression evidence gate, prefix replay probes, tier-ordered runtime queueing, per-tier model policy, recorded experiment cost and value, cache-aware pricing, and the prompt-cache-miss check.
 - `references/driving-terminus.md` - Guide to driving Harbor Terminus-2 from Wind Tunnel as a terminal-agent runtime.
 - `references/evaluating-skills.md` - How to evaluate whether generated agent skills improve Wind Tunnel task performance.
 - `references/failure-taxonomy.md` - Catalog of Wind Tunnel failure categories, distinguishing signals, and fix vectors for triage.

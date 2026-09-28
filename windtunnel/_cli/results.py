@@ -9,7 +9,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from windtunnel._cli.ladder import EXPERIMENTS_FILENAME, ladder_summary, read_experiments
+from windtunnel._cli.ladder import (
+    EXPERIMENTS_FILENAME,
+    cumulative_cost_usd,
+    ladder_summary,
+    read_experiments,
+)
 from windtunnel._report.load import load_run_groups
 from windtunnel._report.model import summarize_group
 from windtunnel._report.text import format_metric_summary
@@ -80,14 +85,22 @@ def _ladder_results(runs_dir: Path, *, as_json: bool) -> int:
             file=sys.stderr,
         )
         return 2
+    cumulative = cumulative_cost_usd(summary)
     if as_json:
-        document = {"windtunnel_ladder_results": 1, "runs_dir": str(runs_dir), "tiers": summary}
+        document = {
+            "windtunnel_ladder_results": 1, "runs_dir": str(runs_dir), "tiers": summary,
+            "cumulative_cost_usd": cumulative,
+        }
         print(json.dumps(document, indent=2))
         return 0
     lines = [f"experiment ladder under {runs_dir}:"]
     for tier, entry in summary.items():
+        cached = (
+            f" ({entry['cached_tokens']} cached, {entry['cached_reported']}/{entry['sweeps']} "
+            "reported)" if entry["cached_reported"] else ""
+        )
         tokens = (
-            f"{entry['input_tokens']} in / {entry['output_tokens']} out tokens "
+            f"{entry['input_tokens']} in{cached} / {entry['output_tokens']} out tokens "
             f"({entry['tokens_reported']}/{entry['sweeps']} sweeps reported)"
         )
         held = (
@@ -98,10 +111,29 @@ def _ladder_results(runs_dir: Path, *, as_json: bool) -> int:
             f"{entry['changed_decision']}/{entry['reviewed']} reviewed changed a decision"
             if entry["reviewed"] else "none reviewed"
         )
-        lines.append(
+        line = (
             f"  {tier:<10} {entry['sweeps']} sweep(s), {entry['wall_s']:.0f}s wall, "
             f"{tokens}; {held}; {changed}"
         )
+        if entry["priced_sweeps"]:
+            unknown = (
+                f", {entry['tokens_unknown_sweeps']} tokens unknown"
+                if entry["tokens_unknown_sweeps"] else ""
+            )
+            line += (
+                f"; $ uncached {entry['uncached_input_usd']:.4f} + "
+                f"cache read {entry['cache_read_usd']:.4f} + output {entry['output_usd']:.4f} + "
+                f"time {entry['time_usd']:.4f} = total {entry['cost_usd']:.4f} "
+                f"({entry['priced_sweeps']}/{entry['sweeps']} priced{unknown})"
+            )
+        if entry["cache_fail_sweeps"] or entry["cache_unknown_sweeps"]:
+            line += (
+                f"; cache check: {entry['cache_fail_sweeps']} failed, "
+                f"{entry['cache_unknown_sweeps']} unknown"
+            )
+        lines.append(line)
+    if cumulative is not None:
+        lines.append(f"  cumulative: ${cumulative:.4f}")
     print("\n".join(lines))
     return 0
 

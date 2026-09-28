@@ -122,6 +122,167 @@ def load_model_policy(start: Path | None = None) -> dict[str, list[str]]:
     return policy
 
 
+def load_pricing(start: Path | None = None) -> dict[str, Any] | None:
+    """Read ``[tool.windtunnel.ladder.pricing]``: $/hour and $/M tokens per model label.
+
+    None when the table is absent (the default): no ``cost_usd`` is computed
+    anywhere, and rates are never built in. A model label with no entry of
+    its own falls back to ``models.default`` when the table gives one.
+    Per label, ``cache_read_per_m`` is optional and falls back to that
+    label's own ``input_per_m`` when unset (a runtime that never reports a
+    cache split then still prices correctly — every input token at the one
+    rate).
+    """
+    pyproject, data = _ladder_table(start)
+    table = data.get("pricing")
+    if table is None:
+        return None
+    where = "[tool.windtunnel.ladder.pricing]"
+    if not isinstance(table, dict):
+        raise LadderError(f"{pyproject}: [tool.windtunnel.ladder] pricing must be a table")
+    time_per_hour = _non_negative(pyproject, where, "time_per_hour", table.get("time_per_hour", 0.0))
+    models_table = table.get("models", {})
+    if not isinstance(models_table, dict):
+        raise LadderError(f"{pyproject}: {where} models must be a table")
+    models: dict[str, dict[str, float]] = {}
+    for label, rates in models_table.items():
+        rates_where = f"{where}.models {label!r}"
+        if not isinstance(rates, dict):
+            raise LadderError(
+                f"{pyproject}: {rates_where} must be a table with input_per_m and output_per_m"
+            )
+        entry = {
+            "input_per_m": _non_negative(pyproject, rates_where, "input_per_m", rates.get("input_per_m")),
+            "output_per_m": _non_negative(
+                pyproject, rates_where, "output_per_m", rates.get("output_per_m")
+            ),
+        }
+        if "cache_read_per_m" in rates:
+            entry["cache_read_per_m"] = _non_negative(
+                pyproject, rates_where, "cache_read_per_m", rates.get("cache_read_per_m")
+            )
+        models[label] = entry
+    return {"time_per_hour": time_per_hour, "models": models}
+
+
+def _non_negative(pyproject: Path | None, where: str, key: str, value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        raise LadderError(f"{pyproject}: {where} {key} must be a non-negative number, got {value!r}")
+    return float(value)
+
+
+def compute_cost_usd(
+    *,
+    wall_s: float,
+    input_tokens: int | None,
+    cached_tokens: int | None,
+    output_tokens: int | None,
+    model: str | None,
+    pricing: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """$ cost of one sweep or ledger row, from its wall time and token usage.
+
+    None when pricing is not configured. ``input_tokens`` is the TOTAL
+    prompt tokens, including any ``cached_tokens`` (see
+    ``Trace.model_calls``) — never just the uncached remainder.
+
+    ``tokens_known`` is False (every token component null, ``total`` =
+    ``time``) when usage was not reported, or the model has no price and
+    no ``[pricing.models.default]`` fallback — never a guess.
+
+    When tokens are known but ``cached_tokens`` is None (the runtime
+    didn't report a per-call cache split), every input token is priced at
+    the uncached ``input_per_m`` rate and ``cache_split_known`` is False —
+    ``cache_read`` stays null rather than guessing the split.
+    """
+    if pricing is None:
+        return None
+    rates = pricing["models"].get(model) if model is not None else None
+    if rates is None:
+        rates = pricing["models"].get("default")
+    time_cost = round(wall_s / 3600.0 * pricing["time_per_hour"], 6)
+    if rates is None or not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
+        return {
+            "uncached_input": None,
+            "cache_read": None,
+            "output": None,
+            "time": time_cost,
+            "total": time_cost,
+            "tokens_known": False,
+            "cache_split_known": False,
+        }
+    cache_split_known = isinstance(cached_tokens, int)
+    output_cost = round(output_tokens * rates["output_per_m"] / 1e6, 6)
+    if cache_split_known:
+        assert isinstance(cached_tokens, int)
+        cache_read_per_m = rates.get("cache_read_per_m", rates["input_per_m"])
+        uncached_input_cost = round((input_tokens - cached_tokens) * rates["input_per_m"] / 1e6, 6)
+        cache_read_cost = round(cached_tokens * cache_read_per_m / 1e6, 6)
+    else:
+        uncached_input_cost = round(input_tokens * rates["input_per_m"] / 1e6, 6)
+        cache_read_cost = None
+    total = round(time_cost + uncached_input_cost + (cache_read_cost or 0.0) + output_cost, 6)
+    return {
+        "uncached_input": uncached_input_cost,
+        "cache_read": cache_read_cost,
+        "output": output_cost,
+        "time": time_cost,
+        "total": total,
+        "tokens_known": True,
+        "cache_split_known": cache_split_known,
+    }
+
+
+def cost_block(
+    question: str | None,
+    cost: dict[str, Any],
+    cost_usd: dict[str, Any] | None,
+    cache_check: dict[str, Any] | None = None,
+) -> str:
+    """The end-of-sweep cost block `wt run` prints.
+
+    tokens in (cached)/out, wall time, and — when priced — $ uncached input
+    + cache read + output + time = total. When ``cache_check`` is given
+    (the prompt-cache-miss check ran; see ``check_cache_misses``), also
+    prints its pass/fail/unknown verdict and one compact ``call k: cached
+    M/P`` line per checked call.
+    """
+    tokens_in, tokens_out = cost.get("input_tokens"), cost.get("output_tokens")
+    cached = cost.get("cached_tokens")
+    if type(tokens_in) is int and type(tokens_out) is int:
+        cache_part = f"{cached} cached" if type(cached) is int else "cache split unknown"
+        tokens = f"{tokens_in} in ({cache_part}) / {tokens_out} out"
+    else:
+        tokens = "unknown"
+    lines = [
+        f"wt run: cost — {question!r}" if question else "wt run: cost",
+        f"wt run:   tokens: {tokens}",
+        f"wt run:   wall: {float(cost.get('wall_s') or 0.0):.1f}s",
+    ]
+    if cost_usd is not None:
+        if not cost_usd["tokens_known"]:
+            lines.append(
+                f"wt run:   $ tokens unknown — time cost only: total {cost_usd['total']:.4f}"
+            )
+        elif cost_usd["cache_split_known"]:
+            lines.append(
+                f"wt run:   $ uncached {cost_usd['uncached_input']:.4f} + "
+                f"cache read {cost_usd['cache_read']:.4f} + output {cost_usd['output']:.4f} + "
+                f"time {cost_usd['time']:.4f} = total {cost_usd['total']:.4f}"
+            )
+        else:
+            lines.append(
+                f"wt run:   $ uncached {cost_usd['uncached_input']:.4f} (cache split unknown) + "
+                f"output {cost_usd['output']:.4f} + time {cost_usd['time']:.4f} "
+                f"= total {cost_usd['total']:.4f}"
+            )
+    if cache_check is not None:
+        reason = f" — {cache_check['reason']}" if cache_check.get("reason") else ""
+        lines.append(f"wt run:   cache check: {cache_check['result']}{reason}")
+        lines.extend(f"wt run:   {line}" for line in cache_check.get("calls", []))
+    return "\n".join(lines)
+
+
 def check_model_policy(tier: Tier, label: str | None, policy: dict[str, list[str]]) -> None:
     """Refuse a sweep whose model the tier's policy does not allow."""
     allowed = policy.get(tier)
@@ -156,8 +317,140 @@ def model_label(plugin: object, runtime_name: str) -> str | None:
     return str(label) if label else None
 
 
-def _ladder_table(start: Path | None) -> tuple[Path | None, dict[str, Any]]:
-    """Return the nearest pyproject.toml and its ``[tool.windtunnel.ladder]`` table.
+# ─── Prompt-cache-miss check ────────────────────────────────────────────────
+
+
+def load_cache_config(start: Path | None = None) -> dict[str, Any] | None:
+    """Read ``[tool.windtunnel.cache]``: the prompt-cache-miss check.
+
+    None when the table is absent (the default) — off: no check runs, and
+    no ``cache_check`` field is added to any record.
+
+    fail_on_miss (bool, default False): whether a miss (or an unknown
+    split) makes the sweep's ledger row count as a failure.
+    min_cached_ratio (number in [0, 1], default 0.5): every model call
+    after the first in a conversation must report
+    cached_tokens / prompt_tokens at or above this, or it is a miss.
+    """
+    pyproject, windtunnel = _windtunnel_table(start)
+    table = windtunnel.get("cache")
+    if table is None:
+        return None
+    where = "[tool.windtunnel.cache]"
+    if not isinstance(table, dict):
+        raise LadderError(f"{pyproject}: {where} must be a table")
+    fail_on_miss = table.get("fail_on_miss", False)
+    if not isinstance(fail_on_miss, bool):
+        raise LadderError(f"{pyproject}: {where} fail_on_miss must be a boolean")
+    ratio = table.get("min_cached_ratio", 0.5)
+    if isinstance(ratio, bool) or not isinstance(ratio, int | float) or not 0 <= ratio <= 1:
+        raise LadderError(
+            f"{pyproject}: {where} min_cached_ratio must be a number between 0 and 1, "
+            f"got {ratio!r}"
+        )
+    return {"fail_on_miss": fail_on_miss, "min_cached_ratio": float(ratio)}
+
+
+def call_usage_totals(model_calls: Sequence[dict[str, Any]] | None) -> dict[str, int | None]:
+    """Sum ``model_calls`` (see ``Trace.model_calls``) into one run's token totals.
+
+    {"input_tokens" (total prompt tokens, including cached), "cached_tokens",
+    "output_tokens"}. Each goes None, independently, as soon as any call is
+    missing that one field — a run whose totals are known but whose cache
+    split is unreported on one call still reports the totals; only
+    ``cached_tokens`` goes None. None (every field None) when there are no
+    calls to sum.
+    """
+    if not model_calls:
+        return {"input_tokens": None, "cached_tokens": None, "output_tokens": None}
+    call_keys = {
+        "input_tokens": "prompt_tokens",
+        "cached_tokens": "cached_tokens",
+        "output_tokens": "completion_tokens",
+    }
+    totals: dict[str, int | None] = dict.fromkeys(call_keys, 0)
+    for call in model_calls:
+        for total_key, call_key in call_keys.items():
+            value = call.get(call_key) if isinstance(call, dict) else None
+            current = totals[total_key]
+            totals[total_key] = (
+                current + value if current is not None and type(value) is int else None
+            )
+    return totals
+
+
+def check_cache_misses(
+    model_calls: Sequence[dict[str, Any]] | None, *, min_cached_ratio: float
+) -> dict[str, Any]:
+    """Evaluate the prompt-cache-miss check over one or more conversations.
+
+    ``model_calls`` may pool several runs' (or several scenarios') calls —
+    grouped here by each call's ``conversation`` field (Trace.model_calls),
+    in list order, so "the first call in a conversation" and "call k"
+    are always relative to one run's own turn sequence, however many
+    conversations are pooled. Every call after a conversation's first is
+    checked: cached_tokens / prompt_tokens must be at least
+    min_cached_ratio. Never derives or estimates a ratio, and never
+    compares prompts between calls — only the reported numbers.
+
+    Returns {"result": "pass" | "fail" | "unknown", "reason": str | None,
+    "calls": [one compact "call k: cached M/P" line per checked call]}.
+    "unknown" (never "pass") when a checked call did not report its cache
+    split; "fail" wins when both a miss and an unknown call occur.
+    """
+    if not model_calls:
+        return {"result": "pass", "reason": None, "calls": []}
+    seen: dict[Any, int] = {}
+    calls_out: list[str] = []
+    misses: list[str] = []
+    any_unknown = False
+    for call in model_calls:
+        conversation = call.get("conversation")
+        call_no = seen.get(conversation, 0) + 1
+        seen[conversation] = call_no
+        if call_no == 1:
+            continue  # the first call in a conversation is never checked
+        prompt, cached = call.get("prompt_tokens"), call.get("cached_tokens")
+        if type(prompt) is not int or type(cached) is not int:
+            any_unknown = True
+            calls_out.append(f"call {call_no}: cache split unknown")
+            continue
+        calls_out.append(f"call {call_no}: cached {cached}/{prompt}")
+        if prompt > 0 and cached / prompt < min_cached_ratio:
+            misses.append(
+                f"prompt cache miss at call {call_no}: cached {cached} of {prompt} prompt tokens"
+            )
+    if misses:
+        return {"result": "fail", "reason": "; ".join(misses), "calls": calls_out}
+    if any_unknown:
+        return {
+            "result": "unknown",
+            "reason": "cache split not reported for one or more calls",
+            "calls": calls_out,
+        }
+    return {"result": "pass", "reason": None, "calls": calls_out}
+
+
+def combine_cache_checks(checks: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """Combine several scenarios' ``check_cache_misses`` results for one sweep.
+
+    fail beats unknown beats pass; ``calls`` concatenates every scenario's
+    checked-call lines, in order.
+    """
+    if not checks:
+        return {"result": "pass", "reason": None, "calls": []}
+    calls = [line for check in checks for line in check.get("calls", [])]
+    fail_reasons = [check["reason"] for check in checks if check.get("result") == "fail"]
+    if fail_reasons:
+        return {"result": "fail", "reason": "; ".join(fail_reasons), "calls": calls}
+    unknown = next((check for check in checks if check.get("result") == "unknown"), None)
+    if unknown is not None:
+        return {"result": "unknown", "reason": unknown.get("reason"), "calls": calls}
+    return {"result": "pass", "reason": None, "calls": calls}
+
+
+def _pyproject_table(start: Path | None, keys: Sequence[str]) -> tuple[Path | None, dict[str, Any]]:
+    """Return the nearest pyproject.toml and the table at ``keys``.
 
     A missing file, a missing table, or unreadable TOML all give an empty
     table, so the defaults apply.
@@ -171,9 +464,19 @@ def _ladder_table(start: Path | None) -> tuple[Path | None, dict[str, Any]]:
         data: Any = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return pyproject, {}
-    for key in LADDER_CONFIG_TABLE:
+    for key in keys:
         data = data.get(key) if isinstance(data, dict) else None
     return pyproject, data if isinstance(data, dict) else {}
+
+
+def _ladder_table(start: Path | None) -> tuple[Path | None, dict[str, Any]]:
+    """Return the nearest pyproject.toml and its ``[tool.windtunnel.ladder]`` table."""
+    return _pyproject_table(start, LADDER_CONFIG_TABLE)
+
+
+def _windtunnel_table(start: Path | None) -> tuple[Path | None, dict[str, Any]]:
+    """Return the nearest pyproject.toml and its ``[tool.windtunnel]`` table."""
+    return _pyproject_table(start, ("tool", "windtunnel"))
 
 
 def _nearest_pyproject(start: Path) -> Path | None:
@@ -828,9 +1131,16 @@ def experiment_record(
     if_pass: str | None = None,
     if_fail: str | None = None,
     cost: dict[str, Any] | None = None,
+    cost_usd: dict[str, Any] | None = None,
+    cache_check: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The ``experiment`` object written into each of the sweep's ledger rows."""
-    return {
+    """The ``experiment`` object written into each of the sweep's ledger rows.
+
+    ``cost_usd`` (see ``compute_cost_usd``) and ``cache_check`` (see
+    ``check_cache_misses``) are only present when pricing / the cache check
+    are configured — their absence, not a null, is what "off" looks like.
+    """
+    record: dict[str, Any] = {
         "counts_as_failure": counts_as_failure,
         "tier": tier,
         "question": question,
@@ -850,6 +1160,11 @@ def experiment_record(
         "earned_by": decision.earned_by if decision is not None else None,
         "excluded_failing": list(decision.excluded_failing) if decision else [],
     }
+    if cost_usd is not None:
+        record["cost_usd"] = cost_usd
+    if cache_check is not None:
+        record["cache_check"] = cache_check
+    return record
 
 
 # ─── Cost and value: the experiments record ───────────────────────────────────
@@ -859,8 +1174,13 @@ EXPERIMENTS_FORMAT_VERSION = 1
 
 
 def sum_tokens(usages: Iterable[dict[str, Any] | None]) -> dict[str, int | None]:
-    """Sum token usage; a field is None as soon as any part did not report it."""
-    totals: dict[str, int | None] = {"input_tokens": 0, "output_tokens": 0}
+    """Sum token usage; a field is None as soon as any part did not report it.
+
+    input_tokens is the TOTAL prompt tokens, including cached_tokens — see
+    Trace.model_calls / call_usage_totals. Each of the three fields goes
+    None independently.
+    """
+    totals: dict[str, int | None] = {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0}
     for usage in usages:
         for key in totals:
             value = usage.get(key) if isinstance(usage, dict) else None
@@ -938,9 +1258,14 @@ def ladder_summary(rows: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             continue
         tier = str(row.get("tier"))
         entry = summary.setdefault(tier, {
-            "sweeps": 0, "wall_s": 0.0, "input_tokens": 0, "output_tokens": 0,
-            "tokens_reported": 0, "predictions": 0, "predictions_held": 0,
+            "sweeps": 0, "wall_s": 0.0, "input_tokens": 0, "cached_tokens": 0,
+            "output_tokens": 0, "tokens_reported": 0, "cached_reported": 0,
+            "predictions": 0, "predictions_held": 0,
             "reviewed": 0, "changed_decision": 0,
+            "cost_usd": 0.0, "priced_sweeps": 0, "tokens_unknown_sweeps": 0,
+            "uncached_input_usd": 0.0, "cache_read_usd": 0.0,
+            "output_usd": 0.0, "time_usd": 0.0,
+            "cache_fail_sweeps": 0, "cache_unknown_sweeps": 0,
         })
         entry["sweeps"] += 1
         raw_cost = row.get("cost")
@@ -950,6 +1275,32 @@ def ladder_summary(rows: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             entry["tokens_reported"] += 1
             entry["input_tokens"] += cost["input_tokens"]
             entry["output_tokens"] += cost["output_tokens"]
+        if type(cost.get("cached_tokens")) is int:
+            entry["cached_reported"] += 1
+            entry["cached_tokens"] += cost["cached_tokens"]
+        cost_usd = row.get("cost_usd")
+        if isinstance(cost_usd, dict) and isinstance(cost_usd.get("total"), int | float):
+            entry["cost_usd"] = round(entry["cost_usd"] + float(cost_usd["total"]), 6)
+            entry["priced_sweeps"] += 1
+            entry["time_usd"] = round(entry["time_usd"] + float(cost_usd.get("time") or 0.0), 6)
+            if isinstance(cost_usd.get("uncached_input"), int | float):
+                entry["uncached_input_usd"] = round(
+                    entry["uncached_input_usd"] + float(cost_usd["uncached_input"]), 6
+                )
+            if isinstance(cost_usd.get("cache_read"), int | float):
+                entry["cache_read_usd"] = round(
+                    entry["cache_read_usd"] + float(cost_usd["cache_read"]), 6
+                )
+            if isinstance(cost_usd.get("output"), int | float):
+                entry["output_usd"] = round(entry["output_usd"] + float(cost_usd["output"]), 6)
+            if not cost_usd.get("tokens_known"):
+                entry["tokens_unknown_sweeps"] += 1
+        cache_check = row.get("cache_check")
+        if isinstance(cache_check, dict):
+            if cache_check.get("result") == "fail":
+                entry["cache_fail_sweeps"] += 1
+            elif cache_check.get("result") == "unknown":
+                entry["cache_unknown_sweeps"] += 1
         if isinstance(row.get("prediction_held"), bool):
             entry["predictions"] += 1
             entry["predictions_held"] += int(row["prediction_held"])
@@ -958,3 +1309,11 @@ def ladder_summary(rows: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             entry["reviewed"] += 1
             entry["changed_decision"] += int(reviews[sweep_id])
     return {tier: summary[tier] for tier in (*TIER_ORDER, *summary) if tier in summary}
+
+
+def cumulative_cost_usd(summary: dict[str, dict[str, Any]]) -> float | None:
+    """Total $ across every tier's priced sweeps, or None if none were priced."""
+    priced = [entry for entry in summary.values() if entry.get("priced_sweeps")]
+    if not priced:
+        return None
+    return round(sum(float(entry["cost_usd"]) for entry in priced), 6)

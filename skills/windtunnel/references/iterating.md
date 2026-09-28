@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/iterating.md at 175052862dcb — do not edit; edit docs/iterating.md. -->
+<!-- GENERATED from docs/iterating.md at 1fd770c0251b — do not edit; edit docs/iterating.md. -->
 ---
 description: "Tight iteration loop for people and coding agents: follow sweeps live, tabulate results and metrics per label, compare labels, and rescore saved traces."
 ---
@@ -50,6 +50,44 @@ the runtime reports them) in the ledger and in `experiments.ndjsonl`.
 `wt review <sweep> --decision "..."` (or `--no-change`) records what it did;
 `wt results --ladder` shows, per tier, what the sweeps cost and how often they
 changed a decision.
+
+An optional `[tool.windtunnel.ladder.pricing]` turns that cost into dollars —
+a `time_per_hour` rate and, per model label, three `$`/million-token rates
+(uncached input, an optional cheaper cache-read rate, and output):
+
+```toml
+[tool.windtunnel.ladder.pricing]
+time_per_hour = 60.0    # example rate, not a real price
+
+[tool.windtunnel.ladder.pricing.models]
+"target-model" = { input_per_m = 1.00, cache_read_per_m = 0.10, output_per_m = 4.00 }
+default = { input_per_m = 1.00, cache_read_per_m = 0.10, output_per_m = 4.00 }
+```
+
+With pricing configured, `wt run` prints a $ breakdown (uncached input, cache
+read, output, time, total) when each sweep ends, and `wt results --ladder`
+adds the same breakdown per tier and a cumulative total, flagging sweeps
+whose tokens (or cache split) were never reported. With no pricing table,
+both commands show tokens in (cached)/out and wall time only; no rates are
+built in. See
+[Pricing](design/0005-experiment-ladder.md#pricing-turning-cost-into-dollars).
+
+A runtime that reports usage per model call, not just per run, lets `wt`
+check that a multi-turn conversation is actually hitting its prompt cache.
+`[tool.windtunnel.cache]` is optional and off by default:
+
+```toml
+[tool.windtunnel.cache]
+fail_on_miss = true      # a miss (or unreported cache split) fails the sweep
+min_cached_ratio = 0.5   # cached_tokens / prompt_tokens floor, per call
+```
+
+With it configured, every model call after a conversation's first must meet
+`min_cached_ratio` or it is a miss, recorded per sweep and printed in the
+cost block as `cache check: pass|fail|unknown` plus one `call k: cached M/P`
+line per checked call — `unknown` (never a silent pass) when a runtime
+doesn't report a call's cache split. See
+[Per-call usage and the prompt-cache-miss check](design/0005-experiment-ladder.md#per-call-usage-and-the-prompt-cache-miss-check).
 
 ## 1. Label every round
 

@@ -157,6 +157,39 @@ class Trace:
         reported them: {"input_tokens": int, "output_tokens": int}, summed
         over every send. None when any send reported no usage — a partial
         sum would understate the cost, so it is never recorded as one.
+        input_tokens is the TOTAL prompt tokens for that send, including
+        any tokens served from a prompt cache — see model_calls for the
+        cached/uncached split.
+
+    model_calls: one entry per send in this run's conversation (turn order),
+        when the runtime reported per-call usage: {"conversation": str,
+        "prompt_tokens": int | None, "cached_tokens": int | None,
+        "completion_tokens": int | None}. "conversation" is this run's
+        session_id — every entry in one trace shares it; a caller that
+        pools model_calls from several runs (a scenario's several traces,
+        or a sweep's several scenarios) uses it to tell one run's calls
+        from another's when checking "every call after the first in a
+        conversation" (the prompt-cache-miss check, see
+        windtunnel._cli.ladder.check_cache_misses). prompt_tokens is the
+        same TOTAL-including-cached figure as usage["input_tokens"]. A
+        field is None, never guessed, when that one call didn't report it
+        — unlike usage, one call's gap does not blank the others. None
+        (not an empty list) when the runtime reported no usage at all.
+
+        One send() can make several inference calls (an agent loop's tool
+        call -> result -> call-again, inside one turn) — a single
+        aggregated entry per send would dilute a miss on one of them into
+        the turn's overall ratio. A runtime reports each one by nesting a
+        list under the response's usage: response["usage"]["calls"] = [{...
+        one usage dict per inference call ...}, ...]. When present, each
+        list entry becomes its own model_calls entry (normalized the same
+        way as a per-send usage dict) instead of the one aggregated entry,
+        in order. Each entry may carry its own "conversation" string,
+        overriding this run's session_id default — for a call that starts
+        its own side conversation (e.g. a forked review call), so its own
+        first call is judged as a first call of its own conversation, not
+        folded into the run's. Without "calls", one entry per send, as
+        above.
     """
     scenario_id: str
     agent_id: str
@@ -173,6 +206,7 @@ class Trace:
     observations: dict[str, Any] = field(default_factory=dict)
     surface: dict[str, Any] | None = None
     usage: dict[str, int] | None = None
+    model_calls: list[dict[str, Any]] | None = None
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     def _to_dict(self) -> dict[str, Any]:
@@ -194,6 +228,7 @@ class Trace:
             "observations": self.observations,
             "surface": self.surface,
             "usage": self.usage,
+            "model_calls": self.model_calls,
         }
 
     @classmethod
@@ -226,6 +261,7 @@ class Trace:
             observations=d.get("observations") or {},
             surface=d.get("surface"),
             usage=d.get("usage"),
+            model_calls=d.get("model_calls"),
         )
 
 

@@ -1061,9 +1061,13 @@ class TestCost:
     def test_sum_tokens_is_none_once_any_part_did_not_report(self) -> None:
         from windtunnel._cli.ladder import sum_tokens
 
-        both = {"input_tokens": 1, "output_tokens": 2}
-        assert sum_tokens([both, both]) == {"input_tokens": 2, "output_tokens": 4}
-        assert sum_tokens([both, None]) == {"input_tokens": None, "output_tokens": None}
+        both = {"input_tokens": 1, "cached_tokens": 0, "output_tokens": 2}
+        assert sum_tokens([both, both]) == {
+            "input_tokens": 2, "cached_tokens": 0, "output_tokens": 4,
+        }
+        assert sum_tokens([both, None]) == {
+            "input_tokens": None, "cached_tokens": None, "output_tokens": None,
+        }
 
     def test_usage_survives_a_save_and_load(self, tmp_path: Path) -> None:
         from windtunnel.api.trace import load_trace, save_trace
@@ -1073,6 +1077,46 @@ class TestCost:
         ] * 2))
         save_trace(trace, tmp_path / "t.json")
         assert load_trace(tmp_path / "t.json").usage == {"input_tokens": 2, "output_tokens": 2}
+
+    def test_model_calls_carries_one_normalized_entry_per_send(self) -> None:
+        trace = _two_turns(_UsageHandle([
+            {"usage": {"prompt_tokens": 100, "completion_tokens": 10}},
+            {"usage": {"input_tokens": 205, "cached_tokens": 100, "output_tokens": 5}},
+        ]))
+        assert trace.model_calls is not None
+        assert len(trace.model_calls) == 2
+        conversation = trace.model_calls[0]["conversation"]
+        assert trace.model_calls[0] == {
+            "conversation": conversation, "prompt_tokens": 100,
+            "cached_tokens": None, "completion_tokens": 10,
+        }
+        assert trace.model_calls[1] == {
+            "conversation": conversation, "prompt_tokens": 205,
+            "cached_tokens": 100, "completion_tokens": 5,
+        }
+
+    def test_model_calls_is_none_when_the_runtime_reports_no_usage(self) -> None:
+        trace = _two_turns(_UsageHandle([{}, {}]))
+        assert trace.model_calls is None
+
+    def test_model_calls_accepts_cache_read_input_tokens_and_details_spelling(self) -> None:
+        trace = _two_turns(_UsageHandle([
+            {"usage": {"prompt_tokens": 50, "completion_tokens": 5,
+                       "cache_read_input_tokens": 20}},
+            {"usage": {"prompt_tokens": 60, "completion_tokens": 5,
+                       "prompt_tokens_details": {"cached_tokens": 30}}},
+        ]))
+        calls = trace.model_calls
+        assert calls[0]["cached_tokens"] == 20
+        assert calls[1]["cached_tokens"] == 30
+
+    def test_model_calls_sums_separate_input_and_cache_read_spelling(self) -> None:
+        from windtunnel.api.runner import _normalize_call_usage
+
+        # Some wire shapes report "input" as uncached-only, with the cache
+        # read kept separate ("cacheRead") rather than nested in the total.
+        normalized = _normalize_call_usage({"input": 80, "cacheRead": 20, "output": 5})
+        assert normalized == {"prompt_tokens": 100, "cached_tokens": 20, "completion_tokens": 5}
 
 
 class TestModel:
@@ -1144,6 +1188,635 @@ class TestModel:
         )
         with pytest.raises(LadderError, match="non-empty list"):
             load_model_policy(tmp_path)
+
+
+class TestPricing:
+    """[tool.windtunnel.ladder.pricing]: $/hour and $/M tokens, and the $ they produce."""
+
+    def test_no_pricing_table_gives_none(self, tmp_path: Path) -> None:
+        from windtunnel._cli.ladder import load_pricing
+
+        assert load_pricing(tmp_path) is None
+
+    def test_pricing_reads_rates_and_keeps_a_default_fallback(self, tmp_path: Path) -> None:
+        from windtunnel._cli.ladder import load_pricing
+
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.windtunnel.ladder.pricing]\n"
+            "time_per_hour = 75.0\n"
+            "[tool.windtunnel.ladder.pricing.models]\n"
+            '"big-model" = { input_per_m = 1.0, output_per_m = 2.0 }\n'
+            "default = { input_per_m = 0.5, output_per_m = 1.5 }\n"
+        )
+        assert load_pricing(tmp_path) == {
+            "time_per_hour": 75.0,
+            "models": {
+                "big-model": {"input_per_m": 1.0, "output_per_m": 2.0},
+                "default": {"input_per_m": 0.5, "output_per_m": 1.5},
+            },
+        }
+
+    def test_invalid_pricing_is_refused_not_ignored(self, tmp_path: Path) -> None:
+        from windtunnel._cli.ladder import LadderError, load_pricing
+
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.windtunnel.ladder.pricing]\ntime_per_hour = -1.0\n"
+        )
+        with pytest.raises(LadderError, match="time_per_hour"):
+            load_pricing(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.windtunnel.ladder.pricing]\n"
+            "[tool.windtunnel.ladder.pricing.models]\n"
+            '"m" = { input_per_m = -0.1, output_per_m = 1.0 }\n'
+        )
+        with pytest.raises(LadderError, match="input_per_m"):
+            load_pricing(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.windtunnel.ladder.pricing]\nmodels = 1\n"
+        )
+        with pytest.raises(LadderError, match="models must be a table"):
+            load_pricing(tmp_path)
+
+    def test_pricing_accepts_an_optional_cache_read_rate(self, tmp_path: Path) -> None:
+        from windtunnel._cli.ladder import load_pricing
+
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.windtunnel.ladder.pricing.models]\n"
+            '"big" = { input_per_m = 1.0, output_per_m = 2.0, cache_read_per_m = 0.1 }\n'
+        )
+        assert load_pricing(tmp_path)["models"]["big"] == {
+            "input_per_m": 1.0, "output_per_m": 2.0, "cache_read_per_m": 0.1,
+        }
+
+    def test_compute_cost_usd_splits_uncached_cache_read_and_output(self) -> None:
+        from windtunnel._cli.ladder import compute_cost_usd
+
+        pricing = {
+            "time_per_hour": 3600.0,
+            "models": {"big": {"input_per_m": 1.0, "output_per_m": 2.0, "cache_read_per_m": 0.1}},
+        }
+        cost = compute_cost_usd(
+            wall_s=1.0, input_tokens=1_000_000, cached_tokens=400_000, output_tokens=500_000,
+            model="big", pricing=pricing,
+        )
+        assert cost == {
+            "uncached_input": 0.6, "cache_read": 0.04, "output": 1.0, "time": 1.0,
+            "total": 2.64, "tokens_known": True, "cache_split_known": True,
+        }
+
+    def test_compute_cost_usd_falls_back_to_input_rate_without_a_cache_rate(self) -> None:
+        from windtunnel._cli.ladder import compute_cost_usd
+
+        pricing = {
+            "time_per_hour": 0.0,
+            "models": {"big": {"input_per_m": 2.0, "output_per_m": 1.0}},
+        }
+        cost = compute_cost_usd(
+            wall_s=0.0, input_tokens=1_000_000, cached_tokens=500_000, output_tokens=0,
+            model="big", pricing=pricing,
+        )
+        # No cache_read_per_m configured: cache reads price at input_per_m too.
+        assert cost["cache_read"] == 1.0 and cost["uncached_input"] == 1.0
+
+    def test_compute_cost_usd_falls_back_to_the_default_model(self) -> None:
+        from windtunnel._cli.ladder import compute_cost_usd
+
+        pricing = {"time_per_hour": 0.0, "models": {"default": {"input_per_m": 1.0, "output_per_m": 1.0}}}
+        cost = compute_cost_usd(
+            wall_s=0.0, input_tokens=1_000_000, cached_tokens=0, output_tokens=0,
+            model="unlisted", pricing=pricing,
+        )
+        assert cost["uncached_input"] == 1.0 and cost["total"] == 1.0 and cost["tokens_known"]
+
+    def test_compute_cost_usd_prices_all_input_at_the_uncached_rate_when_cache_split_unknown(
+        self,
+    ) -> None:
+        from windtunnel._cli.ladder import compute_cost_usd
+
+        pricing = {
+            "time_per_hour": 0.0,
+            "models": {"big": {"input_per_m": 1.0, "output_per_m": 1.0, "cache_read_per_m": 0.1}},
+        }
+        cost = compute_cost_usd(
+            wall_s=0.0, input_tokens=1_000_000, cached_tokens=None, output_tokens=0,
+            model="big", pricing=pricing,
+        )
+        assert cost == {
+            "uncached_input": 1.0, "cache_read": None, "output": 0.0, "time": 0.0,
+            "total": 1.0, "tokens_known": True, "cache_split_known": False,
+        }
+
+    def test_compute_cost_usd_is_time_only_when_tokens_or_price_are_missing(self) -> None:
+        from windtunnel._cli.ladder import compute_cost_usd
+
+        pricing = {"time_per_hour": 3600.0, "models": {}}
+        expected = {
+            "uncached_input": None, "cache_read": None, "output": None, "time": 2.0,
+            "total": 2.0, "tokens_known": False, "cache_split_known": False,
+        }
+        # no usage reported at all
+        assert compute_cost_usd(
+            wall_s=2.0, input_tokens=None, cached_tokens=None, output_tokens=None,
+            model="big", pricing=pricing,
+        ) == expected
+        # usage reported, but the model has no price and there is no default
+        assert compute_cost_usd(
+            wall_s=2.0, input_tokens=100, cached_tokens=0, output_tokens=50,
+            model="big", pricing=pricing,
+        ) == expected
+
+    def test_compute_cost_usd_is_none_without_pricing(self) -> None:
+        from windtunnel._cli.ladder import compute_cost_usd
+
+        assert compute_cost_usd(
+            wall_s=1.0, input_tokens=1, cached_tokens=0, output_tokens=1, model="x", pricing=None
+        ) is None
+
+    def test_cost_block_shows_tokens_in_cached_out_wall_and_dollars(self) -> None:
+        from windtunnel._cli.ladder import cost_block
+
+        cost = {"wall_s": 12.3, "input_tokens": 100, "cached_tokens": 40, "output_tokens": 50}
+        cost_usd = {
+            "uncached_input": 0.006, "cache_read": 0.0004, "output": 0.01, "time": 0.02,
+            "total": 0.0364, "tokens_known": True, "cache_split_known": True,
+        }
+        block = cost_block("does it help?", cost, cost_usd)
+        assert "cost — 'does it help?'" in block
+        assert "100 in (40 cached) / 50 out" in block
+        assert "12.3s" in block
+        assert (
+            "$ uncached 0.0060 + cache read 0.0004 + output 0.0100 + time 0.0200 "
+            "= total 0.0364" in block
+        )
+
+    def test_cost_block_flags_unknown_cache_split_priced_at_the_input_rate(self) -> None:
+        from windtunnel._cli.ladder import cost_block
+
+        cost = {"wall_s": 1.0, "input_tokens": 100, "cached_tokens": None, "output_tokens": 50}
+        cost_usd = {
+            "uncached_input": 0.01, "cache_read": None, "output": 0.005, "time": 0.01,
+            "total": 0.025, "tokens_known": True, "cache_split_known": False,
+        }
+        block = cost_block(None, cost, cost_usd)
+        assert "100 in (cache split unknown) / 50 out" in block
+        assert (
+            "$ uncached 0.0100 (cache split unknown) + output 0.0050 + time 0.0100 "
+            "= total 0.0250" in block
+        )
+
+    def test_cost_block_flags_unknown_tokens_and_skips_dollars_unpriced(self) -> None:
+        from windtunnel._cli.ladder import cost_block
+
+        cost = {"wall_s": 1.0, "input_tokens": None, "cached_tokens": None, "output_tokens": None}
+        unpriced = cost_block(None, cost, None)
+        assert "tokens: unknown" in unpriced
+        assert "$" not in unpriced
+        cost_usd = {
+            "uncached_input": None, "cache_read": None, "output": None, "time": 0.01,
+            "total": 0.01, "tokens_known": False, "cache_split_known": False,
+        }
+        priced = cost_block(None, cost, cost_usd)
+        assert "tokens unknown — time cost only: total 0.0100" in priced
+
+    def test_cost_block_shows_the_cache_check_verdict_and_per_call_lines(self) -> None:
+        from windtunnel._cli.ladder import cost_block
+
+        cost = {"wall_s": 1.0, "input_tokens": 100, "cached_tokens": 5, "output_tokens": 10}
+        cache_check = {
+            "result": "fail",
+            "reason": "prompt cache miss at call 2: cached 5 of 50 prompt tokens",
+            "calls": ["call 2: cached 5/50"],
+        }
+        block = cost_block(None, cost, None, cache_check)
+        assert "cache check: fail — prompt cache miss at call 2: cached 5 of 50" in block
+        assert "call 2: cached 5/50" in block
+
+    def test_ladder_summary_sums_cost_usd_per_tier_and_flags_unknown_tokens(self) -> None:
+        from windtunnel._cli.ladder import cumulative_cost_usd, ladder_summary
+
+        rows = [
+            {"kind": "sweep", "tier": "focused", "sweep_id": "a",
+             "cost": {"wall_s": 1.0}, "cost_usd": {"total": 1.5, "tokens_known": True}},
+            {"kind": "sweep", "tier": "focused", "sweep_id": "b",
+             "cost": {"wall_s": 1.0}, "cost_usd": {"total": 0.5, "tokens_known": False}},
+            {"kind": "sweep", "tier": "regression", "sweep_id": "c", "cost": {"wall_s": 1.0}},
+        ]
+        summary = ladder_summary(rows)
+        assert summary["focused"]["cost_usd"] == 2.0
+        assert summary["focused"]["priced_sweeps"] == 2
+        assert summary["focused"]["tokens_unknown_sweeps"] == 1
+        assert summary["regression"]["priced_sweeps"] == 0
+        assert cumulative_cost_usd(summary) == 2.0
+
+    def test_cumulative_cost_usd_is_none_when_nothing_priced(self) -> None:
+        from windtunnel._cli.ladder import cumulative_cost_usd
+
+        assert cumulative_cost_usd({"focused": {"priced_sweeps": 0, "cost_usd": 0.0}}) is None
+
+
+class TestCacheConfig:
+    """[tool.windtunnel.cache]: the prompt-cache-miss check's config."""
+
+    def test_no_cache_table_gives_none(self, tmp_path: Path) -> None:
+        from windtunnel._cli.ladder import load_cache_config
+
+        assert load_cache_config(tmp_path) is None
+
+    def test_defaults_are_off_and_half(self, tmp_path: Path) -> None:
+        from windtunnel._cli.ladder import load_cache_config
+
+        (tmp_path / "pyproject.toml").write_text("[tool.windtunnel.cache]\n")
+        assert load_cache_config(tmp_path) == {"fail_on_miss": False, "min_cached_ratio": 0.5}
+
+    def test_reads_fail_on_miss_and_ratio(self, tmp_path: Path) -> None:
+        from windtunnel._cli.ladder import load_cache_config
+
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.windtunnel.cache]\nfail_on_miss = true\nmin_cached_ratio = 0.8\n"
+        )
+        assert load_cache_config(tmp_path) == {"fail_on_miss": True, "min_cached_ratio": 0.8}
+
+    def test_invalid_config_is_refused_not_ignored(self, tmp_path: Path) -> None:
+        from windtunnel._cli.ladder import LadderError, load_cache_config
+
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.windtunnel.cache]\nmin_cached_ratio = 1.5\n"
+        )
+        with pytest.raises(LadderError, match="min_cached_ratio"):
+            load_cache_config(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.windtunnel.cache]\nfail_on_miss = 1\n"
+        )
+        with pytest.raises(LadderError, match="fail_on_miss"):
+            load_cache_config(tmp_path)
+
+
+class TestCallUsageTotals:
+    def test_sums_prompt_cached_and_completion_across_calls(self) -> None:
+        from windtunnel._cli.ladder import call_usage_totals
+
+        calls = [
+            {"conversation": "a", "prompt_tokens": 100, "cached_tokens": 0, "completion_tokens": 10},
+            {"conversation": "a", "prompt_tokens": 150, "cached_tokens": 90, "completion_tokens": 8},
+        ]
+        assert call_usage_totals(calls) == {
+            "input_tokens": 250, "cached_tokens": 90, "output_tokens": 18,
+        }
+
+    def test_cached_goes_unknown_independently_of_the_totals(self) -> None:
+        from windtunnel._cli.ladder import call_usage_totals
+
+        calls = [
+            {"conversation": "a", "prompt_tokens": 100, "cached_tokens": None, "completion_tokens": 10},
+            {"conversation": "a", "prompt_tokens": 150, "cached_tokens": 90, "completion_tokens": 8},
+        ]
+        totals = call_usage_totals(calls)
+        assert totals == {"input_tokens": 250, "cached_tokens": None, "output_tokens": 18}
+
+    def test_none_when_there_are_no_calls(self) -> None:
+        from windtunnel._cli.ladder import call_usage_totals
+
+        assert call_usage_totals(None) == {
+            "input_tokens": None, "cached_tokens": None, "output_tokens": None,
+        }
+        assert call_usage_totals([]) == {
+            "input_tokens": None, "cached_tokens": None, "output_tokens": None,
+        }
+
+
+class TestCacheMissCheck:
+    """check_cache_misses: every model call after the first in a conversation."""
+
+    def test_a_call_below_the_ratio_fails_with_the_call_number_and_counts(self) -> None:
+        from windtunnel._cli.ladder import check_cache_misses
+
+        calls = [
+            {"conversation": "c1", "prompt_tokens": 100, "cached_tokens": 0, "completion_tokens": 5},
+            {"conversation": "c1", "prompt_tokens": 50, "cached_tokens": 5, "completion_tokens": 5},
+        ]
+        result = check_cache_misses(calls, min_cached_ratio=0.5)
+        assert result["result"] == "fail"
+        assert result["reason"] == "prompt cache miss at call 2: cached 5 of 50 prompt tokens"
+        assert result["calls"] == ["call 2: cached 5/50"]
+
+    def test_the_first_call_in_a_conversation_is_never_checked(self) -> None:
+        from windtunnel._cli.ladder import check_cache_misses
+
+        # call 1 is 0 cached of 100 — would fail any positive ratio, but it's
+        # never checked, and there is no call 2 to check either.
+        calls = [
+            {"conversation": "c1", "prompt_tokens": 100, "cached_tokens": 0, "completion_tokens": 5},
+        ]
+        assert check_cache_misses(calls, min_cached_ratio=0.5) == {
+            "result": "pass", "reason": None, "calls": [],
+        }
+
+    def test_a_call_at_or_above_the_ratio_passes(self) -> None:
+        from windtunnel._cli.ladder import check_cache_misses
+
+        calls = [
+            {"conversation": "c1", "prompt_tokens": 100, "cached_tokens": 0, "completion_tokens": 5},
+            {"conversation": "c1", "prompt_tokens": 100, "cached_tokens": 50, "completion_tokens": 5},
+        ]
+        result = check_cache_misses(calls, min_cached_ratio=0.5)
+        assert result == {"result": "pass", "reason": None, "calls": ["call 2: cached 50/100"]}
+
+    def test_an_unreported_cache_split_is_unknown_never_pass(self) -> None:
+        from windtunnel._cli.ladder import check_cache_misses
+
+        calls = [
+            {"conversation": "c1", "prompt_tokens": 100, "cached_tokens": 0, "completion_tokens": 5},
+            {"conversation": "c1", "prompt_tokens": 100, "cached_tokens": None, "completion_tokens": 5},
+        ]
+        result = check_cache_misses(calls, min_cached_ratio=0.5)
+        assert result["result"] == "unknown"
+        assert result["calls"] == ["call 2: cache split unknown"]
+
+    def test_call_numbering_and_the_first_call_reset_per_conversation(self) -> None:
+        from windtunnel._cli.ladder import check_cache_misses
+
+        # Two runs of the same scenario pooled into one list (their
+        # "conversation" ids differ): each has its own "first call".
+        calls = [
+            {"conversation": "run-1", "prompt_tokens": 100, "cached_tokens": 0, "completion_tokens": 5},
+            {"conversation": "run-2", "prompt_tokens": 200, "cached_tokens": 0, "completion_tokens": 5},
+            {"conversation": "run-1", "prompt_tokens": 100, "cached_tokens": 90, "completion_tokens": 5},
+            {"conversation": "run-2", "prompt_tokens": 200, "cached_tokens": 10, "completion_tokens": 5},
+        ]
+        result = check_cache_misses(calls, min_cached_ratio=0.5)
+        assert result["result"] == "fail"
+        assert "prompt cache miss at call 2: cached 10 of 200 prompt tokens" in result["reason"]
+        assert set(result["calls"]) == {"call 2: cached 90/100", "call 2: cached 10/200"}
+
+    def test_no_calls_is_a_trivial_pass(self) -> None:
+        from windtunnel._cli.ladder import check_cache_misses
+
+        assert check_cache_misses(None, min_cached_ratio=0.5) == {
+            "result": "pass", "reason": None, "calls": [],
+        }
+
+    def test_combine_cache_checks_fail_beats_unknown_beats_pass(self) -> None:
+        from windtunnel._cli.ladder import combine_cache_checks
+
+        passing = {"result": "pass", "reason": None, "calls": ["call 2: cached 90/100"]}
+        unknown = {"result": "unknown", "reason": "cache split not reported for one or more calls",
+                   "calls": ["call 2: cache split unknown"]}
+        failing = {"result": "fail", "reason": "prompt cache miss at call 2: cached 1 of 100 "
+                   "prompt tokens", "calls": ["call 2: cached 1/100"]}
+
+        assert combine_cache_checks([passing, unknown])["result"] == "unknown"
+        assert combine_cache_checks([passing, unknown, failing])["result"] == "fail"
+        assert combine_cache_checks([passing, passing]) == {
+            "result": "pass", "reason": None,
+            "calls": ["call 2: cached 90/100", "call 2: cached 90/100"],
+        }
+        assert combine_cache_checks([]) == {"result": "pass", "reason": None, "calls": []}
+
+
+class TestPerCallUsageEndToEnd:
+    """A fake runtime emitting per-call usage, through run_scenario end to end.
+
+    Exercises the real production path — AgentHandle.send() usage dicts ->
+    _run_once -> Trace.model_calls -> call_usage_totals / compute_cost_usd /
+    check_cache_misses — not a hand-built Trace.
+    """
+
+    def test_a_three_call_conversation_prices_and_flags_a_cache_miss(self) -> None:
+        from windtunnel._cli.ladder import call_usage_totals, check_cache_misses, compute_cost_usd
+
+        scenario_helper = _UsageHandle([
+            # call 1: never checked for cache misses (nothing to cache yet).
+            {"usage": {"prompt_tokens": 1000, "cached_tokens": 0, "completion_tokens": 50}},
+            # call 2: reports a cache split below any reasonable ratio (miss).
+            {"usage": {"input_tokens": 1200, "cached_tokens": 100, "output_tokens": 40}},
+            # call 3: a healthy cache hit.
+            {"usage": {"prompt_tokens": 1500, "cached_tokens": 1300, "completion_tokens": 30}},
+        ])
+
+        from windtunnel.api.runner import run_scenario
+        from windtunnel.api.scenario import Scenario
+
+        scenario = Scenario(
+            name="three-turn", prompt="c", user_turns=["a", "b", "c"], target_facts=[["ok"]],
+        )
+        trace = run_scenario(scenario, _Runtime(scenario_helper)).runs[0].trace
+
+        assert trace.model_calls is not None and len(trace.model_calls) == 3
+        conversation = trace.model_calls[0]["conversation"]
+        assert all(call["conversation"] == conversation for call in trace.model_calls)
+
+        totals = call_usage_totals(trace.model_calls)
+        assert totals == {"input_tokens": 3700, "cached_tokens": 1400, "output_tokens": 120}
+
+        pricing = {
+            "time_per_hour": 0.0,
+            "models": {"big": {"input_per_m": 1.0, "output_per_m": 1.0, "cache_read_per_m": 0.1}},
+        }
+        cost_usd = compute_cost_usd(
+            wall_s=0.0, input_tokens=totals["input_tokens"], cached_tokens=totals["cached_tokens"],
+            output_tokens=totals["output_tokens"], model="big", pricing=pricing,
+        )
+        assert cost_usd["cache_split_known"] is True
+        assert cost_usd["uncached_input"] == pytest.approx((3700 - 1400) / 1e6)
+        assert cost_usd["cache_read"] == pytest.approx(1400 * 0.1 / 1e6)
+
+        check = check_cache_misses(trace.model_calls, min_cached_ratio=0.5)
+        assert check["result"] == "fail"
+        assert check["reason"] == "prompt cache miss at call 2: cached 100 of 1200 prompt tokens"
+        assert check["calls"] == [
+            "call 2: cached 100/1200", "call 3: cached 1300/1500",
+        ]
+
+    def test_one_send_with_several_inference_calls_is_not_diluted_into_the_aggregate(
+        self,
+    ) -> None:
+        """usage["calls"]: one send (an agent's internal tool loop) making
+        several model calls. A miss on the 2nd of 3 must still be caught,
+        even though the SEND's aggregate cache ratio is high (9500/10000).
+        """
+        from windtunnel._cli.ladder import call_usage_totals, check_cache_misses
+        from windtunnel.api.runner import run_scenario
+        from windtunnel.api.scenario import Scenario
+
+        scenario_helper = _UsageHandle([{
+            "usage": {
+                # aggregate (if a caller summed only this): 9500/10000 cached
+                # — well above any reasonable ratio, and would hide the miss.
+                "prompt_tokens": 10000, "cached_tokens": 9500, "completion_tokens": 60,
+                "calls": [
+                    {"prompt_tokens": 1000, "cached_tokens": 0, "completion_tokens": 10},
+                    {"prompt_tokens": 4000, "cached_tokens": 500, "completion_tokens": 20},
+                    {"prompt_tokens": 5000, "cached_tokens": 4900, "completion_tokens": 30},
+                ],
+            },
+        }])
+        scenario = Scenario(name="one-send-three-calls", prompt="p", target_facts=[["ok"]])
+        trace = run_scenario(scenario, _Runtime(scenario_helper)).runs[0].trace
+
+        # One send -> three model_calls entries, not one aggregated entry.
+        assert trace.model_calls is not None and len(trace.model_calls) == 3
+        conversation = trace.model_calls[0]["conversation"]
+        assert all(call["conversation"] == conversation for call in trace.model_calls)
+        assert call_usage_totals(trace.model_calls) == {
+            "input_tokens": 10000, "cached_tokens": 5400, "output_tokens": 60,
+        }
+
+        check = check_cache_misses(trace.model_calls, min_cached_ratio=0.5)
+        assert check["result"] == "fail"
+        assert check["reason"] == "prompt cache miss at call 2: cached 500 of 4000 prompt tokens"
+        assert check["calls"] == ["call 2: cached 500/4000", "call 3: cached 4900/5000"]
+
+    def test_a_call_may_override_its_conversation_for_a_side_conversation(self) -> None:
+        """A "calls" entry may name its own conversation (e.g. a forked
+        review call), so its own first call is judged as a first call of
+        its own conversation rather than folded into the run's.
+        """
+        from windtunnel._cli.ladder import check_cache_misses
+        from windtunnel.api.runner import run_scenario
+        from windtunnel.api.scenario import Scenario
+
+        scenario_helper = _UsageHandle([{
+            "usage": {
+                "calls": [
+                    {"prompt_tokens": 100, "cached_tokens": 0, "completion_tokens": 5},
+                    # A miss, but it is call 1 of its own "review" conversation
+                    # — never checked, since the first call never is.
+                    {"prompt_tokens": 200, "cached_tokens": 0, "completion_tokens": 5,
+                     "conversation": "review"},
+                ],
+            },
+        }])
+        scenario = Scenario(name="side-conversation", prompt="p", target_facts=[["ok"]])
+        trace = run_scenario(scenario, _Runtime(scenario_helper)).runs[0].trace
+
+        assert trace.model_calls is not None
+        run_conversation = trace.model_calls[0]["conversation"]
+        assert trace.model_calls[1]["conversation"] == "review"
+        assert run_conversation != "review"
+
+        check = check_cache_misses(trace.model_calls, min_cached_ratio=0.5)
+        assert check == {"result": "pass", "reason": None, "calls": []}
+
+
+class TestWtRunCacheCheck:
+    """[tool.windtunnel.cache] end to end through `wt run`: off by default, a
+    miss fails the sweep when configured, unknown never passes.
+    """
+
+    @pytest.fixture
+    def cache_bench(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):  # noqa: ANN201
+        from datetime import UTC, datetime
+
+        import windtunnel.cli as cli
+        from windtunnel.api.aggregate import ScenarioRunResult, aggregate_runs
+        from windtunnel.api.runner import ScenarioResult
+        from windtunnel.api.score import LayerResult, Score
+        from windtunnel.api.trace import Trace, Turn, compute_hash
+
+        monkeypatch.chdir(tmp_path)
+        alpha = _scenario("alpha")
+        state: dict[str, Any] = {"model_calls": None}  # set per test
+
+        def fake_run_scenario(scenario, runtime, *a, **k):  # noqa: ANN001, ANN202
+            started = datetime(2026, 1, 1, tzinfo=UTC)
+            trace = Trace(
+                scenario_id=scenario.name, agent_id="a", variant_id="v", model="m", quant="q",
+                sampler={}, started_at=started, finished_at=started,
+                turns=[Turn(role="user", content="hi", tool_calls=[], tool_results=[],
+                             latency_ms=0.0)],
+                tool_schema_hash=compute_hash(scenario.name), worker_warnings=[],
+                model_calls=state["model_calls"],
+            )
+            score = Score(
+                outcome=LayerResult(passed=True, detail="ok"),
+                trajectory=LayerResult(passed=True, detail="ok"),
+                constraint=LayerResult(passed=True, detail="ok"),
+                integrity=LayerResult(passed=True, detail="ok"),
+            )
+            run = ScenarioRunResult(score=score, trace=trace)
+            return ScenarioResult(
+                aggregate=aggregate_runs([run], gate_layers=scenario.resolved_gate_layers()),
+                runs=[run],
+            )
+
+        _patch_cli_run(monkeypatch, [_pack("p", [alpha])], {})
+        import windtunnel.api.runner as runner
+        monkeypatch.setattr(runner, "run_scenario", fake_run_scenario)
+        monkeypatch.setattr(
+            cli, "compute_fingerprint",
+            lambda **kwargs: Fingerprint(value="sha256:one", parts={"git_tree": "sha256:one"}),
+        )
+        runs_dir = tmp_path / "runs"
+
+        def run(*extra: str) -> int:
+            return cli.main(["run", "--runs-dir", str(runs_dir), "--label", "l",
+                              "--scenario", "alpha", *extra])
+
+        return run, state, runs_dir
+
+    @staticmethod
+    def _ledger(runs_dir: Path) -> list[dict[str, Any]]:
+        return TestWtRunLadder._ledger(runs_dir)
+
+    def test_off_by_default_a_miss_does_not_fail_the_sweep(self, cache_bench) -> None:  # noqa: ANN001
+        run, state, runs_dir = cache_bench
+        state["model_calls"] = [
+            {"conversation": "c", "prompt_tokens": 100, "cached_tokens": 0, "completion_tokens": 5},
+            {"conversation": "c", "prompt_tokens": 100, "cached_tokens": 1, "completion_tokens": 5},
+        ]
+        assert run() == 0
+        assert "cache_check" not in self._ledger(runs_dir)[-1]["experiment"]
+
+    def test_a_configured_miss_fails_the_sweep_and_is_recorded(
+        self, cache_bench, tmp_path: Path, capsys: pytest.CaptureFixture[str]  # noqa: ANN001
+    ) -> None:
+        run, state, runs_dir = cache_bench
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.windtunnel.cache]\nfail_on_miss = true\nmin_cached_ratio = 0.5\n"
+        )
+        state["model_calls"] = [
+            {"conversation": "c", "prompt_tokens": 100, "cached_tokens": 0, "completion_tokens": 5},
+            {"conversation": "c", "prompt_tokens": 100, "cached_tokens": 1, "completion_tokens": 5},
+        ]
+        assert run() == 1  # the scenario itself passed; the cache miss fails the sweep
+        err = capsys.readouterr().err
+        assert "cache check: fail — prompt cache miss at call 2: cached 1 of 100" in err
+        assert "call 2: cached 1/100" in err
+        row = self._ledger(runs_dir)[-1]
+        assert row["experiment"]["counts_as_failure"] is True
+        assert row["experiment"]["cache_check"]["result"] == "fail"
+
+    def test_an_unreported_split_is_unknown_and_still_fails_when_configured(
+        self, cache_bench, tmp_path: Path, capsys: pytest.CaptureFixture[str]  # noqa: ANN001
+    ) -> None:
+        run, state, runs_dir = cache_bench
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.windtunnel.cache]\nfail_on_miss = true\n"
+        )
+        state["model_calls"] = [
+            {"conversation": "c", "prompt_tokens": 100, "cached_tokens": 0, "completion_tokens": 5},
+            {"conversation": "c", "prompt_tokens": 100, "cached_tokens": None, "completion_tokens": 5},
+        ]
+        assert run() == 1
+        assert "cache check: unknown" in capsys.readouterr().err
+        row = self._ledger(runs_dir)[-1]
+        assert row["experiment"]["cache_check"]["result"] == "unknown"
+
+    def test_a_healthy_cache_hit_passes_and_is_recorded(
+        self, cache_bench, tmp_path: Path, capsys: pytest.CaptureFixture[str]  # noqa: ANN001
+    ) -> None:
+        run, state, runs_dir = cache_bench
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.windtunnel.cache]\nfail_on_miss = true\n"
+        )
+        state["model_calls"] = [
+            {"conversation": "c", "prompt_tokens": 100, "cached_tokens": 0, "completion_tokens": 5},
+            {"conversation": "c", "prompt_tokens": 100, "cached_tokens": 90, "completion_tokens": 5},
+        ]
+        assert run() == 0
+        assert "cache check: pass" in capsys.readouterr().err
+        row = self._ledger(runs_dir)[-1]
+        assert row["experiment"]["cache_check"]["result"] == "pass"
 
 
 class TestWtRunCostAndModel:
@@ -1245,3 +1918,59 @@ class TestWtRunCostAndModel:
         assert focused["tokens_reported"] == 0
         assert cli.main(["results", "--runs", str(runs_dir), "--ladder"]) == 0
         assert "1/2 reviewed changed a decision" in capsys.readouterr().out
+
+    _PRICING_TOML = (
+        "[tool.windtunnel.ladder.pricing]\ntime_per_hour = 3600.0\n"
+        "[tool.windtunnel.ladder.pricing.models]\n"
+        'small = { input_per_m = 1.0, output_per_m = 1.0 }\n'
+    )
+
+    def test_pricing_prices_the_sweep_by_time_only_when_tokens_go_unreported(
+        self, labelled, tmp_path: Path, capsys: pytest.CaptureFixture[str]  # noqa: ANN001
+    ) -> None:
+        from windtunnel._cli.ladder import read_experiments
+
+        run, _state, runs_dir = labelled
+        (tmp_path / "pyproject.toml").write_text(self._PRICING_TOML)
+        assert run("--scenario", "alpha") == 0
+        err = capsys.readouterr().err
+        assert "wt run: cost" in err
+        assert "tokens: unknown" in err
+        assert "time cost only" in err
+        row = self._ledger(runs_dir)[-1]
+        cost_usd = row["experiment"]["cost_usd"]
+        assert cost_usd["tokens_known"] is False and cost_usd["uncached_input"] is None
+        assert cost_usd["total"] == cost_usd["time"] >= 0
+        [sweep] = read_experiments(runs_dir)
+        sweep_cost_usd = sweep["cost_usd"]
+        assert sweep_cost_usd["tokens_known"] is False and sweep_cost_usd["uncached_input"] is None
+        assert sweep_cost_usd["total"] == sweep_cost_usd["time"] >= 0
+
+    def test_no_pricing_configured_means_no_cost_usd_field(self, labelled) -> None:  # noqa: ANN001
+        from windtunnel._cli.ladder import read_experiments
+
+        run, _state, runs_dir = labelled
+        assert run("--scenario", "alpha") == 0
+        row = self._ledger(runs_dir)[-1]
+        assert "cost_usd" not in row["experiment"]
+        [sweep] = read_experiments(runs_dir)
+        assert "cost_usd" not in sweep
+
+    def test_results_ladder_shows_dollars_and_a_cumulative_total(
+        self, labelled, tmp_path: Path, capsys: pytest.CaptureFixture[str]  # noqa: ANN001
+    ) -> None:
+        import windtunnel.cli as cli
+
+        run, _state, runs_dir = labelled
+        (tmp_path / "pyproject.toml").write_text(self._PRICING_TOML)
+        assert run("--scenario", "alpha") == 0
+        capsys.readouterr()
+        assert cli.main(["results", "--runs", str(runs_dir), "--ladder", "--json"]) == 0
+        document = json.loads(capsys.readouterr().out)
+        assert document["cumulative_cost_usd"] >= 0
+        assert document["tiers"]["focused"]["priced_sweeps"] == 1
+        assert cli.main(["results", "--runs", str(runs_dir), "--ladder"]) == 0
+        out = capsys.readouterr().out
+        assert "1/1 priced" in out
+        assert "tokens unknown" in out
+        assert "cumulative: $" in out

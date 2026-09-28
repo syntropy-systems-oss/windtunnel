@@ -76,7 +76,7 @@ EXPECTED_DATACLASS_FIELDS = {
     Trace: (
         "scenario_id", "agent_id", "variant_id", "model", "quant", "sampler", "started_at",
         "finished_at", "turns", "tool_schema_hash", "worker_warnings", "mcp_calls",
-        "observations", "surface", "usage", "run_id",
+        "observations", "surface", "usage", "model_calls", "run_id",
     ),
     Score: ("outcome", "trajectory", "constraint", "integrity", "failure_cost"),
     AgentConfig: (

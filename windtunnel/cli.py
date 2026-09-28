@@ -57,15 +57,22 @@ from windtunnel._cli.ladder import (
     Budget,
     Fingerprint,
     LadderError,
+    call_usage_totals,
+    check_cache_misses,
     check_model_policy,
     check_regression_gate,
+    combine_cache_checks,
+    compute_cost_usd,
     compute_fingerprint,
+    cost_block,
     derive_tier,
     describe_changes,
     experiment_record,
     gate_refusal_message,
     ledger_has_history,
+    load_cache_config,
     load_model_policy,
+    load_pricing,
     load_tier_caps,
     model_label,
     normalize_target,
@@ -222,6 +229,21 @@ from windtunnel.api.score import Score
 from windtunnel.api.trace import Trace
 from windtunnel.spi.scheduler import RunJob
 from windtunnel.triage.classifier import FailureClassification, FailureClassifier
+
+
+def _run_tokens(run: ScenarioRunResult) -> dict[str, Any]:
+    """One run's token totals: from its trace's per-call model_calls when the
+    runtime reported them, else its legacy usage total (cached unknown).
+    """
+    model_calls = getattr(run.trace, "model_calls", None)
+    if model_calls:
+        return call_usage_totals(model_calls)
+    usage = getattr(run.trace, "usage", None)
+    return {
+        "input_tokens": usage.get("input_tokens") if usage else None,
+        "cached_tokens": None,
+        "output_tokens": usage.get("output_tokens") if usage else None,
+    }
 
 # Compatibility facade: command orchestration and historical test seams remain
 # available from ``windtunnel.cli`` while their implementations live in focused
@@ -634,6 +656,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
             resolve_budget(tier, getattr(args, "budget", None), load_tier_caps())
         )
         check_model_policy(tier, model, load_model_policy())
+        pricing = load_pricing()
+        cache_config = load_cache_config()
     except LadderError as exc:
         print(f"wt run: {exc}", file=sys.stderr)
         return 2
@@ -718,7 +742,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
             )
     started_jobs: set[int] = set()
 
-    def _experiment(*, counts_as_failure: bool, cost: dict[str, Any]) -> dict[str, Any]:
+    def _experiment(
+        *, counts_as_failure: bool, cost: dict[str, Any], cache_check: dict[str, Any] | None
+    ) -> dict[str, Any]:
         recorded = fingerprint
         if tier == "focused":
             # Only focused rows are evidence, so make sure the artifact did not
@@ -747,6 +773,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
             if_pass=if_pass,
             if_fail=if_fail,
             cost=cost,
+            cost_usd=compute_cost_usd(
+                wall_s=cost.get("wall_s") or 0.0,
+                input_tokens=cost.get("input_tokens"),
+                cached_tokens=cost.get("cached_tokens"),
+                output_tokens=cost.get("output_tokens"),
+                model=model,
+                pricing=pricing,
+            ),
+            cache_check=cache_check,
         )
 
     # How the scenario jobs execute. Never more at once than the runtime
@@ -1027,12 +1062,29 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # model-quality signal, so it doesn't flip the exit code — UNLESS the run
         # hit a real execution error (no valid model turn happened).
         gate_failure = _counts_as_gate_failure(completed_entry)
+        model_calls = [
+            call
+            for run in result.runs
+            for call in (getattr(run.trace, "model_calls", None) or [])
+        ]
+        cache_check = (
+            check_cache_misses(model_calls, min_cached_ratio=cache_config["min_cached_ratio"])
+            if cache_config is not None
+            else None
+        )
+        cache_blocks = (
+            cache_check is not None
+            and cache_config is not None
+            and cache_config["fail_on_miss"]
+            and cache_check["result"] != "pass"
+        )
         record["experiment"] = _experiment(
-            counts_as_failure=gate_failure,
+            counts_as_failure=gate_failure or cache_blocks,
             cost={
                 "wall_s": round(time.monotonic() - job_started, 3),
-                **sum_tokens(getattr(run.trace, "usage", None) for run in result.runs),
+                **sum_tokens(_run_tokens(run) for run in result.runs),
             },
+            cache_check=cache_check,
         )
         with state:
             consecutive_errors = 0  # a successful scenario resets the breaker
@@ -1045,7 +1097,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 f"  {status:<6}  {scenario.name:<40}  "
                 f"({agg.passed}/{agg.total} pass, rate={agg.pass_rate:.0%}){note}"
             )
-            if gate_failure:
+            if gate_failure or cache_blocks:
                 any_fail = True
         events.emit(
             "scenario_finished",
@@ -1080,31 +1132,51 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return _finish(1 if aborted or any_fail else 0)
 
     def _record_sweep(rc: int) -> None:
-        """Append the sweep's cost and outcome to <runs>/experiments.ndjsonl."""
+        """Append the sweep's cost and outcome to <runs>/experiments.ndjsonl, and print it."""
         with state:
             costs = [record["experiment"]["cost"] for record in records_at.values()]
+            cache_checks = [
+                record["experiment"]["cache_check"]
+                for record in records_at.values()
+                if record["experiment"].get("cache_check") is not None
+            ]
             errored = scenario_errors > 0
         # A scenario that errored has no row, so its tokens are unknown.
         tokens = (
-            {"input_tokens": None, "output_tokens": None} if errored else sum_tokens(costs)
+            {"input_tokens": None, "cached_tokens": None, "output_tokens": None}
+            if errored
+            else sum_tokens(costs)
         )
+        wall_s = round(budget.elapsed(), 3)
+        cost = {"wall_s": wall_s, **tokens}
+        cost_usd = compute_cost_usd(
+            wall_s=wall_s, input_tokens=tokens["input_tokens"],
+            cached_tokens=tokens["cached_tokens"],
+            output_tokens=tokens["output_tokens"], model=model, pricing=pricing,
+        )
+        cache_check = combine_cache_checks(cache_checks) if cache_config is not None else None
+        print(cost_block(question, cost, cost_usd, cache_check), file=sys.stderr)
+        fields: dict[str, Any] = dict(
+            sweep_id=events.sweep_id,
+            label=label,
+            tier=tier,
+            model=model,
+            question=question,
+            expect=expect,
+            if_pass=if_pass,
+            if_fail=if_fail,
+            outcome="pass" if rc == 0 else "fail",
+            prediction_held=None if expect is None else (expect == "pass") == (rc == 0),
+            budget_exhausted=budget.exhausted,
+            scenarios=len(selected),
+            cost=cost,
+        )
+        if cost_usd is not None:
+            fields["cost_usd"] = cost_usd
+        if cache_check is not None:
+            fields["cache_check"] = cache_check
         try:
-            record_sweep(
-                runs_dir,
-                sweep_id=events.sweep_id,
-                label=label,
-                tier=tier,
-                model=model,
-                question=question,
-                expect=expect,
-                if_pass=if_pass,
-                if_fail=if_fail,
-                outcome="pass" if rc == 0 else "fail",
-                prediction_held=None if expect is None else (expect == "pass") == (rc == 0),
-                budget_exhausted=budget.exhausted,
-                scenarios=len(selected),
-                cost={"wall_s": round(budget.elapsed(), 3), **tokens},
-            )
+            record_sweep(runs_dir, **fields)
         except OSError as exc:
             print(f"wt run: warning: could not record the sweep: {exc}", file=sys.stderr)
 
