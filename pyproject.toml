@@ -15,7 +15,10 @@ license = "Apache-2.0"
 authors = [{ name = "Bryson Tang" }]
 requires-python = ">=3.11"
 dependencies = [
-    "mcp>=1.27.1",
+    # Upper bound holds mcp to the 1.x line; 2.0 is a breaking rewrite
+    # (drops pydantic-settings, restructures httpx transport) that needs
+    # its own migration pass, not a dependabot patch bump.
+    "mcp>=1.28.1,<2",
 ]
 
 [project.optional-dependencies]
