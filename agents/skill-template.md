@@ -25,8 +25,10 @@ serving recorded tool universes, or bringing up Contract C inject endpoints.
 - Iterate small to large. After a failing sweep, probe the broken step
   (`wt run --from-trace <trace> --question ... --expect ...`), then run the one
   scenario on its own, and only then the whole pack. `wt run` enforces this:
-  a regression is refused while any selected scenario whose latest regression
-  run failed has no passing focused run since, on the current artifact, and every sweep into a runs directory with
+  a regression (several scenarios) is refused unless a focused run has passed
+  on the current artifact since the last regression, and each selected
+  scenario whose latest regression run failed has passed one of its own. To
+  see what is working, read `wt results`; never run the whole pack to find out, and every sweep into a runs directory with
   history must declare `--question` and `--expect`. There is no bypass flag.
 - Read `references/agents/anti-patterns.md` before building an importer,
   endpoint, or runtime driver.

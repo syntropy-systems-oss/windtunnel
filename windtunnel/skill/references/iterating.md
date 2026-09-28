@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/iterating.md at 2c3efef93ad3 — do not edit; edit docs/iterating.md. -->
+<!-- GENERATED from docs/iterating.md at a5d151a93572 — do not edit; edit docs/iterating.md. -->
 ---
 description: "Tight iteration loop for people and coding agents: follow sweeps live, tabulate results and metrics per label, compare labels, and rescore saved traces."
 ---
@@ -31,10 +31,14 @@ wt run --scenario lookup_order --runs 3 \
   --expect pass
 ```
 
-and a regression is refused until each scenario that failed in the previous
-regression has passed a focused sweep on the current artifact (the working
-tree, `--soul`/`--agents`, and the runtime). The refusal prints the focused
-commands to run. The full rules are in
+and a regression (the whole pack) must be earned: it is refused unless a
+focused sweep has passed on the current artifact since the last regression —
+"run everything to see what's working" is answered by `wt results`, not a new
+sweep — and unless each scenario that failed in its most recent regression run has passed
+a focused sweep of its own. "The current artifact" is the working tree,
+`--soul`/`--agents`, and the runtime; any edit makes an earlier pass stale.
+The refusal says which rule failed, what to run, and which files made a pass
+stale. Only the first sweep against a runtime (the baseline) is free. The full rules are in
 [0005: Experiment ladder](design/0005-experiment-ladder.md).
 
 ## 1. Label every round
@@ -44,13 +48,16 @@ commands to run. The full rules are in
 ```bash
 wt run --pack my_pack --runs 5 --label baseline
 # ...edit the prompt, the agent, or the model config...
+wt run --scenario lookup_order --runs 3 --label candidate \
+  --question "does the stricter prompt fix lookup_order?" --expect pass
 wt run --pack my_pack --runs 5 --label candidate \
   --question "does the stricter prompt keep every scenario green?" --expect pass
 ```
 
 (The first sweep into an empty runs directory needs no `--question`; every
-later one does, and a regression after a failing one first needs focused
-passes. See [Climb the ladder](#0-climb-the-ladder).)
+later one does, and the full-pack candidate is only allowed because the
+focused sweep before it passed on the same code. See
+[Climb the ladder](#0-climb-the-ladder).)
 
 Re-using a label is allowed. Reports, `wt compare`, and `wt results` then read
 the label's latest sweep as recorded in the ledger (or every saved run with the

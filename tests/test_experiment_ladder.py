@@ -134,17 +134,69 @@ def _gate(rows, *names: str, fingerprint: str = "fp-1", target: str = "rt"):  # 
     )
 
 
-class TestRegressionGate:
-    def test_no_prior_regression_means_no_gate(self) -> None:
-        rows = [_row("a", "FAIL", tier="focused", sweep="s1")]
+def _earn(sweep: str = "e1", fingerprint: str = "fp-1") -> dict[str, Any]:
+    """A passing focused run of an unrelated scenario: it earns a full run."""
+    return _row("z", "PASS", tier="focused", sweep=sweep, fingerprint=fingerprint)
+
+
+class TestEarningAFullRun:
+    """You test the wing before you build the plane."""
+
+    def test_the_first_sweep_against_a_target_is_free(self) -> None:
+        assert _gate([], "a", "b").allowed
+
+    def test_history_on_another_target_does_not_count(self) -> None:
+        rows = [_row("a", "FAIL", tier="focused", sweep="s1", target="in_memory")]
         assert _gate(rows, "a", "b").allowed
 
-    def test_a_clean_regression_does_not_gate_the_next(self) -> None:
+    def test_short_failing_tests_do_not_earn_a_full_run(self) -> None:
+        """A few short tests, then the whole pack to "see what's working": refused."""
         rows = [
+            _row("a", "FAIL", tier="focused", sweep="s1"),
+            _row("b", "FAIL", tier="focused", sweep="s2"),
+        ]
+        decision = _gate(rows, "a", "b")
+        assert not decision.allowed
+        assert decision.unearned
+        assert decision.missing == []
+
+    def test_a_focused_pass_on_this_artifact_earns_it(self) -> None:
+        rows = [_row("a", "FAIL", tier="focused", sweep="s1"), _earn("s2")]
+        decision = _gate(rows, "a", "b")
+        assert decision.allowed
+        assert decision.earned_by == "s2"
+
+    def test_a_probe_pass_does_not_earn_it(self) -> None:
+        rows = [_row("a", "PASS", tier="probe", sweep="p1")]
+        assert _gate(rows, "a", "b").unearned
+
+    def test_a_clean_regression_must_be_earned_again(self) -> None:
+        rows = [
+            _earn("e0"),
             _row("a", "PASS", tier="regression", sweep="r1"),
             _row("b", "PASS", tier="regression", sweep="r1"),
         ]
-        assert _gate(rows, "a", "b", fingerprint="fp-2").allowed
+        assert _gate(rows, "a", "b").unearned
+
+    def test_re_running_unchanged_code_is_not_earned(self) -> None:
+        """Flakiness is a focused question: run the flaky scenario with more runs."""
+        rows = [_earn("e0"), _row("a", "PASS", tier="regression", sweep="r1")]
+        assert _gate(rows, "a").unearned
+
+    def test_a_pass_on_an_older_artifact_is_stale_and_named(self) -> None:
+        rows = [_earn("e1", fingerprint="fp-old")]
+        decision = _gate(rows, "a", "b", fingerprint="fp-new")
+        assert decision.unearned
+        assert decision.stale_earner is not None
+        assert decision.stale_earner["sweep_id"] == "e1"
+
+    def test_a_pass_cut_short_by_its_budget_does_not_earn_it(self) -> None:
+        rows = [_row("z", "PASS", tier="focused", sweep="e1", budget_exhausted=True)]
+        assert _gate(rows, "a").unearned
+
+
+class TestRegressionGate:
+    """The per-scenario failure rule, on top of an earned run."""
 
     def test_a_failure_without_focused_evidence_is_refused(self) -> None:
         rows = [
@@ -162,7 +214,10 @@ class TestRegressionGate:
 
     def test_the_sweeps_own_failure_judgement_wins_over_the_verdict(self) -> None:
         """A transport-only FAIL does not fail the sweep, so it does not gate either."""
-        rows = [_row("b", "FAIL", tier="regression", sweep="r1", counts_as_failure=False)]
+        rows = [
+            _row("b", "FAIL", tier="regression", sweep="r1", counts_as_failure=False),
+            _earn(),
+        ]
         assert _gate(rows, "b").allowed
 
     def test_a_focused_pass_on_this_artifact_satisfies_it(self) -> None:
@@ -217,7 +272,7 @@ class TestRegressionGate:
         assert _gate(rows, "b").missing == ["b"]
 
     def test_leaving_a_failure_out_of_the_selection_is_recorded_not_refused(self) -> None:
-        rows = [_row("b", "FAIL", tier="regression", sweep="r1")]
+        rows = [_row("b", "FAIL", tier="regression", sweep="r1"), _earn()]
         decision = _gate(rows, "a", "c")
         assert decision.allowed
         assert decision.excluded_failing == ["b"]
@@ -235,6 +290,7 @@ class TestRegressionGate:
         rows = [
             _row("b", "FAIL", tier="regression", sweep="r1"),
             _row("b", "PASS", tier="regression", sweep="r2"),
+            _earn(),
         ]
         assert _gate(rows, "b").allowed
 
@@ -688,6 +744,29 @@ class TestWtRunLadder:
         assert all(row["experiment"]["question"] == "does the fix hold?" for row in final)
         assert final[0]["experiment"]["evidence_for"]
 
+    def test_short_tests_then_the_whole_pack_is_refused(
+        self, bench, capsys: pytest.CaptureFixture[str]  # noqa: ANN001
+    ) -> None:
+        """The overnight failure: a few short tests, then 1.5h "to see what works"."""
+        run, _state, runs_dir = bench
+        declare = ("--question", "what is working?", "--expect", "pass")
+        assert run("--scenario", "beta") == 1  # first sweep: a failing short test
+        assert run("--scenario", "beta", *declare) == 1
+        capsys.readouterr()
+        assert run(*declare) == 2
+        err = capsys.readouterr().err
+        assert "nothing has earned it" in err
+        assert f"wt results --runs {runs_dir}" in err
+        assert "--runtime in_memory" in err
+
+    def test_a_passing_short_test_earns_the_whole_pack(self, bench) -> None:  # noqa: ANN001
+        run, _state, runs_dir = bench
+        declare = ("--question", "does my alpha fix hold everywhere?", "--expect", "pass")
+        assert run("--scenario", "alpha") == 0
+        assert run(*declare) == 1  # beta fails, but the run itself was earned
+        rows = self._ledger(runs_dir)
+        assert rows[-1]["experiment"]["earned_by"] == rows[0]["sweep_id"]
+
     def test_a_change_after_the_focused_pass_makes_it_stale(
         self, bench, capsys: pytest.CaptureFixture[str]  # noqa: ANN001
     ) -> None:
@@ -727,6 +806,7 @@ class TestWtRunLadder:
     ) -> None:
         run, _state, runs_dir = bench
         run()
+        assert run("--scenario", "alpha", "--question", "q", "--expect", "pass") == 0
         capsys.readouterr()
         rc = run("--scenario", "alpha", "--scenario", "gamma", "--question", "q",
                  "--expect", "pass")

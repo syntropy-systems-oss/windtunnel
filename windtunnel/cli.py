@@ -2331,10 +2331,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "experiment ladder",
         "Every sweep is a probe (--from-trace), focused (one scenario), or "
         "regression (several). Once the runs directory has history, each sweep "
-        "declares --question and --expect, and a regression is refused while any "
-        "selected scenario's most recent regression run failed and it has no "
-        "passing focused run since on the current artifact. See "
-        "docs/design/0005-experiment-ladder.md.",
+        "declares --question and --expect, and a regression must be earned: a "
+        "focused run must have passed on the current artifact since the last "
+        "regression, and so must each selected scenario whose most recent "
+        "regression run failed. See docs/design/0005-experiment-ladder.md.",
     )
     ladder.add_argument(
         "--question",

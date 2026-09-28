@@ -4,9 +4,10 @@ See docs/design/0005-experiment-ladder.md. In short: a sweep's tier is derived
 from what it runs (a replayed probe, one focused scenario, or a regression
 across several), each tier has a wall-clock budget, every sweep into a runs
 directory with history declares the question it answers and the verdict it
-expects, and a regression sweep is refused while any selected scenario whose
-most recent regression run failed has no passing focused run since, on the
-current artifact.
+expects, and a regression sweep must be earned: by a passing focused run on the
+current artifact since the last regression, and, for every selected scenario
+whose most recent regression run failed, by a passing focused run of that
+scenario.
 
 There is deliberately no bypass. Guidance an agent can talk its way around is
 guidance it will talk its way around; the only ways past the gate are to run
@@ -514,10 +515,17 @@ class GateDecision:
     stale_passes: dict[str, dict[str, Any]] = field(default_factory=dict)
     satisfied: list[str] = field(default_factory=list)
     excluded_failing: list[str] = field(default_factory=list)
+    # The earning rule: a regression needs a passing focused run on the
+    # current artifact since the last regression. ``earned_by`` names that
+    # focused sweep; ``unearned`` is True when there is none; ``stale_earner``
+    # is the latest focused pass since the last regression on another artifact.
+    earned_by: str | None = None
+    unearned: bool = False
+    stale_earner: dict[str, Any] | None = None
 
     @property
     def allowed(self) -> bool:
-        return not self.missing
+        return not self.missing and not self.unearned
 
 
 def _row_failed(row: dict[str, Any]) -> bool:
@@ -542,13 +550,20 @@ def check_regression_gate(
 ) -> GateDecision:
     """Decide whether a regression sweep over ``selected`` may run now.
 
-    ``selected`` holds ``(pack, scenario)`` pairs. The gate works per
-    scenario, in ledger (append) order, among rows against the same runtime
-    ``target``: a selected scenario whose most recent regression row failed
-    needs a passing focused row written AFTER it, on ``fingerprint``, from a
-    sweep that finished within its budget. Working per scenario means a
-    failure is not forgotten because a later regression left it out of the
-    selection or ran out of budget before reaching it.
+    Two rules, both over ledger rows (in append order) against the same
+    runtime ``target``. A "focused pass" below means a passing focused row on
+    ``fingerprint`` from a sweep that finished within its budget.
+
+    1. Earning. Once this target has any ladder history, a regression needs
+       at least one focused pass written after the most recent regression.
+       You do not build the whole plane to find out what flies: a full run is
+       earned by showing, on this exact artifact, that the thing you changed
+       works. The first sweep against a target (the baseline) is free.
+    2. Failures. ``selected`` holds ``(pack, scenario)`` pairs; a selected
+       scenario whose most recent regression row failed needs a focused pass
+       of its own written after that row. Working per scenario means a
+       failure is not forgotten because a later regression left it out of the
+       selection or ran out of budget before reaching it.
     """
     def key(row: dict[str, Any]) -> tuple[str | None, str]:
         return (row.get("pack"), str(row.get("scenario_id")))
@@ -560,12 +575,36 @@ def check_regression_gate(
         recorded = parts.get("target", parts.get("runtime"))
         return recorded == target
 
+    def focused_pass(row: dict[str, Any]) -> bool:
+        return (
+            _experiment(row).get("tier") == "focused"
+            and not _experiment(row).get("budget_exhausted")
+            and not _row_failed(row)
+        )
+
     last_regression: dict[tuple[str | None, str], int] = {}
+    last_any_regression = -1
+    has_history = False
     for position, row in enumerate(rows):
-        if _experiment(row).get("tier") == "regression" and same_target(row):
+        if not same_target(row):
+            continue
+        has_history = True
+        if _experiment(row).get("tier") == "regression":
             last_regression[key(row)] = position
+            last_any_regression = position
 
     decision = GateDecision()
+    if has_history:
+        since = [
+            row for position, row in enumerate(rows)
+            if position > last_any_regression and same_target(row) and focused_pass(row)
+        ]
+        earners = [row for row in since if _experiment(row).get("fingerprint") == fingerprint]
+        if earners:
+            decision.earned_by = str(earners[-1].get("sweep_id") or "") or None
+        else:
+            decision.unearned = True
+            decision.stale_earner = since[-1] if since else None
     selected_set = set(selected)
     selected_packs = {pack for pack, _name in selected}
     failing = sorted(
@@ -584,13 +623,7 @@ def check_regression_gate(
             if item[0] in selected_packs:
                 decision.excluded_failing.append(item[1])
             continue
-        passes = [
-            row for row in rows[position + 1:]
-            if key(row) == item
-            and _experiment(row).get("tier") == "focused"
-            and not _experiment(row).get("budget_exhausted")
-            and not _row_failed(row)
-        ]
+        passes = [row for row in rows[position + 1:] if key(row) == item and focused_pass(row)]
         if any(_experiment(row).get("fingerprint") == fingerprint for row in passes):
             decision.satisfied.append(item[1])
         else:
@@ -617,6 +650,8 @@ def gate_refusal_message(
     """
     names = decision.missing
     context = "".join(f" {shlex.quote(flag)}" for flag in context_flags)
+    if not names:
+        return _unearned_message(decision, fingerprint, context, runs_dir)
     lines = [
         f"wt run: refusing a regression sweep: {len(names)} scenario(s) failed in their "
         f"most recent regression run and have no passing focused run since, on the "
@@ -636,6 +671,39 @@ def gate_refusal_message(
         "not part of the artifact. To deliberately leave a failing scenario out "
         "of this regression, drop it from the selection; the sweep records it as "
         "excluded.",
+    ]
+    return "\n".join(lines)
+
+
+def _unearned_message(
+    decision: GateDecision, fingerprint: Fingerprint, context: str, runs_dir: Path | None
+) -> str:
+    runs_flag = "" if runs_dir is None else f" --runs {shlex.quote(str(runs_dir))}"
+    lines = [
+        "wt run: refusing a regression sweep: nothing has earned it. A full run "
+        "needs at least one passing focused run on the current artifact "
+        f"({fingerprint.value[:19]}…) since the last full run, and there is none.",
+    ]
+    stale = decision.stale_earner
+    if stale is not None:
+        parts = _experiment(stale).get("fingerprint_parts") or {}
+        old_manifest = (
+            _load_manifest(runs_dir, parts.get("git_tree")) if runs_dir is not None else None
+        )
+        lines.append(
+            f"  The latest focused pass ({stale.get('scenario_id')}) is stale; since then "
+            f"{describe_changes(parts, old_manifest, fingerprint)}."
+        )
+    lines += [
+        "Test the wing before you build the plane:",
+        f"  To see what is working now, read what is already on disk: "
+        f"wt results{runs_flag}",
+        "  To test your change, run the scenario it targets on its own:",
+        f"  wt run --scenario <scenario>{context} --runs 3 --question \"<what you "
+        "expect to learn>\" --expect pass",
+        "When that passes, this regression is earned. Any change after it makes the "
+        "pass stale again. If a file named above is something the runtime or your "
+        "tooling writes (a log, a cache), gitignore it; it is not part of the artifact.",
     ]
     return "\n".join(lines)
 
@@ -699,5 +767,6 @@ def experiment_record(
         "evidence_for": (
             list(decision.gated_sweeps) if decision is not None and decision.satisfied else []
         ),
+        "earned_by": decision.earned_by if decision is not None else None,
         "excluded_failing": list(decision.excluded_failing) if decision else [],
     }

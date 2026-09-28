@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/design/0005-experiment-ladder.md at d626f35ec72c — do not edit; edit docs/design/0005-experiment-ladder.md. -->
+<!-- GENERATED from docs/design/0005-experiment-ladder.md at ab2defdcf654 — do not edit; edit docs/design/0005-experiment-ladder.md. -->
 ---
 description: "Design specification for the experiment ladder: derived run tiers, wall-clock budgets, declared questions, artifact fingerprints, the regression evidence gate, prefix replay probes, and tier-ordered runtime queueing."
 ---
@@ -144,26 +144,36 @@ when it records its result; if the artifact changed while the sweep waited or
 ran, the row is recorded with the fingerprint `changed-during-sweep` and is
 evidence for nothing.
 
-### The evidence gate
+### The evidence gate: a full run is earned
 
-The gate works per scenario, in ledger order (the ledger is append-only;
-timestamps have one-second resolution and are not used to order rows), and
-only among rows against the same runtime `target`, so a smoke run on
-`in_memory` never gates a driver:
+You do not build the whole airframe to find out what flies. A regression is
+the full plane, and `wt run` refuses one that smaller tests have not earned.
 
-1. For each selected scenario, find its most recent regression row. The
-   scenario is identified by pack and name.
-2. If that row counts as a failure — by the same rule that sets `wt run`'s
-   exit code, so a transport-only verdict does not, and `FAIL` or `INVALID`
-   otherwise does — the scenario needs a passing `focused` row written after
-   it, on the current fingerprint, from a sweep that finished within its
-   budget.
+The gate reads the ledger in append order (timestamps have one-second
+resolution and are not used to order rows), and only rows against the same
+runtime `target`, so a smoke run on `in_memory` never gates a driver. A
+"focused pass" below is a passing `focused` row on the current fingerprint
+from a sweep that finished within its budget; "passing" uses the same rule
+that sets `wt run`'s exit code, so a transport-only verdict is not a failure.
 
-If any is missing, `wt run` exits `2` before taking the runtime lock, names
-the missing scenarios, and prints the focused command to run for each,
-carrying the flags that decide what is under test (`--runtime`,
-`--runs-dir`, `--pack-source`, `--pack`, `--all-packs`, `--soul`,
-`--agents`) so a copied command produces evidence for this artifact.
+1. **Earning.** Once the target has any ladder history, a regression needs at
+   least one focused pass written after the most recent regression. That is
+   the proof, on this exact artifact, that the thing you changed works; the
+   full run then answers the different question of whether anything else
+   broke.
+2. **Failures.** For each selected scenario (identified by pack and name)
+   whose most recent regression row failed, a focused pass of that scenario
+   written after that row.
+
+If either is missing, `wt run` exits `2` before taking the runtime lock. For
+missing failure evidence it names the scenarios and prints the focused command
+for each. For an unearned run it points at `wt results` for "what is working
+now" (answered from runs already on disk, in seconds) and at a focused run of
+the scenario the change targets. Both carry the flags that decide what is
+under test (`--runtime`, `--runs-dir`, `--pack-source`, `--pack`,
+`--all-packs`, `--soul`, `--agents`), and both name what made an earlier
+focused pass stale. The regression's ledger rows record the focused sweep that
+earned them (`earned_by`).
 
 A scenario that errored before producing an aggregate has no ledger row;
 that is an execution failure rather than an agent verdict, and the ledger
@@ -171,19 +181,24 @@ that is an execution failure rather than an agent verdict, and the ledger
 
 Consequences, all deliberate:
 
-- The first regression sweep, and a regression after a clean one, is never
-  gated. The gate targets the loop "fail, tweak, re-run everything", not
-  ordinary regression checks.
-- CI on a clean checkout has no ledger and is never gated.
-- Probe passes do not count as evidence. A probe replays one step on a
-  recorded history; it is how you find the fix, not how you certify it.
+- The first sweep against a target, whatever its size, is free: that is the
+  baseline, measuring the plane you already have. CI on a clean checkout has
+  no ledger and is never gated.
+- "Run everything to see what is working" is refused. The answer is already
+  on disk (`wt results`), and the next useful experiment is a focused one.
+- Re-running a regression on unchanged code is not earned. Flakiness is a
+  focused question: run the flaky scenario with more `--runs`.
+- Every regression must be earned afresh. A clean regression does not earn
+  the next one; the change you make after it has to pass a focused run first.
+- Probe passes do not count. A probe replays one step on a recorded history;
+  it is how you find the fix, not how you certify it.
 - A scenario that failed can be left out of the selection. That is an
   explicit decision not to test it, not a bypass: the sweep records it under
   `excluded_failing` (failures from the packs the sweep selects from) and
-  `wt run` prints it. Because the gate works per
-  scenario, leaving a failure out does not launder it; it stays gated for
-  every later regression that includes it, and so does a failure a
-  budget-truncated regression never reached.
+  `wt run` prints it. Because the failure rule works per scenario, leaving a
+  failure out does not launder it; it stays gated for every later regression
+  that includes it, and so does a failure a budget-truncated regression never
+  reached.
 - Any change after the focused pass, however small, invalidates it. The
   agent climbs the ladder again from the rung that is now stale.
 
@@ -253,6 +268,7 @@ Every ledger row written by `wt run` gains two fields:
     "source_trace": null,
     "from_turn": null,
     "evidence_for": [],
+    "earned_by": null,
     "excluded_failing": []
   }
 }
@@ -260,7 +276,8 @@ Every ledger row written by `wt run` gains two fields:
 
 `counts_as_failure` is the sweep's own judgement of the row (the rule behind
 the exit code). `evidence_for` on a regression row names the regression
-sweeps whose failures were satisfied by focused evidence. The changes are additive; readers ignore unknown
+sweeps whose failures were satisfied by focused evidence, and `earned_by` the
+focused sweep that earned it. The changes are additive; readers ignore unknown
 fields, so `windtunnel_ledger` stays at version 1.
 
 ## Out of scope
