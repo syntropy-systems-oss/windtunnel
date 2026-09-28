@@ -42,6 +42,7 @@ Matrix dispatch:
 """
 from __future__ import annotations
 
+import copy
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
@@ -90,6 +91,9 @@ from windtunnel.api.evaluators import (
     evaluate_outcome,
     evaluate_trajectory,
 )
+from windtunnel.api.replay import HistoryPrefix
+from windtunnel.api.replay import scoring_view as _scoring_view
+from windtunnel.api.replay import with_prefix as _with_prefix
 from windtunnel.api.scenario import PreSendPerturbation, Scenario
 from windtunnel.api.score import LayerResult, Score
 from windtunnel.api.trace import Trace, Turn
@@ -148,6 +152,7 @@ def _run_once(
     hooks: Sequence[object] = (),
     hook_state: _RunHookState | None = None,
     config: AgentConfig | None = None,
+    history_prefix: HistoryPrefix | None = None,
 ) -> tuple[Trace, Score]:
     """Drive one scenario through a live AgentHandle. Return (Trace, Score).
 
@@ -162,12 +167,27 @@ def _run_once(
     state_probe (optional) snapshots EXTERNAL non-MCP state into
     trace.observations, with the same per-run reset + freeze-before-score
     lifecycle as the call logs (see spi/state_probe.py).
+
+    history_prefix (optional) freezes recorded turns as history in front of
+    every live turn — the probe path of `wt run --from-trace`. The frozen
+    turns are copied to the start of the trace and marked with a
+    ``replay_prefix:`` worker warning.
     """
     if hooks and hook_state is None:
         hook_state = _RunHookState()
     session_id = hook_state.session_id if hook_state is not None else str(uuid.uuid4())
     started_at = datetime.now(UTC)
     turns: list[Turn] = []
+    prefix_messages: list[dict[str, Any]] = []
+    if history_prefix is not None:
+        if not getattr(handle, "_windtunnel_consumes_full_history", True):
+            raise RuntimeError(
+                "runtime cannot deliver a replayed history prefix to the model: it "
+                "sends only the newest user turn; refusing to score a probe the model "
+                "never saw"
+            )
+        turns.extend(copy.deepcopy(list(history_prefix.turns)))
+        prefix_messages = history_prefix.messages()
 
     pre_send_perturbations = [
         perturbation
@@ -215,6 +235,8 @@ def _run_once(
     user_turns: list[str] = scenario.user_turns or [scenario.scored_prompt]
     responses: list[str] = []
     runtime_warnings: list[str] = list(surface_warnings)
+    if history_prefix is not None:
+        runtime_warnings.append(history_prefix.marker)
     if hook_state is not None:
         runtime_warnings.extend(hook_state.warnings)
 
@@ -229,7 +251,7 @@ def _run_once(
         ))
 
         # Build accumulated message history
-        messages = _build_messages(user_turns[: turn_idx + 1], responses)
+        messages = prefix_messages + _build_messages(user_turns[: turn_idx + 1], responses)
 
         # Pre-send history shaping: PreSendPerturbation instances inject the
         # corrupted prior turns (wrong tool call + result, blank turn, stale
@@ -290,7 +312,11 @@ def _run_once(
     }
     if hook_state is not None:
         trace_kwargs["run_id"] = hook_state.run_id
-    trace = Trace(**trace_kwargs)
+    full_trace = Trace(**trace_kwargs)
+    # A probe's frozen history is the original run's behavior, not this one's:
+    # perturbations and every scorer see only the live turns, and the prefix
+    # is put back in front for the saved record.
+    trace = _scoring_view(full_trace)
 
     # Apply perturbations to the trace before scoring (robustness condition).
     # Pre-send perturbations were ALREADY injected into the live messages above —
@@ -315,6 +341,7 @@ def _run_once(
         integrity=evaluate_integrity(trace, scenario),
         failure_cost=scenario.failure_cost,
     )
+    trace = _with_prefix(trace, full_trace)
 
     if hook_state is not None:
         _dispatch_hooks(
@@ -361,6 +388,8 @@ def run_scenario(
     hooks: Sequence[object] = (),
     on_run_start: Callable[[int], None] | None = None,
     on_run_complete: Callable[[int, ScenarioRunResult], None] | None = None,
+    history_prefix: HistoryPrefix | None = None,
+    should_start_run: Callable[[int], bool] | None = None,
 ) -> ScenarioResult:
     """Run one Scenario N times against the given runtime + mcp set.
 
@@ -396,6 +425,15 @@ def run_scenario(
                             that run is scored, before the next run starts —
                             the seam for streaming each run to disk or to a
                             progress display instead of waiting for all N.
+
+        history_prefix:     optional recorded turns frozen as history in front
+                            of every live turn (see _run_once). Requires a
+                            handle that consumes the full message history.
+        should_start_run:   optional predicate consulted before every run
+                            after the first; returning False stops the
+                            remaining runs and aggregates the completed ones
+                            — the seam for a wall-clock budget. The first
+                            run always starts, so a result is never empty.
 
         Unlike hooks, the two callbacks are the caller's own control flow:
         they run synchronously on this thread, and an exception they raise
@@ -452,6 +490,12 @@ def run_scenario(
         run_results: list[ScenarioRunResult] = []
 
         for run_index in range(runs_per_scenario):
+            if (
+                run_index > 0
+                and should_start_run is not None
+                and not should_start_run(run_index)
+            ):
+                break
             if on_run_start is not None:
                 on_run_start(run_index)
             if not skip_reset:
@@ -472,6 +516,7 @@ def run_scenario(
                     hooks=hooks,
                     hook_state=hook_state,
                     config=config,
+                    history_prefix=history_prefix,
                 )
             except Exception as exc:
                 # Create a minimal failed trace so aggregate still works

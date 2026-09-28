@@ -107,7 +107,8 @@ def test_public_dataclass_field_snapshot() -> None:
 def test_runner_signature_shape() -> None:
     assert tuple(inspect.signature(run_scenario).parameters) == (
         "scenario", "runtime", "mcps", "config", "runs_per_scenario", "skip_reset",
-        "state_probe", "hooks", "on_run_start", "on_run_complete",
+        "state_probe", "hooks", "on_run_start", "on_run_complete", "history_prefix",
+        "should_start_run",
     )
     assert tuple(inspect.signature(run_matrix).parameters) == (
         "scenario", "runtime", "mcps", "base_config", "sampling_variants", "runs_per_cell",

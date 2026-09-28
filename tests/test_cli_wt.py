@@ -745,6 +745,8 @@ class TestWtRunCiOutput:
             "origin",
             "git_sha",
             "wt_version",
+            "sweep_id",
+            "experiment",
         ]
         assert record["scenario_id"] == "lookup_alpha"
         assert record["pack"] == "recovery"

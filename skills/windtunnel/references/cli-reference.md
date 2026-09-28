@@ -1,9 +1,9 @@
-<!-- GENERATED from docs/cli-reference.md at afe0444c8ef7 — do not edit; edit docs/cli-reference.md. -->
+<!-- GENERATED from docs/cli-reference.md at 4830b09a76ef — do not edit; edit docs/cli-reference.md. -->
 ---
 description: Generated reference for wt CLI subcommands, usage, options, and exit-code
   semantics.
 ---
-<!-- GENERATED from windtunnel.cli argparse at 764f43c2910b — do not edit; edit windtunnel/cli.py. -->
+<!-- GENERATED from windtunnel.cli argparse at 31c92ee8c1c6 — do not edit; edit windtunnel/cli.py. -->
 # CLI reference
 
 The `wt` command ships 15 subcommands. This page is generated from `windtunnel.cli`'s argparse tree.
@@ -112,7 +112,7 @@ Run scenarios against a runtime.
 Usage:
 
 ```bash
-wt run [-h] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--all-packs] [--owner OWNER] [--soul PATH] [--agents PATH] [--runtime RUNTIME] [--hook HOOK] [--label LABEL] [--runs N] [--runs-dir DIR] [--format {junit,json}] [--out FILE] [--scheduler SCHEDULER] [--max-concurrency N] [--no-wait]
+wt run [-h] [--scenario S] [--tag TAG] [--pack PACK] [--pack-source SOURCE] [--all-packs] [--owner OWNER] [--soul PATH] [--agents PATH] [--runtime RUNTIME] [--hook HOOK] [--label LABEL] [--runs N] [--runs-dir DIR] [--format {junit,json}] [--out FILE] [--question TEXT] [--expect {pass,fail}] [--budget SECONDS] [--from-trace PATH] [--from-turn K] [--scheduler SCHEDULER] [--max-concurrency N] [--no-wait]
 ```
 
 Arguments and options:
@@ -134,6 +134,11 @@ Arguments and options:
 | `--runs-dir` | no | runs | Directory to write trace files (default: ./runs). |
 | `--format` | no |  | Machine-readable run output format. Must be paired with --out. Choices: junit, json. |
 | `--out` | no |  | Path for --format junit/json output. Must be paired with --format. |
+| `--question` | no |  | What this sweep is meant to find out. Recorded in the ledger; required once the runs directory has history. |
+| `--expect` | no |  | The verdict you predict (pass or fail). Recorded, and compared with the result at the end; required once the runs directory has history. Choices: pass, fail. |
+| `--budget` | no |  | Wall-clock budget, counted from acquiring the runtime. May lower but not raise the tier cap (probe 300s, focused 900s by default; set in [tool.windtunnel.ladder]). Regression sweeps are uncapped by default. |
+| `--from-trace` | no |  | Probe: replay a saved trace's scenario with the turns before --from-turn frozen as history, running the rest live. Needs a runtime that consumes full message history. |
+| `--from-turn` | no |  | With --from-trace: the 1-based user turn to resume at (default: the last, scored user turn). |
 | `--scheduler` | no |  | How scenario jobs execute: 'sequential' (default: one scenario at a time), 'concurrent' (a thread pool of up to --max-concurrency jobs, each provisioning its own handle), or 'package.module:Class' / 'path/to/file.py:Class' naming a windtunnel.spi.Scheduler subclass. |
 | `--max-concurrency` | no |  | Most scenario jobs to run at once under a concurrent scheduler (default: the runtime's declared limit, or 4 when it declares none). Never exceeds the runtime plugin's max_concurrency, which defaults to 1. |
 | `--no-wait` | no | false | If another `wt run` holds this runtime's machine-wide lock, exit 75 at once instead of waiting for it (runtimes that declare no concurrency limit, such as in_memory, are never locked). |

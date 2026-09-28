@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/agents/anti-patterns.md at b3ab93051104 — do not edit; edit docs/agents/anti-patterns.md. -->
+<!-- GENERATED from docs/agents/anti-patterns.md at 53686c510bb4 — do not edit; edit docs/agents/anti-patterns.md. -->
 ---
 description: "Agent-only list of Wind Tunnel integration mistakes that produce misleading benches or hard validation failures."
 agent:
@@ -8,6 +8,32 @@ agent:
 
 These are not style preferences. Each one maps to a failure mode Wind Tunnel is
 designed to make visible.
+
+## Re-running the whole pack to check one fix
+
+A scenario fails, you change one thing, and you re-run every scenario to find
+out whether that one thing worked. That spends the pack's wall-clock time on a
+question one scenario answers, and on a slow bench it turns a five-minute
+debugging step into an hour. `wt run` refuses it: after a regression sweep
+with failures, the next regression needs a passing focused run of each failed
+scenario on the current artifact.
+
+Climb the ladder instead, and say what each rung is for:
+
+```bash
+# probe: replay the broken step on its recorded history (full-history runtimes)
+uv run wt run --from-trace runs/lookup_order/.../<trace>.json \
+  --question "does the schema error reach the model now?" --expect pass
+# focused: the one scenario, a few runs
+uv run wt run --scenario lookup_order --runs 3 \
+  --question "does the fix hold across samples?" --expect pass
+# regression: everything, once the fixes have earned it
+uv run wt run --pack my_pack --runs 3 \
+  --question "did the fix break anything else?" --expect pass
+```
+
+Any edit after a focused pass makes it stale. A sweep that runs out of budget
+exits non-zero; shrink the experiment instead of raising the budget.
 
 ## JSON-stringified tool-call arguments
 

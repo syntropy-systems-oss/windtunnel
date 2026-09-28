@@ -1,4 +1,4 @@
-<!-- GENERATED from docs/iterating.md at 6de87c7db562 — do not edit; edit docs/iterating.md. -->
+<!-- GENERATED from docs/iterating.md at 2c3efef93ad3 — do not edit; edit docs/iterating.md. -->
 ---
 description: "Tight iteration loop for people and coding agents: follow sweeps live, tabulate results and metrics per label, compare labels, and rescore saved traces."
 ---
@@ -15,6 +15,28 @@ provisions a runtime.
 Each one has a `--json` mode whose document is stable and versioned, so an
 agent never has to parse the human table.
 
+## 0. Climb the ladder
+
+`wt run` treats every sweep as an experiment with a size. A replay of one
+recorded step (`--from-trace`) is a **probe**, one scenario is **focused**, and
+several are a **regression**. Probes and focused sweeps have wall-clock caps
+(300 s and 900 s unless `[tool.windtunnel.ladder]` in `pyproject.toml` says
+otherwise); a sweep that runs out stops starting runs and exits non-zero.
+
+Once a runs directory has history, every sweep says what it is for:
+
+```bash
+wt run --scenario lookup_order --runs 3 \
+  --question "does returning the schema error stop the fabricated table?" \
+  --expect pass
+```
+
+and a regression is refused until each scenario that failed in the previous
+regression has passed a focused sweep on the current artifact (the working
+tree, `--soul`/`--agents`, and the runtime). The refusal prints the focused
+commands to run. The full rules are in
+[0005: Experiment ladder](design/0005-experiment-ladder.md).
+
 ## 1. Label every round
 
 `--label` is the unit everything else groups by. Use a new label per change:
@@ -22,8 +44,13 @@ agent never has to parse the human table.
 ```bash
 wt run --pack my_pack --runs 5 --label baseline
 # ...edit the prompt, the agent, or the model config...
-wt run --pack my_pack --runs 5 --label candidate
+wt run --pack my_pack --runs 5 --label candidate \
+  --question "does the stricter prompt keep every scenario green?" --expect pass
 ```
+
+(The first sweep into an empty runs directory needs no `--question`; every
+later one does, and a regression after a failing one first needs focused
+passes. See [Climb the ladder](#0-climb-the-ladder).)
 
 Re-using a label is allowed. Reports, `wt compare`, and `wt results` then read
 the label's latest sweep as recorded in the ledger (or every saved run with the
@@ -133,17 +160,22 @@ optional leading `wt run` — and hand the file to `wt batch`:
 ```text
 # rounds.txt
 --pack my_pack --runs 5 --label baseline
---pack my_pack --runs 5 --label candidate --agents notes/candidate.md
-wt run --pack my_pack --runs 5 --label candidate-t0 --soul prompts/strict.md
+--pack my_pack --runs 5 --label candidate --agents notes/candidate.md --question "do the notes help?" --expect pass
+wt run --pack my_pack --runs 5 --label candidate-t0 --soul prompts/strict.md --question "does the strict soul hold?" --expect pass
 ```
 
 ```bash
 wt batch rounds.txt --runs-dir runs/ --scheduler concurrent
-printf -- '--pack my_pack --label again\n' | wt batch -     # specs from stdin
+printf -- '--pack my_pack --label again --question "flaky?" --expect pass\n' | wt batch -
 ```
 
-Every line is parsed before the first spec runs, so a typo on line 9 fails the
-batch (exit `2`, naming the line) without spending rounds 1–8. Specs then run
+Every line is parsed before the first spec runs, and every spec that will run
+into a runs directory with history (including one an earlier spec in the file
+creates) must carry `--question` and `--expect`. A typo on line 9 fails the
+batch (exit `2`, naming the line) without spending rounds 1–8. The evidence
+gate itself can only be decided when a spec runs: if the baseline above has a
+failure, the candidate regression after it is refused (exit `2`) and the batch
+moves on, so queue focused specs for the failures you expect to fix. Specs then run
 in file order, each as its own sweep — own sweep id and events, own ledger
 rows, own runtime lock — and a failing spec never stops the next. The batch's
 `--runs-dir`, `--scheduler`, `--max-concurrency`, and `--no-wait` are defaults
