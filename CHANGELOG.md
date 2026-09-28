@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.12.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.11.0...v0.12.0) (2026-09-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `wt run` into a runs directory that already has ledger rows requires --question and --expect, and a regression sweep after failing scenarios is refused until each has a passing focused run on the current artifact. Ledger rows gain `sweep_id` and `experiment` fields; run_scenario gains `history_prefix` and `should_start_run` keyword arguments.
+
+### Features
+
+* **cli:** experiment ladder — tiers, budgets, declared questions, regression evidence gate ([#74](https://github.com/syntropy-systems-oss/windtunnel/issues/74)) ([0776abc](https://github.com/syntropy-systems-oss/windtunnel/commit/0776abc0a19582753abd6c212ff7d40ca52f7cb4))
+
 ## [0.11.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.10.2...v0.11.0) (2026-09-23)
 
 
