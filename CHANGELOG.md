@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.12.0...v0.13.0) (2026-09-28)
+
+
+### Features
+
+* **cli:** per-model time rate in ladder pricing ([#77](https://github.com/syntropy-systems-oss/windtunnel/issues/77)) ([7115613](https://github.com/syntropy-systems-oss/windtunnel/commit/7115613a2113413213b8011fe08b2e5cd4460bd5))
+
 ## [0.12.0](https://github.com/syntropy-systems-oss/windtunnel/compare/v0.11.0...v0.12.0) (2026-09-28)
 
 
